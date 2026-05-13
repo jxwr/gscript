@@ -11,6 +11,16 @@ package methodjit
 // generic boxed numeric ops, where codegen can promote overflow to float in
 // place and continue.
 func OverflowBoxingPass(fn *Function) (*Function, error) {
+	return OverflowBoxingPassWith(nil)(fn)
+}
+
+func OverflowBoxingPassWith(forceBoxIntIDs map[int]bool) PassFunc {
+	return func(fn *Function) (*Function, error) {
+		return overflowBoxingPass(fn, forceBoxIntIDs)
+	}
+}
+
+func overflowBoxingPass(fn *Function, forceBoxIntIDs map[int]bool) (*Function, error) {
 	if fn == nil {
 		return fn, nil
 	}
@@ -23,6 +33,10 @@ func OverflowBoxingPass(fn *Function) (*Function, error) {
 	boxed := make(map[int]bool)
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
+			if forceBoxIntIDs[instr.ID] && isBoxableIntArithmetic(instr) {
+				boxed[instr.ID] = true
+				continue
+			}
 			if loopCarriedDeps[instr.ID] &&
 				!overflowCheckedRaw[instr.ID] &&
 				isUnsafeIntArithmetic(fn, instr) {
@@ -103,6 +117,18 @@ func OverflowBoxingPass(fn *Function) (*Function, error) {
 	return fn, nil
 }
 
+func isBoxableIntArithmetic(instr *Instr) bool {
+	if instr == nil {
+		return false
+	}
+	switch instr.Op {
+	case OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt:
+		return true
+	default:
+		return false
+	}
+}
+
 // collectModuloAdditiveAccumulatorDeps keeps a common bounded accumulator raw:
 //
 //	acc = (acc + a + b - c) % CONST_POSITIVE
@@ -144,7 +170,8 @@ func collectModuloAdditiveAccumulatorDeps(fn *Function) map[int]bool {
 					continue
 				}
 				if update == nil || update.Op != OpModInt || !positiveConstModDivisor(update) ||
-					!additiveModuloExprDependsOnPhi(update, phi.ID, local, make(map[int]bool)) {
+					!additiveModuloExprDependsOnPhi(update, phi.ID, local, make(map[int]bool)) ||
+					additiveModuloExprHasNonInt48Leaf(fn, update, phi.ID, make(map[int]bool)) {
 					allModuloUpdates = false
 					break
 				}
@@ -160,6 +187,41 @@ func collectModuloAdditiveAccumulatorDeps(fn *Function) map[int]bool {
 		}
 	}
 	return keep
+}
+
+func additiveModuloExprHasNonInt48Leaf(fn *Function, instr *Instr, phiID int, seen map[int]bool) bool {
+	if instr == nil {
+		return false
+	}
+	if seen[instr.ID] {
+		return false
+	}
+	seen[instr.ID] = true
+	for _, arg := range instr.Args {
+		if additiveModuloValueHasNonInt48Leaf(fn, arg, phiID, seen) {
+			return true
+		}
+	}
+	return false
+}
+
+func additiveModuloValueHasNonInt48Leaf(fn *Function, v *Value, phiID int, seen map[int]bool) bool {
+	if v == nil || v.Def == nil || v.ID == phiID {
+		return false
+	}
+	switch v.Def.Op {
+	case OpAddInt, OpSubInt, OpNegInt, OpModInt:
+		return additiveModuloExprHasNonInt48Leaf(fn, v.Def, phiID, seen)
+	case OpConstInt:
+		return v.Def.Aux < MinInt48 || v.Def.Aux > MaxInt48
+	default:
+		if fn != nil && fn.IntRanges != nil {
+			if r, ok := fn.IntRanges[v.ID]; ok && r.known {
+				return !r.fitsInt48()
+			}
+		}
+		return false
+	}
 }
 
 func markAdditiveModuloExpr(instr *Instr, keep map[int]bool, seen map[int]bool) {

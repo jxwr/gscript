@@ -4,7 +4,17 @@ func tier2NumericModules() []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
 		tier2PassModule("LoopBoundRangeGuard", Tier2PhaseNumeric, LoopBoundRangeGuardPass),
 		tier2PassModule("RangeAnalysis", Tier2PhaseNumeric, RangeAnalysisPass),
-		tier2PassModule("OverflowBoxing", Tier2PhaseNumeric, OverflowBoxingPass),
+		{
+			Name:  "OverflowBoxing",
+			Phase: Tier2PhaseNumeric,
+			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
+				force := map[int]bool(nil)
+				if opts != nil {
+					force = opts.ForceBoxIntIDs
+				}
+				return OverflowBoxingPassWith(force)(fn)
+			},
+		},
 		tier2PassModule("IntExactDivision", Tier2PhaseNumeric, IntExactDivisionPass),
 		tier2PassModule("RangeAnalysis (post-IntExactDivision)", Tier2PhaseNumeric, RangeAnalysisPass),
 		tier2PassModule("ModRangeSimplify", Tier2PhaseNumeric, ModRangeSimplifyPass),

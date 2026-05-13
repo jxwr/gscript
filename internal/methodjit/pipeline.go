@@ -329,6 +329,7 @@ type Tier2PipelineOpts struct {
 	FixedShapeArrayElementArgFacts  map[int]FixedShapeTableFact   // guarded fixed-shape facts for callee param array elements
 	FixedShapeArrayElementPolyFacts map[int][]FixedShapeTableFact // guarded polymorphic facts for callee param array elements
 	FixedShapeEntryGuards           bool                          // emit callee-entry shape guards for FixedShapeArgFacts
+	ForceBoxIntIDs                  map[int]bool                  // IR value IDs forced out of raw-int after overflow feedback
 	Remarks                         *OptimizationRemarks          // optional structured optimization diagnostics
 }
 

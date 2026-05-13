@@ -204,6 +204,7 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 			FixedShapeArrayElementArgFacts:  mergeFixedShapeTableFacts(profiledArrayElementFacts, staticArrayElementFacts),
 			FixedShapeArrayElementPolyFacts: profiledArrayElementPolyFacts,
 			FixedShapeEntryGuards:           true,
+			ForceBoxIntIDs:                  tm.forcedBoxTier2IntValues(proto),
 			Remarks:                         remarks,
 		}
 		return nil

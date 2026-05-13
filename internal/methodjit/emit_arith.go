@@ -537,12 +537,15 @@ func (ec *emitContext) emitIntModX0X1(instr *Instr) {
 func (ec *emitContext) emitIntModZeroDeopt() {
 	ec.emitStoreAllActiveRegs()
 	ec.emitLoopExitBoxing(-1)
-	ec.asm.LoadImm64(jit.X0, ExitDeopt)
-	ec.asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
+	asm := ec.asm
+	asm.LoadImm64(jit.X0, -1)
+	asm.STR(jit.X0, mRegCtx, execCtxOffDeoptInstrID)
+	asm.LoadImm64(jit.X0, ExitDeopt)
+	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
 	if ec.numericMode {
-		ec.asm.B("num_deopt_epilogue")
+		asm.B("num_deopt_epilogue")
 	} else {
-		ec.asm.B("deopt_epilogue")
+		asm.B("deopt_epilogue")
 	}
 }
 
@@ -625,6 +628,10 @@ func (ec *emitContext) emitInt48OverflowCheck(result jit.Reg, instr *Instr) {
 	ec.emitLoopExitBoxing(-1)
 
 	// Overflow: deopt to interpreter.
+	if instr != nil {
+		asm.LoadImm64(jit.X0, int64(instr.ID))
+		asm.STR(jit.X0, mRegCtx, execCtxOffDeoptInstrID)
+	}
 	asm.LoadImm64(jit.X0, ExitDeopt)
 	asm.STR(jit.X0, mRegCtx, execCtxOffExitCode)
 	if ec.numericMode {

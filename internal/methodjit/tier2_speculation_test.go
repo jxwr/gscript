@@ -70,6 +70,18 @@ func TestTier2SpeculationPlanQueriesSpecializationProfile(t *testing.T) {
 	}
 }
 
+func TestTier2SpeculationPlanFallsBackToTableKeyArrayKind(t *testing.T) {
+	proto := &vm.FuncProto{Name: "array_kind_fallback", Code: make([]uint32, 1)}
+	proto.EnsureFeedback()
+	tbl := runtime.NewTableSizedKind(4, 0, runtime.ArrayInt)
+	proto.TableKeyFeedback[0].ObserveTableAccess(tbl, runtime.IntValue(1), runtime.IntValue(42), vm.TableAccessKindSet, 0, -1)
+
+	plan := NewTier2SpeculationPlan(proto)
+	if got := plan.TableKindAux(0); got != int64(vm.FBKindInt) {
+		t.Fatalf("TableKindAux=%d want %d", got, vm.FBKindInt)
+	}
+}
+
 func TestTier2SpeculationPlanUsesSameFieldWriteTypeForColdGet(t *testing.T) {
 	proto := &vm.FuncProto{
 		Name: "same_field_write_type",

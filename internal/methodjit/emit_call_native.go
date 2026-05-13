@@ -1432,7 +1432,7 @@ func (ec *emitContext) fieldShapeTypedPeerMethodCallCases(instr *Instr) []fieldS
 		return nil
 	}
 	cases := ec.fn.FieldPolyShapeFacts[instr.ID]
-	if len(cases) < 2 {
+	if len(cases) == 0 {
 		return nil
 	}
 	out := make([]fieldShapeTypedPeerCallCase, 0, len(cases))
@@ -1695,7 +1695,7 @@ func (ec *emitContext) emitOpFieldCallFloor(instr *Instr) {
 
 func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 	cases := ec.fieldShapeTypedPeerMethodCallCases(instr)
-	if len(cases) < 2 {
+	if len(cases) == 0 {
 		return false
 	}
 	nArgs := len(instr.Args)
@@ -1726,7 +1726,7 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 	ec.emitLoadCallMode(jit.X8)
 	asm.STR(jit.X8, jit.SP, rawPeerCallModeOff)
 
-	ec.emitTypedPeerArgsFromValuesInRegsAndSave(instr.Args, argDesc, fallbackLabel)
+	ec.emitTypedPeerArgsFromValuesInRegsAndSave(instr.Args, argDesc, callFallbackLabel)
 	asm.LDRW(jit.X9, jit.X0, jit.TableOffShapeID)
 	for _, c := range cases {
 		nextLabel := ec.uniqueLabel("t2fieldmethod_next")
@@ -1833,13 +1833,13 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 			asm.FCVTZS(jit.X0, jit.D0)
 			ec.storeRawInt(jit.X0, instr.ID)
 		default:
-			asm.B(fallbackLabel)
+			asm.B(callFallbackLabel)
 		}
 		asm.B(doneLabel)
 		asm.Label(nextLabel)
 	}
 	postReprs := ec.snapshotValueReprs()
-	asm.B(fallbackLabel)
+	asm.B(callFallbackLabel)
 
 	asm.Label(exitLabel)
 	ec.emitPushNativeCallExitFrameIfNested(jit.X8, jit.X9, jit.X10, jit.X11)
@@ -1890,6 +1890,206 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 
 	asm.Label(fallbackLabel)
 	if allLeafCallees {
+		ec.emitRestoreTypedPeerCallerModeClosureOnly()
+	} else {
+		ec.emitRestoreTypedPeerCallerState()
+	}
+	ec.restoreValueReprSnapshot(preReprs)
+	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
+	ec.emitDeopt(instr)
+
+	asm.Label(doneLabel)
+	return true
+}
+
+func (ec *emitContext) emitFieldShapeMethodCallFloorNativeSingleCase(instr *Instr, c fieldShapeTypedPeerCallCase) bool {
+	if ec == nil || ec.asm == nil || instr == nil {
+		return false
+	}
+	nArgs := len(instr.Args)
+	nRets := callResultCountFromAux2(instr.Aux2)
+	funcSlot := int(instr.Aux)
+	asm := ec.asm
+
+	liveGPRs, liveFPRs := ec.computeLiveAcrossCall(instr)
+	ec.emitSpillTypedPeerLiveForSuccess(liveFPRs)
+
+	fallbackLabel := ec.uniqueLabel("t2fieldmethod_fallback")
+	callFallbackLabel := ec.uniqueLabel("t2fieldmethod_call_fallback")
+	exitLabel := ec.uniqueLabel("t2fieldmethod_exit")
+	doneLabel := ec.uniqueLabel("t2fieldmethod_done")
+	preReprs := ec.snapshotValueReprs()
+	calleeBaseOff := ec.nextSlot * jit.ValueSize
+	argDesc := c.desc
+	argDesc.ArgFacts = nil
+
+	asm.SUBimm(jit.SP, jit.SP, rawPeerFrameSize)
+	if !c.callee.LeafNoCall {
+		asm.STR(mRegRegs, jit.SP, rawPeerRegsOff)
+		asm.STR(mRegConsts, jit.SP, rawPeerConstsOff)
+	}
+	asm.LDR(jit.X8, mRegCtx, execCtxOffBaselineClosurePtr)
+	asm.STR(jit.X8, jit.SP, rawPeerClosureOff)
+	ec.emitLoadCallMode(jit.X8)
+	asm.STR(jit.X8, jit.SP, rawPeerCallModeOff)
+
+	ec.emitTypedPeerArgsFromValuesInRegsAndSave(instr.Args, argDesc, fallbackLabel)
+	asm.LDRW(jit.X9, jit.X0, jit.TableOffShapeID)
+	asm.LoadImm64(jit.X12, int64(c.shapeID))
+	asm.CMPreg(jit.X9, jit.X12)
+	asm.BCond(jit.CondNE, fallbackLabel)
+
+	validateMethodLabel := ec.uniqueLabel("t2fieldmethod_validate")
+	if c.exactClosure != 0 && c.shapeEpochPtr != 0 {
+		asm.LoadImm64(jit.X8, int64(c.shapeEpochPtr))
+		asm.LDR(jit.X8, jit.X8, 0)
+		asm.LoadImm64(jit.X12, int64(c.shapeEpoch))
+		asm.CMPreg(jit.X8, jit.X12)
+		asm.BCond(jit.CondNE, validateMethodLabel)
+		asm.LoadImm64(jit.X6, nbClosureTagBits|int64(c.exactClosure))
+		asm.LoadImm64(jit.X7, int64(c.exactClosure))
+		asm.STR(jit.X7, mRegCtx, execCtxOffBaselineClosurePtr)
+		asm.LoadImm64(jit.X7, int64(uintptr(unsafe.Pointer(c.callee))))
+		asm.B(validateMethodLabel + "_entry")
+	}
+
+	asm.Label(validateMethodLabel)
+	asm.LDR(jit.X6, jit.X0, jit.TableOffSvals)
+	asm.LDR(jit.X6, jit.X6, c.fieldIdx*jit.ValueSize)
+	if c.exactClosure != 0 {
+		asm.LoadImm64(jit.X8, nbClosureTagBits|int64(c.exactClosure))
+		asm.CMPreg(jit.X6, jit.X8)
+		asm.BCond(jit.CondNE, callFallbackLabel)
+		asm.LoadImm64(jit.X7, int64(c.exactClosure))
+		asm.STR(jit.X7, mRegCtx, execCtxOffBaselineClosurePtr)
+		asm.LoadImm64(jit.X7, int64(uintptr(unsafe.Pointer(c.callee))))
+	} else {
+		asm.LSRimm(jit.X7, jit.X6, uint8(nbPtrSubShift))
+		asm.LoadImm64(jit.X8, int64((jit.NB_TagPtrShr48<<4)|nbPtrSubVMClosure))
+		asm.CMPreg(jit.X7, jit.X8)
+		asm.BCond(jit.CondNE, callFallbackLabel)
+		jit.EmitExtractPtr(asm, jit.X7, jit.X6)
+		asm.STR(jit.X7, mRegCtx, execCtxOffBaselineClosurePtr)
+		asm.LDR(jit.X7, jit.X7, vmClosureOffProto)
+		asm.LoadImm64(jit.X8, int64(uintptr(unsafe.Pointer(c.callee))))
+		asm.CMPreg(jit.X7, jit.X8)
+		asm.BCond(jit.CondNE, callFallbackLabel)
+	}
+	asm.Label(validateMethodLabel + "_entry")
+	asm.LDR(jit.X16, jit.X7, funcProtoOffTier2TypedEntryPtr)
+	asm.CBZ(jit.X16, callFallbackLabel)
+
+	if !c.callee.LeafNoCall {
+		asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+		asm.CMPimm(jit.X8, maxNativeCallDepth)
+		asm.BCond(jit.CondGE, callFallbackLabel)
+	}
+
+	asm.LoadImm64(jit.X8, int64(c.callee.MaxStack*jit.ValueSize))
+	if calleeBaseOff <= 4095 {
+		asm.ADDimm(jit.X8, jit.X8, uint16(calleeBaseOff))
+	} else {
+		asm.LoadImm64(jit.X12, int64(calleeBaseOff))
+		asm.ADDreg(jit.X8, jit.X8, jit.X12)
+	}
+	asm.ADDreg(jit.X8, jit.X8, mRegRegs)
+	asm.LDR(jit.X12, mRegCtx, execCtxOffRegsEnd)
+	asm.CMPreg(jit.X8, jit.X12)
+	asm.BCond(jit.CondHI, callFallbackLabel)
+
+	if calleeBaseOff <= 4095 {
+		asm.ADDimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
+	} else {
+		asm.LoadImm64(jit.X8, int64(calleeBaseOff))
+		asm.ADDreg(mRegRegs, mRegRegs, jit.X8)
+	}
+	asm.LDR(mRegConsts, jit.X7, funcProtoOffConstants)
+	asm.MOVimm16(jit.X8, callModeTypedSelf)
+	ec.emitStoreCallMode(jit.X8)
+	if !c.callee.LeafNoCall {
+		asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+		asm.ADDimm(jit.X8, jit.X8, 1)
+		asm.STR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+	}
+
+	asm.BLR(jit.X16)
+
+	if !c.callee.LeafNoCall {
+		asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+		asm.SUBimm(jit.X8, jit.X8, 1)
+		asm.STR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
+	}
+	asm.CBNZ(jit.X16, exitLabel)
+
+	if c.callee.LeafNoCall {
+		ec.emitRestoreTypedPeerLeafCallerState(calleeBaseOff)
+	} else {
+		ec.emitRestoreTypedPeerCallerState()
+	}
+	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
+	ec.emitReloadTypedPeerLiveForSuccess(liveFPRs)
+	ec.restoreValueReprSnapshot(preReprs)
+	switch c.desc.ReturnRep {
+	case SpecializedABIReturnRawInt:
+		ec.storeRawInt(jit.X0, instr.ID)
+	case SpecializedABIReturnRawFloat:
+		asm.FMOVtoFP(jit.D0, jit.X0)
+		asm.FRINTMd(jit.D0, jit.D0)
+		asm.FCVTZS(jit.X0, jit.D0)
+		ec.storeRawInt(jit.X0, instr.ID)
+	default:
+		asm.B(callFallbackLabel)
+	}
+	asm.B(doneLabel)
+
+	asm.Label(exitLabel)
+	ec.emitPushNativeCallExitFrameIfNested(jit.X8, jit.X9, jit.X10, jit.X11)
+	asm.LDR(jit.X8, mRegCtx, execCtxOffExitCode)
+	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeExitCode)
+	asm.LDR(jit.X8, mRegCtx, execCtxOffResumeNumericPass)
+	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeResumePass)
+	asm.LDR(jit.X8, mRegCtx, execCtxOffExitResumePC)
+	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeResumePC)
+	asm.LDR(jit.X8, mRegCtx, execCtxOffBaselineClosurePtr)
+	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeClosurePtr)
+	asm.UBFX(jit.X6, jit.X8, 0, 44)
+	asm.LoadImm64(jit.X12, nbClosureTagBits)
+	asm.ORRreg(jit.X6, jit.X6, jit.X12)
+	asm.STR(jit.X6, jit.SP, rawPeerFuncOff)
+	asm.MOVimm16(jit.X8, 1)
+	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeTier2Only)
+	if c.callee.LeafNoCall {
+		ec.emitRestoreTypedPeerLeafCallerState(calleeBaseOff)
+	} else {
+		ec.emitRestoreTypedPeerCallerState()
+	}
+	ec.restoreValueReprSnapshot(preReprs)
+	ec.emitSpillSelectiveForCall(liveGPRs, nil)
+	ec.emitMaterializeTypedPeerCallFrame(funcSlot, nArgs, argDesc)
+	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
+	ec.emitNativeCallExit(instr, funcSlot, nArgs, nRets, calleeBaseOff)
+	ec.emitFloorProjectionFromCallResult(instr)
+	ec.emitUnboxRawIntRegs(preReprs)
+	ec.restoreValueReprSnapshot(preReprs)
+	asm.B(doneLabel)
+
+	asm.Label(callFallbackLabel)
+	asm.STR(jit.X6, jit.SP, rawPeerFuncOff)
+	if c.callee.LeafNoCall {
+		ec.emitRestoreTypedPeerCallerModeClosureOnly()
+	} else {
+		ec.emitRestoreTypedPeerCallerState()
+	}
+	ec.restoreValueReprSnapshot(preReprs)
+	ec.emitMaterializeTypedPeerCallFrame(funcSlot, nArgs, argDesc)
+	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
+	ec.emitCallExitFallback(instr, funcSlot, nArgs, nRets)
+	ec.emitFloorProjectionFromCallResult(instr)
+	ec.emitUnboxRawIntRegs(preReprs)
+	ec.restoreValueReprSnapshot(preReprs)
+
+	asm.Label(fallbackLabel)
+	if c.callee.LeafNoCall {
 		ec.emitRestoreTypedPeerCallerModeClosureOnly()
 	} else {
 		ec.emitRestoreTypedPeerCallerState()

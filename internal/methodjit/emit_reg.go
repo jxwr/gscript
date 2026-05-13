@@ -159,7 +159,7 @@ func (ec *emitContext) resolveValueNB(valueID int, scratchReg jit.Reg) jit.Reg {
 		case valueReprRawInt:
 			// Raw int in register: box into scratch before returning.
 			reg := ec.physReg(valueID)
-			jit.EmitBoxIntFast(ec.asm, scratchReg, reg, mRegTagInt)
+			ec.emitBoxIntValue(scratchReg, reg, valueID)
 			return scratchReg
 		}
 		return ec.physReg(valueID)
@@ -283,14 +283,36 @@ func (ec *emitContext) storeRawInt(srcReg jit.Reg, valueID int) {
 		// Skip if the value is only used as a phi arg to a loop header
 		// (the phi move reads from the register via emitPhiMoveRawInt).
 		if ec.crossBlockLive[valueID] && !ec.loopPhiOnlyArgs[valueID] && !ec.rawIntCarryNoStore[valueID] {
-			jit.EmitBoxIntFast(ec.asm, jit.X0, dstReg, mRegTagInt)
+			ec.emitBoxIntValue(jit.X0, dstReg, valueID)
 			ec.storeValue(jit.X0, valueID)
 		}
 		return
 	}
 	// No register: box and store to memory
-	jit.EmitBoxIntFast(ec.asm, jit.X0, srcReg, mRegTagInt)
+	ec.emitBoxIntValue(jit.X0, srcReg, valueID)
 	ec.storeValue(jit.X0, valueID)
+}
+
+func (ec *emitContext) emitBoxIntValue(dst, src jit.Reg, valueID int) {
+	if ec.int48Safe(valueID) {
+		jit.EmitBoxIntFast(ec.asm, dst, src, mRegTagInt)
+		return
+	}
+	tmp := jit.X17
+	if tmp == dst || tmp == src {
+		tmp = jit.X16
+	}
+	overflow := ec.uniqueLabel("box_int_overflow")
+	done := ec.uniqueLabel("box_int_done")
+	ec.asm.SBFX(tmp, src, 0, 48)
+	ec.asm.CMPreg(tmp, src)
+	ec.asm.BCond(jit.CondNE, overflow)
+	jit.EmitBoxIntFast(ec.asm, dst, src, mRegTagInt)
+	ec.asm.B(done)
+	ec.asm.Label(overflow)
+	ec.asm.SCVTF(jit.D3, src)
+	ec.asm.FMOVtoGP(dst, jit.D3)
+	ec.asm.Label(done)
 }
 
 // storeRawTablePtr stores a raw *runtime.Table pointer in the allocated GPR

@@ -73,10 +73,13 @@ type TieringManager struct {
 	recompileQueue     tier2RecompileQueue
 	tier2GuardSuppress map[*vm.FuncProto]map[int]map[string]bool
 	tier2GuardFailures map[*vm.FuncProto]map[int]map[string]uint64
+	tier2ForceBoxInt   map[*vm.FuncProto]map[int]bool
 	perfStats          *tier2PerfStatsCollector
 	perfStatsEnabled   bool
 	callVM             *vm.VM
 	retBuf             [8]runtime.Value
+	tier2Ctx           ExecContext
+	tier2CtxBusy       bool
 	tier2Threshold     int                           // configurable threshold for testing (legacy fallback)
 	profileCache       map[*vm.FuncProto]FuncProfile // cached function profiles
 
@@ -226,6 +229,38 @@ func (tm *TieringManager) tier2GuardFailureKinds(proto *vm.FuncProto) map[string
 	}
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+func (tm *TieringManager) forceBoxTier2IntValue(proto *vm.FuncProto, id int) {
+	if tm == nil || proto == nil || id < 0 {
+		return
+	}
+	if tm.tier2ForceBoxInt == nil {
+		tm.tier2ForceBoxInt = make(map[*vm.FuncProto]map[int]bool)
+	}
+	ids := tm.tier2ForceBoxInt[proto]
+	if ids == nil {
+		ids = make(map[int]bool)
+		tm.tier2ForceBoxInt[proto] = ids
+	}
+	ids[id] = true
+}
+
+func (tm *TieringManager) forcedBoxTier2IntValues(proto *vm.FuncProto) map[int]bool {
+	if tm == nil || proto == nil || len(tm.tier2ForceBoxInt) == 0 {
+		return nil
+	}
+	ids := tm.tier2ForceBoxInt[proto]
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make(map[int]bool, len(ids))
+	for id, ok := range ids {
+		if ok {
+			out[id] = true
+		}
 	}
 	return out
 }

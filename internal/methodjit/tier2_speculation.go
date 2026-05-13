@@ -509,10 +509,19 @@ func (p Tier2SpeculationPlan) TableKindAux(pc int) int64 {
 		return int64(guard.TableKind)
 	}
 	fb, ok := p.TypeFeedback(pc)
-	if !ok || fb.Kind == vm.FBKindUnobserved || fb.Kind == vm.FBKindPolymorphic {
+	if ok && fb.Kind != vm.FBKindUnobserved && fb.Kind != vm.FBKindPolymorphic {
+		return int64(fb.Kind)
+	}
+	if p.proto == nil || pc < 0 || p.proto.TableKeyFeedback == nil || pc >= len(p.proto.TableKeyFeedback) {
 		return 0
 	}
-	return int64(fb.Kind)
+	keyFB := p.proto.TableKeyFeedback[pc]
+	switch keyFB.ArrayKind {
+	case vm.FBKindMixed, vm.FBKindInt, vm.FBKindFloat, vm.FBKindBool:
+		return int64(keyFB.ArrayKind)
+	default:
+		return 0
+	}
 }
 
 func (p Tier2SpeculationPlan) FieldShapeAux2(pc int) int64 {

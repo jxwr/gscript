@@ -72,6 +72,69 @@ func TestTablePreallocHintPassInfersLocalTypedArrayWithoutFeedback(t *testing.T)
 	}
 }
 
+func TestTablePreallocHintPassInfersTypedArrayForParamTableWithoutFeedback(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "prealloc_param_int"}, NumRegs: 3}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	key := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	val := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 2, Block: b}
+	set := &Instr{ID: fn.newValueID(), Op: OpSetTable, Type: TypeUnknown,
+		Args: []*Value{tbl.Value(), key.Value(), val.Value()}, Block: b}
+	get := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeAny,
+		Args: []*Value{tbl.Value(), key.Value()}, Block: b}
+	b.Instrs = []*Instr{tbl, key, val, set, get}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	got, err := TablePreallocHintPass(fn)
+	if err != nil {
+		t.Fatalf("TablePreallocHintPass: %v", err)
+	}
+
+	if set.Aux2 != int64(vm.FBKindInt) {
+		t.Fatalf("set Aux2 = %d, want FBKindInt", set.Aux2)
+	}
+	if get.Aux2 != int64(vm.FBKindInt) {
+		t.Fatalf("get Aux2 = %d, want FBKindInt", get.Aux2)
+	}
+	if get.Type != TypeInt {
+		t.Fatalf("get Type = %s, want int", get.Type)
+	}
+	if got.Entry.Instrs[0].Op != OpLoadSlot {
+		t.Fatalf("param table source should remain a LoadSlot:\n%s", Print(got))
+	}
+}
+
+func TestTablePreallocHintPassSeedsMixedTypedArrayForParamTableWithoutValueKind(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "prealloc_param_mixed"}, NumRegs: 3}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	key := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	val := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeAny, Aux: 2, Block: b}
+	set := &Instr{ID: fn.newValueID(), Op: OpSetTable, Type: TypeUnknown,
+		Args: []*Value{tbl.Value(), key.Value(), val.Value()}, Block: b}
+	get := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeAny,
+		Args: []*Value{tbl.Value(), key.Value()}, Block: b}
+	b.Instrs = []*Instr{tbl, key, val, set, get}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	got, err := TablePreallocHintPass(fn)
+	if err != nil {
+		t.Fatalf("TablePreallocHintPass: %v", err)
+	}
+
+	if set.Aux2 != int64(vm.FBKindMixed) {
+		t.Fatalf("set Aux2 = %d, want FBKindMixed", set.Aux2)
+	}
+	if get.Aux2 != int64(vm.FBKindMixed) {
+		t.Fatalf("get Aux2 = %d, want FBKindMixed", get.Aux2)
+	}
+	if got.Entry.Instrs[0].Op != OpLoadSlot {
+		t.Fatalf("param table source should remain a LoadSlot:\n%s", Print(got))
+	}
+}
+
 func TestTablePreallocHintPassDoesNotTypeDynamicStringMapMissesAsTable(t *testing.T) {
 	fn := &Function{Proto: &vm.FuncProto{Name: "prealloc_string_map"}, NumRegs: 4}
 	b := &Block{ID: 0, defs: make(map[int]*Value)}

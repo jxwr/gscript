@@ -88,7 +88,11 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 			}
 			hasMixedValue := setTableMixedArrayValueHint(instr, defs)
 			if !forceMixed && !hasKind && instr.Aux2 == 0 && !hasMixedValue {
-				continue
+				if len(tblDefs) == 1 && tblDefs[0] != nil && tblDefs[0].Op == OpLoadSlot && tableKeyProvenInt(instr.Args[1]) {
+					kind, hasKind = runtime.ArrayMixed, true
+				} else {
+					continue
+				}
 			}
 			for _, tblDef := range tblDefs {
 				hint := candidates[tblDef.ID]
@@ -172,7 +176,9 @@ func annotateLocalTableArrayKinds(fn *Function, candidates map[int]tablePrealloc
 			hint, hasReadHint := tablePreallocGetReadHint(tbl, defs, globalNewTables, readHints, tableValueHints)
 			if instr.Aux2 == 0 {
 				if kind, ok := tablePreallocAccessKind(tbl, defs, globalNewTables, candidates, tableValueHints); ok {
-					if fbKind, ok := arrayKindToFBKind(kind); ok {
+					if kind == runtime.ArrayMixed {
+						instr.Aux2 = int64(vm.FBKindMixed)
+					} else if fbKind, ok := arrayKindToFBKind(kind); ok {
 						instr.Aux2 = int64(fbKind)
 					}
 				} else if hasReadHint && hint.resultType == TypeTable {
@@ -206,7 +212,7 @@ func tablePreallocAccessKind(tbl *Value, defs map[int]*Instr, globalNewTables ma
 		return runtime.ArrayMixed, false
 	}
 	hint, ok := candidates[tblDef.ID]
-	if !ok || hint.mixed || hint.kind == runtime.ArrayMixed {
+	if !ok || hint.mixed {
 		return runtime.ArrayMixed, false
 	}
 	return hint.kind, true
@@ -348,10 +354,23 @@ func tablePreallocGlobalNewTables(fn *Function, defs map[int]*Instr) map[int64]*
 
 func tablePreallocTableDef(v *Value, defs map[int]*Instr, globalNewTables map[int64]*Instr) (*Instr, bool) {
 	def := tablePreallocValueDef(v, defs)
-	if def == nil || def.Op != OpGetGlobal {
+	if def == nil {
+		return nil, false
+	}
+	switch def.Op {
+	case OpGetGlobal:
+		return globalNewTables[def.Aux], true
+	case OpGuardTableKind, OpGuardType:
+		if len(def.Args) == 0 || def.Args[0] == nil {
+			return def, false
+		}
+		if def.Op == OpGuardType && def.Type != TypeTable {
+			return def, false
+		}
+		return tablePreallocTableDef(def.Args[0], defs, globalNewTables)
+	default:
 		return def, false
 	}
-	return globalNewTables[def.Aux], true
 }
 
 func tablePreallocTableDefs(v *Value, defs map[int]*Instr, globalNewTables map[int64]*Instr) []*Instr {
@@ -367,8 +386,19 @@ func tablePreallocTableDefs(v *Value, defs map[int]*Instr, globalNewTables map[i
 			return
 		}
 		seen[def.ID] = true
-		if def.Op == OpNewTable {
+		switch def.Op {
+		case OpNewTable, OpLoadSlot:
 			out = append(out, def)
+			return
+		case OpGuardTableKind, OpGuardType:
+			if len(def.Args) > 0 {
+				visit(def.Args[0])
+			}
+			return
+		case OpGetGlobal:
+			if tbl := globalNewTables[def.Aux]; tbl != nil {
+				out = append(out, tbl)
+			}
 			return
 		}
 		if def.Op != OpPhi {

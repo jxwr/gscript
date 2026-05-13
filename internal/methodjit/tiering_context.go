@@ -30,6 +30,25 @@ func putTier2ExecContext(ctx *ExecContext) {
 	tier2ExecContextPool.Put(ctx)
 }
 
+func (tm *TieringManager) acquireTier2ExecContext() (*ExecContext, bool) {
+	if tm != nil && !tm.tier2CtxBusy {
+		tm.tier2CtxBusy = true
+		tm.tier2Ctx = ExecContext{}
+		return &tm.tier2Ctx, false
+	}
+	return getTier2ExecContext(), true
+}
+
+func (tm *TieringManager) releaseTier2ExecContext(ctx *ExecContext, pooled bool) {
+	if pooled {
+		putTier2ExecContext(ctx)
+		return
+	}
+	if tm != nil && ctx == &tm.tier2Ctx {
+		tm.tier2CtxBusy = false
+	}
+}
+
 func (tm *TieringManager) setTier2FieldCacheContext(ctx *ExecContext, proto *vm.FuncProto) {
 	setTier2ProtoCacheContext(ctx, proto)
 }

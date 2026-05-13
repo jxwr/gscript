@@ -207,7 +207,7 @@ func tableArrayStoreLoopNumericHasLargeTypedPrealloc(cand tableArrayStoreLoopCan
 	if !tableArrayStoreLoopNumericHasTypedPrealloc(cand) {
 		return false
 	}
-	return cand.table.Def.Aux > tier2FeedbackOuterLoopArrayHint
+	return cand.table.Def.Aux >= tier2FeedbackArrayHint
 }
 
 func tableArrayStoreLoopNumericHasTypedPrealloc(cand tableArrayStoreLoopCandidate) bool {

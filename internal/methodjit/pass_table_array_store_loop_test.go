@@ -69,9 +69,55 @@ func TestTableArrayStoreLoopVersion_LowersLargeNumericAppendLoop(t *testing.T) {
 	}
 }
 
-func TestTableArrayStoreLoopVersion_RejectsTopLevelSmallNumericAppendLoop(t *testing.T) {
+func TestTableArrayStoreLoopVersion_LowersBoundaryNumericAppendLoop(t *testing.T) {
+	fn := tableArrayNumericStoreLoopFixture(t)
+	fn.Entry.Instrs[0].Aux = tier2FeedbackOuterLoopArrayHint
+
+	out, err := TableArrayStoreLoopVersionPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertValidates(t, out, "boundary numeric store loop versioned")
+
+	var lowered *Instr
+	for _, block := range out.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpTableArrayStore {
+				lowered = instr
+			}
+		}
+	}
+	if lowered == nil {
+		t.Fatalf("expected boundary numeric SetTable loop to lower:\n%s", Print(out))
+	}
+}
+
+func TestTableArrayStoreLoopVersion_LowersMediumNumericAppendLoop(t *testing.T) {
 	fn := tableArrayNumericStoreLoopFixture(t)
 	fn.Entry.Instrs[0].Aux = tier2FeedbackArrayHint
+
+	out, err := TableArrayStoreLoopVersionPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertValidates(t, out, "medium numeric store loop versioned")
+
+	var lowered *Instr
+	for _, block := range out.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpTableArrayStore {
+				lowered = instr
+			}
+		}
+	}
+	if lowered == nil {
+		t.Fatalf("expected medium numeric SetTable loop to lower:\n%s", Print(out))
+	}
+}
+
+func TestTableArrayStoreLoopVersion_RejectsTopLevelSmallNumericAppendLoop(t *testing.T) {
+	fn := tableArrayNumericStoreLoopFixture(t)
+	fn.Entry.Instrs[0].Aux = tier2FeedbackArrayHint / 2
 
 	out, err := TableArrayStoreLoopVersionPass(fn)
 	if err != nil {
@@ -128,8 +174,8 @@ result := sieve_like(20)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(art.IRAfter, "TableArrayStore") {
-		t.Fatalf("expected sieve-like bool mutation loop to use typed TableArrayStore:\n%s", art.IRAfter)
+	if !strings.Contains(art.IRAfter, "TableArrayStore") && !strings.Contains(art.IRAfter, "TableBoolArrayFill") {
+		t.Fatalf("expected sieve-like bool mutation loop to use a typed array write path:\n%s", art.IRAfter)
 	}
 	if !strings.Contains(art.IRAfter, "TableArrayHeader") {
 		t.Fatalf("expected loop-scoped typed-array facts in optimized IR:\n%s", art.IRAfter)

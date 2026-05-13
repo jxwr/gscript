@@ -41,8 +41,8 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 	}
 
 	// Set up ExecContext.
-	ctx := getTier2ExecContext()
-	defer putTier2ExecContext(ctx)
+	ctx, pooledCtx := tm.acquireTier2ExecContext()
+	defer tm.releaseTier2ExecContext(ctx, pooledCtx)
 	ctx.Regs = uintptr(unsafe.Pointer(&regs[base]))
 	ctx.RegsBase = uintptr(unsafe.Pointer(&regs[0]))
 	ctx.RegsEnd = ctx.RegsBase + uintptr(len(regs)*jit.ValueSize)
@@ -79,10 +79,12 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 
 	codePtr := uintptr(cf.Code.Ptr())
 	ctxPtr := uintptr(unsafe.Pointer(ctx))
-	if cf.TypedSelfABI.Eligible || cf.TypedPeerABI.Eligible {
-		ensureTypedSelfTier2NativeStack()
-	} else {
-		ensureTier2NativeStack()
+	if tier2NeedsNativeStackReserve(cf) {
+		if cf.TypedSelfABI.Eligible || cf.TypedPeerABI.Eligible {
+			ensureTypedSelfTier2NativeStack()
+		} else {
+			ensureTier2NativeStack()
+		}
 	}
 	if tm.timeline != nil {
 		tm.traceEvent("tier2_entered", "tier2", proto, map[string]any{
@@ -147,6 +149,9 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 
 		case ExitDeopt:
 			deoptAction := Tier2DeoptPolicy{}.DecideRuntimeDeoptWithProfile(cf, int(ctx.ExitResumePC), tm.currentTier2SpeculationProfile(proto))
+			if overflowAction, ok := tm.intOverflowDeoptRefreshAction(proto, cf, ctx); ok {
+				deoptAction = overflowAction
+			}
 			if guardAction, ok := tm.guardDeoptRefreshAction(proto, cf, ctx); ok {
 				deoptAction = guardAction
 			}
@@ -159,8 +164,9 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 					r1 = uint64(regs[base+1])
 				}
 				tm.r154DeoptPrints++
-				fmt.Fprintf(os.Stderr, "[R154] deopt proto=%q id=%d base=%d r0=%016x r1=%016x callID=%d globalID=%d\n",
-					proto.Name, ctx.DeoptInstrID, base, r0, r1, ctx.CallID, ctx.GlobalExitID)
+				fmt.Fprintf(os.Stderr, "[R154] deopt proto=%q id=%d base=%d r0=%016x r1=%016x callID=%d globalID=%d nativeCode=%d nativePC=%d nativeClosure=%x\n",
+					proto.Name, ctx.DeoptInstrID, base, r0, r1, ctx.CallID, ctx.GlobalExitID,
+					ctx.NativeCalleeExitCode, ctx.NativeCalleeResumePC, ctx.NativeCalleeClosurePtr)
 			}
 			tm.traceEvent("runtime_deopt", "tier2", proto, map[string]any{
 				"exit_code":        ctx.ExitCode,
@@ -371,6 +377,49 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			return nil, fmt.Errorf("tier2: unknown exit code %d", ctx.ExitCode)
 		}
 	}
+}
+
+func (tm *TieringManager) intOverflowDeoptRefreshAction(proto *vm.FuncProto, cf *CompiledFunction, ctx *ExecContext) (Tier2DeoptAction, bool) {
+	if tm == nil || proto == nil || cf == nil || ctx == nil || cf.ExitSites == nil {
+		return Tier2DeoptAction{}, false
+	}
+	id := int(ctx.DeoptInstrID)
+	meta, ok := cf.ExitSites[id]
+	if !ok || !tier2IntOverflowOpCanBox(meta.Op) {
+		return Tier2DeoptAction{}, false
+	}
+	tm.forceBoxTier2IntValue(proto, id)
+	return Tier2DeoptAction{
+		Kind:           Tier2DeoptRefreshAndFallback,
+		Reason:         "tier2: int48 overflow deopt; recompile boxed arithmetic",
+		PreciseResume:  int(ctx.ExitResumePC) > 0,
+		ResumePC:       int(ctx.ExitResumePC),
+		CurrentProfile: tm.currentTier2SpeculationProfile(proto),
+		GuardRelaxedPC: meta.PC,
+		GuardRelaxedOp: meta.Op,
+	}, true
+}
+
+func tier2IntOverflowOpCanBox(op string) bool {
+	switch op {
+	case "AddInt", "SubInt", "MulInt", "NegInt":
+		return true
+	default:
+		return false
+	}
+}
+
+func tier2NeedsNativeStackReserve(cf *CompiledFunction) bool {
+	if cf == nil {
+		return false
+	}
+	if cf.RawIntSelfABI.Eligible {
+		return true
+	}
+	if !(cf.TypedSelfABI.Eligible || cf.TypedPeerABI.Eligible) {
+		return false
+	}
+	return cf.Proto == nil || !cf.Proto.Tier2LeafNoCall
 }
 
 func (tm *TieringManager) tier2DeoptAtEntry(cf *CompiledFunction, ctx *ExecContext) bool {

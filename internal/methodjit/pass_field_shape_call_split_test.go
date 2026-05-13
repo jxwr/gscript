@@ -11,9 +11,13 @@ import (
 	"github.com/gscript/gscript/internal/vm"
 )
 
-func TestFieldShapeCallSplit_SingleBlockCaseExecutesNative(t *testing.T) {
-	top := compileTop(t, `func step_a(actor, tick) { return tick + 1 }
-func step_b(actor, tick) { return tick + 2 }`)
+func TestFieldShapeCallSplit_SingleBlockCaseCompilesNative(t *testing.T) {
+	top := compileTop(t, `func step_a(actor, tick) {
+    return actor.count + tick + 1
+}
+func step_b(actor, tick) {
+    return actor.count + tick + 2
+}`)
 	stepA := findProtoByName(top, "step_a")
 	stepB := findProtoByName(top, "step_b")
 	if stepA == nil || stepB == nil {
@@ -22,6 +26,7 @@ func step_b(actor, tick) { return tick + 2 }`)
 	clA := vm.NewClosure(stepA)
 
 	actor := runtime.NewTable()
+	actor.RawSetString("count", runtime.IntValue(3))
 	actor.RawSetString("step", runtime.VMClosureFunctionValue(unsafe.Pointer(clA), clA))
 	shapeID := actor.ShapeID()
 
@@ -38,8 +43,8 @@ func step_b(actor, tick) { return tick + 2 }`)
 					VMClosure: uintptr(unsafe.Pointer(clA)),
 					ReceiverFact: FixedShapeTableFact{
 						ShapeID:    shapeID,
-						FieldNames: []string{"step"},
-						FieldTypes: map[string]Type{"step": TypeFunction},
+						FieldNames: []string{"count", "step"},
+						FieldTypes: map[string]Type{"count": TypeInt, "step": TypeFunction},
 					},
 				},
 				{
@@ -48,8 +53,8 @@ func step_b(actor, tick) { return tick + 2 }`)
 					VMProto:  stepB,
 					ReceiverFact: FixedShapeTableFact{
 						ShapeID:    shapeID + 1,
-						FieldNames: []string{"step"},
-						FieldTypes: map[string]Type{"step": TypeFunction},
+						FieldNames: []string{"count", "step"},
+						FieldTypes: map[string]Type{"count": TypeInt, "step": TypeFunction},
 					},
 				},
 			},
@@ -75,33 +80,113 @@ func step_b(actor, tick) { return tick + 2 }`)
 		t.Fatalf("split IR failed validation:\n%s\nerrs=%v", Print(fn), errs)
 	}
 	text := Print(fn)
-	for _, want := range []string{"TableShapeID", "FieldSvals", "GuardCalleeProto", "Phi"} {
+	for _, want := range []string{"TableShapeID", "FieldCallFloor", "Phi"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("split IR missing %q:\n%s", want, text)
 		}
+	}
+	if strings.Contains(text, "GuardCalleeProto") {
+		t.Fatalf("split IR still contains inline-only guard:\n%s", text)
 	}
 	if got := len(fn.FieldPolyShapeFacts[call.ID]); got != 1 {
 		t.Fatalf("fallback cases=%d want 1", got)
 	}
 
-	alloc := AllocateRegisters(fn)
-	cf, err := Compile(fn, alloc)
+	out, _, err = RunTier2Pipeline(out, &Tier2PipelineOpts{InlineMaxSize: 100})
 	if err != nil {
-		t.Fatalf("Compile:\n%s\nerr=%v", Print(fn), err)
+		t.Fatalf("RunTier2Pipeline:\n%s\nerr=%v", Print(out), err)
+	}
+	alloc := AllocateRegisters(out)
+	cf, err := Compile(out, alloc)
+	if err != nil {
+		t.Fatalf("Compile:\n%s\nerr=%v", Print(out), err)
 	}
 	defer cf.Code.Free()
-	result, err := cf.Execute([]runtime.Value{runtime.TableValue(actor), runtime.IntValue(7)})
-	if err != nil {
-		t.Fatalf("Execute: %v\nIR:\n%s", err, Print(fn))
+}
+
+func TestFieldShapeCallSplit_SingleCaseIsVisibleToEmitter(t *testing.T) {
+	top := compileTop(t, `func step_a(actor, tick) {
+    return actor.count + tick + 1
+}
+func step_b(actor, tick) {
+    return actor.count + tick + 2
+}`)
+	stepA := findProtoByName(top, "step_a")
+	stepB := findProtoByName(top, "step_b")
+	if stepA == nil || stepB == nil {
+		t.Fatalf("missing protos: step_a=%v step_b=%v", stepA != nil, stepB != nil)
 	}
-	if len(result) != 1 || !result[0].IsInt() || result[0].Int() != 8 {
-		t.Fatalf("result=%v want 8", result)
+	clA := vm.NewClosure(stepA)
+	actor := runtime.NewTable()
+	actor.RawSetString("count", runtime.IntValue(3))
+	actor.RawSetString("step", runtime.VMClosureFunctionValue(unsafe.Pointer(clA), clA))
+	shapeID := actor.ShapeID()
+
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "caller", NumParams: 2, MaxStack: 6},
+		NumRegs: 2,
+		nextID:  4,
+		FieldPolyShapeFacts: map[int][]FieldPolyShapeCase{
+			2: {
+				{
+					ShapeID:   shapeID,
+					FieldIdx:  0,
+					VMProto:   stepA,
+					VMClosure: uintptr(unsafe.Pointer(clA)),
+					ReceiverFact: FixedShapeTableFact{
+						ShapeID:    shapeID,
+						FieldNames: []string{"count", "step"},
+						FieldTypes: map[string]Type{"count": TypeInt, "step": TypeFunction},
+					},
+				},
+				{
+					ShapeID:  shapeID + 1,
+					FieldIdx: 0,
+					VMProto:  stepB,
+					ReceiverFact: FixedShapeTableFact{
+						ShapeID:    shapeID + 1,
+						FieldNames: []string{"count", "step"},
+						FieldTypes: map[string]Type{"count": TypeInt, "step": TypeFunction},
+					},
+				},
+			},
+		},
+	}
+	entry := &Block{ID: 0}
+	fn.Entry = entry
+	fn.Blocks = []*Block{entry}
+	recv := &Instr{ID: 0, Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: entry}
+	tick := &Instr{ID: 1, Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: entry}
+	call := &Instr{ID: 2, Op: OpFieldCallFloor, Type: TypeInt, Args: []*Value{recv.Value(), tick.Value()}, Aux: 2, Aux2: 2, Block: entry}
+	ret := &Instr{ID: 3, Op: OpReturn, Args: []*Value{call.Value()}, Block: entry}
+	entry.Instrs = []*Instr{recv, tick, call, ret}
+
+	out, err := FieldShapeCallSplitPass(fn)
+	if err != nil {
+		t.Fatalf("FieldShapeCallSplitPass: %v", err)
+	}
+	var caseCall *Instr
+	for _, block := range out.Blocks {
+		for _, instr := range block.Instrs {
+			if instr != nil && instr.Op == OpFieldCallFloor && len(out.FieldPolyShapeFacts[instr.ID]) == 1 {
+				caseCall = instr
+				break
+			}
+		}
+	}
+	if caseCall == nil {
+		t.Fatalf("missing monomorphic case call\nIR:\n%s", Print(out))
+	}
+	ec := &emitContext{fn: out}
+	cases := ec.fieldShapeTypedPeerMethodCallCases(caseCall)
+	if len(cases) != 1 {
+		t.Fatalf("single-case field call cases=%d want 1\nIR:\n%s\nfacts=%#v", len(cases), Print(out), out.FieldPolyShapeFacts[caseCall.ID])
 	}
 }
 
 func TestFieldShapeCallSplit_RejectsExitResumeCallee(t *testing.T) {
 	top := compileTop(t, `func step_cache(actor, tick) {
-    actor.hits = actor.hits + tick
+    coroutine.yield(tick)
     return actor.hits
 }
 func step_b(actor, tick) {

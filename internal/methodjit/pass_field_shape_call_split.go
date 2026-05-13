@@ -2,13 +2,12 @@ package methodjit
 
 import (
 	"fmt"
-	"unsafe"
 )
 
-// FieldShapeCallSplitPass peels one single-block case out of a polymorphic
-// fixed-shape method call. The remaining shapes keep the existing
-// OpFieldCallFloor fallback, while the peeled case becomes normal inlined IR so
-// later passes can optimize its table/string/arithmetic operations.
+// FieldShapeCallSplitPass peels one case out of a polymorphic fixed-shape
+// method call. The remaining shapes keep the existing OpFieldCallFloor
+// fallback, while the peeled case becomes a monomorphic OpFieldCallFloor arm
+// so later passes can lower it through the existing native typed-peer path.
 //
 // The pass is intentionally not wired into the production Tier 2 plan yet. It
 // is a staging component for guarded runtime specialization; tests exercise the
@@ -221,16 +220,46 @@ func fieldShapeSplitSingleBlockCase(fn *Function, block *Block, idx int, call *I
 					c.ShapeID, c.VMProto.Name, c.VMProto.NumParams, len(call.Args)))
 			continue
 		}
-		calleeFn, reason := buildSingleBlockFieldShapeInlineCallee(c)
-		ok := reason == ""
-		if !ok {
+		argFacts := map[int]FixedShapeTableFact{0: c.ReceiverFact}
+		abi := AnalyzeTypedPeerABIWithArgFacts(c.VMProto, argFacts)
+		if !abi.Eligible || len(abi.Params) != len(call.Args) || abi.Params[0] != SpecializedABIParamRawTablePtr {
 			functionRemarks(fn).Add("FieldShapeCallSplit", "missed", block.ID, call.ID, call.Op,
-				fmt.Sprintf("case shape=%d proto=%s is not safe single-block after local lowering: %s", c.ShapeID, c.VMProto.Name, reason))
+				fmt.Sprintf("case shape=%d proto=%s is not native-typed-peer eligible: %s", c.ShapeID, c.VMProto.Name, abi.RejectWhy))
 			continue
 		}
-		fieldShapeSplitCase(fn, block, idx, call, c, cases, caseIdx, calleeFn)
+		switch abi.Return {
+		case SpecializedABIReturnRawInt, SpecializedABIReturnRawFloat:
+		default:
+			functionRemarks(fn).Add("FieldShapeCallSplit", "missed", block.ID, call.ID, call.Op,
+				fmt.Sprintf("case shape=%d proto=%s has unsupported typed-peer return %s", c.ShapeID, c.VMProto.Name, specializedABIReturnName(abi.Return)))
+			continue
+		}
+		paramOK := true
+		for i, rep := range abi.Params {
+			switch rep {
+			case SpecializedABIParamRawInt:
+				if !callABIValueIsInt(call.Args[i]) {
+					paramOK = false
+				}
+			case SpecializedABIParamRawTablePtr:
+				if i != 0 && !callABIValueIsTable(call.Args[i]) {
+					paramOK = false
+				}
+			default:
+				paramOK = false
+			}
+			if !paramOK {
+				break
+			}
+		}
+		if !paramOK {
+			functionRemarks(fn).Add("FieldShapeCallSplit", "missed", block.ID, call.ID, call.Op,
+				fmt.Sprintf("case shape=%d proto=%s typed-peer ABI does not match current call values", c.ShapeID, c.VMProto.Name))
+			continue
+		}
+		fieldShapeSplitCase(fn, block, idx, call, c, cases, caseIdx)
 		functionRemarks(fn).Add("FieldShapeCallSplit", "changed", block.ID, call.ID, call.Op,
-			fmt.Sprintf("split shape=%d proto=%s single-block method case", c.ShapeID, c.VMProto.Name))
+			fmt.Sprintf("split shape=%d proto=%s monomorphic method case", c.ShapeID, c.VMProto.Name))
 		return true
 	}
 	return false
@@ -335,7 +364,7 @@ func fieldShapeSplitInlineOpSafe(op Op) bool {
 	}
 }
 
-func fieldShapeSplitCase(fn *Function, block *Block, idx int, call *Instr, c FieldPolyShapeCase, cases []FieldPolyShapeCase, caseIdx int, calleeFn *Function) {
+func fieldShapeSplitCase(fn *Function, block *Block, idx int, call *Instr, c FieldPolyShapeCase, cases []FieldPolyShapeCase, caseIdx int) {
 	maxBlockID := 0
 	for _, b := range fn.Blocks {
 		if b.ID > maxBlockID {
@@ -364,7 +393,21 @@ func fieldShapeSplitCase(fn *Function, block *Block, idx int, call *Instr, c Fie
 	caseBlock.Preds = []*Block{block}
 	fallbackBlock.Preds = []*Block{block}
 
-	caseResult := appendFieldShapeInlinedSingleBlock(fn, caseBlock, call, c, calleeFn)
+	caseCall := &Instr{
+		ID:        fn.newValueID(),
+		Op:        OpFieldCallFloor,
+		Type:      call.Type,
+		Args:      append([]*Value(nil), call.Args...),
+		Aux:       call.Aux,
+		Aux2:      call.Aux2,
+		Block:     caseBlock,
+		HasSource: call.HasSource,
+		SourcePC:  call.SourcePC,
+	}
+	caseCall.copySourceFrom(call)
+	caseBlock.Instrs = append(caseBlock.Instrs, caseCall)
+	fn.FieldPolyShapeFacts[caseCall.ID] = []FieldPolyShapeCase{c}
+	caseResult := caseCall.Value()
 	caseJump := &Instr{ID: fn.newValueID(), Op: OpJump, Block: caseBlock}
 	caseJump.copySourceFrom(call)
 	caseBlock.Instrs = append(caseBlock.Instrs, caseJump)
@@ -419,65 +462,4 @@ func fieldShapeCasesWithout(cases []FieldPolyShapeCase, idx int) []FieldPolyShap
 	out = append(out, cases[:idx]...)
 	out = append(out, cases[idx+1:]...)
 	return out
-}
-
-func appendFieldShapeInlinedSingleBlock(fn *Function, block *Block, call *Instr, c FieldPolyShapeCase, calleeFn *Function) *Value {
-	svals := emitIRInstr(fn, block, OpFieldSvals, TypeInt, []*Value{call.Args[0]}, int64(c.ShapeID), 0)
-	svals.copySourceFrom(call)
-	method := emitIRInstr(fn, block, OpFieldLoad, TypeFunction, []*Value{svals.Value()}, int64(c.FieldIdx), 0)
-	method.copySourceFrom(call)
-	guard := emitIRInstr(fn, block, OpGuardCalleeProto, TypeFunction, []*Value{method.Value()}, int64(uintptr(unsafe.Pointer(c.VMProto))), 0)
-	guard.copySourceFrom(call)
-	block.Instrs = append(block.Instrs, svals, method, guard)
-
-	calleeBlock := calleeFn.Entry
-	paramValues := inlineParamValues(calleeFn, call.Args)
-	idMap := make(map[int]int)
-	for _, ci := range calleeBlock.Instrs {
-		if _, isParam := paramValues[ci.ID]; isParam || ci.Op == OpReturn {
-			continue
-		}
-		idMap[ci.ID] = fn.newValueID()
-	}
-	var returnValue *Value
-	for _, ci := range calleeBlock.Instrs {
-		if ci.Op == OpReturn && len(ci.Args) > 0 {
-			returnValue = ci.Args[0]
-			break
-		}
-	}
-	for _, ci := range calleeBlock.Instrs {
-		if _, isParam := paramValues[ci.ID]; isParam || ci.Op == OpReturn {
-			continue
-		}
-		newInstr := &Instr{
-			ID:    idMap[ci.ID],
-			Op:    ci.Op,
-			Type:  ci.Type,
-			Aux:   remapAux(ci, fn, calleeFn),
-			Aux2:  ci.Aux2,
-			Block: block,
-		}
-		newInstr.copySourceFrom(call)
-		newInstr.Args = make([]*Value, len(ci.Args))
-		for j, arg := range ci.Args {
-			newInstr.Args[j] = remapValue(arg, idMap, paramValues)
-		}
-		block.Instrs = append(block.Instrs, newInstr)
-	}
-	copyInlinedFixedTableConstructors(fn, calleeFn, idMap)
-	result := remapValue(returnValue, idMap, paramValues)
-	if result == nil {
-		nilConst := emitIRInstr(fn, block, OpConstNil, TypeAny, nil, 0, 0)
-		nilConst.copySourceFrom(call)
-		block.Instrs = append(block.Instrs, nilConst)
-		return nilConst.Value()
-	}
-	if result.Def != nil && result.Def.Type == TypeInt {
-		return result
-	}
-	floor := emitIRInstr(fn, block, OpFloor, TypeInt, []*Value{result}, 0, 0)
-	floor.copySourceFrom(call)
-	block.Instrs = append(block.Instrs, floor)
-	return floor.Value()
 }
