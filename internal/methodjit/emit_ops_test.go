@@ -182,6 +182,49 @@ func TestEmit_ModIntSignMatchesVM(t *testing.T) {
 	}
 }
 
+func TestEmit_GenericModConstRHS_IntAndFloatInputs(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "generic_mod_const", NumParams: 1, MaxStack: 1},
+		NumRegs: 1,
+	}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	arg := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeAny, Aux: 0, Block: b}
+	divisor := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 7, Block: b}
+	mod := &Instr{ID: fn.newValueID(), Op: OpMod, Type: TypeAny,
+		Args: []*Value{arg.Value(), divisor.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown,
+		Args: []*Value{mod.Value()}, Block: b}
+	b.Instrs = []*Instr{arg, divisor, mod, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	cf, err := Compile(fn, AllocateRegisters(fn))
+	if err != nil {
+		t.Fatalf("Compile error: %v", err)
+	}
+	defer cf.Code.Free()
+
+	tests := []struct {
+		name string
+		arg  runtime.Value
+		want runtime.Value
+	}{
+		{name: "positive int", arg: runtime.IntValue(30), want: runtime.IntValue(2)},
+		{name: "negative int", arg: runtime.IntValue(-5), want: runtime.IntValue(2)},
+		{name: "float", arg: runtime.FloatValue(30.5), want: runtime.FloatValue(2.5)},
+	}
+	for _, tt := range tests {
+		result, err := cf.Execute([]runtime.Value{tt.arg})
+		if err != nil {
+			t.Fatalf("%s Execute error: %v", tt.name, err)
+		}
+		if len(result) != 1 {
+			t.Fatalf("%s result len=%d, want 1", tt.name, len(result))
+		}
+		assertValuesEqual(t, tt.name, result[0], tt.want)
+	}
+}
+
 func TestEmit_ModIntPositivePowerOfTwoUsesBitfield(t *testing.T) {
 	src := `func f(n) {
 		if n < 0 { return -1 }

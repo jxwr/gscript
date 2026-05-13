@@ -825,6 +825,11 @@ func (ec *emitContext) emitGenericMod(instr *Instr) {
 	}
 	asm := ec.asm
 
+	if divisor, ok := constIntFromValue(instr.Args[1]); ok {
+		ec.emitGenericModConstRHS(instr, divisor)
+		return
+	}
+
 	if instr.Type == TypeFloat {
 		lhsF := ec.resolveRawFloat(instr.Args[0].ID, jit.D0)
 		rhsF := ec.resolveRawFloat(instr.Args[1].ID, jit.D1)
@@ -908,6 +913,52 @@ func (ec *emitContext) emitGenericMod(instr *Instr) {
 	asm.FMOVtoFP(jit.D2, jit.X2)
 	asm.FCMPd(jit.D1, jit.D2)
 	asm.BCond(jit.CondEQ, fallback)
+	emitFloatMod(asm)
+	asm.FMOVtoGP(jit.X0, jit.D0)
+	ec.storeResultNB(jit.X0, instr.ID)
+	asm.B(done)
+
+	asm.Label(fallback)
+	ec.emitOpExit(instr)
+
+	asm.Label(done)
+}
+
+func (ec *emitContext) emitGenericModConstRHS(instr *Instr, divisor int64) {
+	if len(instr.Args) < 2 || instr.Args[0] == nil {
+		return
+	}
+	if divisor == 0 {
+		ec.emitOpExit(instr)
+		return
+	}
+	asm := ec.asm
+	lhsReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	if lhsReg != jit.X0 {
+		asm.MOVreg(jit.X0, lhsReg)
+	}
+
+	done := ec.uniqueLabel("mod_const_done")
+	floatPath := ec.uniqueLabel("mod_const_float")
+	fallback := ec.uniqueLabel("mod_const_fallback")
+
+	asm.MOVimm16(jit.X3, jit.NB_TagIntShr48)
+	emitCheckIsIntWithTag(asm, jit.X0, jit.X2, jit.X3)
+	asm.BCond(jit.CondNE, floatPath)
+
+	jit.EmitUnboxInt(asm, jit.X0, jit.X0)
+	asm.LoadImm64(jit.X1, divisor)
+	ec.emitIntModX0X1(instr)
+	jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
+	ec.storeResultNB(jit.X0, instr.ID)
+	asm.B(done)
+
+	asm.Label(floatPath)
+	jit.EmitIsTagged(asm, jit.X0, jit.X2)
+	asm.BCond(jit.CondEQ, fallback)
+	asm.FMOVtoFP(jit.D0, jit.X0)
+	asm.LoadImm64(jit.X1, divisor)
+	asm.SCVTF(jit.D1, jit.X1)
 	emitFloatMod(asm)
 	asm.FMOVtoGP(jit.X0, jit.D0)
 	ec.storeResultNB(jit.X0, instr.ID)
