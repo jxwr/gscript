@@ -29,9 +29,6 @@ func TableIntArrayKernelPass(fn *Function) (*Function, error) {
 	if fn == nil {
 		return fn, nil
 	}
-	if !functionHasNoTableMetatableMutationSurface(fn) {
-		return fn, nil
-	}
 	li := computeLoopInfo(fn)
 	if li == nil || !li.hasLoops() {
 		return fn, nil
@@ -66,7 +63,7 @@ func TableIntArrayKernelPass(fn *Function) (*Function, error) {
 			functionRemarks(fn).Add("TableIntArrayKernel", "changed", cand.preheader.ID, kernel.ID, kernel.Op,
 				"guarded prefix-copy loop with scalar fallback")
 		}
-		if cand, ok := tableArraySwapPairsCandidate(fn, header, li.headerBlocks[header.ID]); ok {
+		if cand, reason, ok := tableArraySwapPairsCandidate(fn, header, li.headerBlocks[header.ID]); ok {
 			kernel := &Instr{
 				ID:    fn.newValueID(),
 				Op:    OpTableArraySwapPairs,
@@ -79,9 +76,28 @@ func TableIntArrayKernelPass(fn *Function) (*Function, error) {
 			insertKernelBranch(cand.preheader, cand.exit, cand.header, kernel)
 			functionRemarks(fn).Add("TableIntArrayKernel", "changed", cand.preheader.ID, kernel.ID, kernel.Op,
 				"guarded adjacent pair-swap loop with scalar fallback")
+		} else if reason != "" && loopBodyHasOp(li.headerBlocks[header.ID], fn, OpTableArraySwap) {
+			functionRemarks(fn).Add("TableIntArrayKernel", "missed", header.ID, 0, OpTableArraySwapPairs, reason)
 		}
 	}
 	return fn, nil
+}
+
+func loopBodyHasOp(bodySet map[int]bool, fn *Function, op Op) bool {
+	if bodySet == nil || fn == nil {
+		return false
+	}
+	for _, block := range fn.Blocks {
+		if block == nil || !bodySet[block.ID] {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr != nil && instr.Op == op {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func insertKernelBranch(preheader, success, fallback *Block, kernel *Instr) {
@@ -160,8 +176,8 @@ func tableIntArrayCopyPrefixCandidate(header *Block, bodySet map[int]bool) (tabl
 	} else {
 		return cand, false
 	}
-	body, exit := header.Succs[0], header.Succs[1]
-	if body == nil || exit == nil || !bodySet[body.ID] {
+	body, exit := branchLoopBodyExit(header, bodySet)
+	if body == nil || exit == nil {
 		return cand, false
 	}
 	if len(body.Succs) != 1 || body.Succs[0] != header || blockTerminator(body) == nil || blockTerminator(body).Op != OpJump {
@@ -185,27 +201,27 @@ func tableIntArrayCopyPrefixCandidate(header *Block, bodySet map[int]bool) (tabl
 	return cand, true
 }
 
-func tableArraySwapPairsCandidate(fn *Function, header *Block, bodySet map[int]bool) (tableArraySwapPairsLoop, bool) {
+func tableArraySwapPairsCandidate(fn *Function, header *Block, bodySet map[int]bool) (tableArraySwapPairsLoop, string, bool) {
 	var cand tableArraySwapPairsLoop
 	if fn == nil || header == nil || bodySet == nil {
-		return cand, false
+		return cand, "", false
 	}
 	preheader := tableArrayStoreLoopPreheader(header, bodySet)
 	if preheader == nil || blockTerminator(preheader) == nil || blockTerminator(preheader).Op != OpJump {
-		return cand, false
+		return cand, "loop has no single jump preheader", false
 	}
 	term := blockTerminator(header)
 	if term == nil || term.Op != OpBranch || len(term.Args) != 1 || len(header.Succs) != 2 {
-		return cand, false
+		return cand, "loop header is not a two-way branch", false
 	}
 	cond := term.Args[0]
 	if cond == nil || cond.Def == nil || cond.Def.Op != OpLeInt || len(cond.Def.Args) != 2 {
-		return cand, false
+		return cand, "loop condition is not <= integer induction limit", false
 	}
 	idx := cond.Def.Args[0]
 	hi := cond.Def.Args[1]
 	if idx == nil || idx.Def == nil || idx.Def.Op != OpAddInt || len(idx.Def.Args) != 2 || hi == nil {
-		return cand, false
+		return cand, "loop condition does not expose incremented index", false
 	}
 	var phi *Value
 	if isHeaderPhi(idx.Def.Args[0], header) && isConstIntValue(idx.Def.Args[1], 2) {
@@ -213,27 +229,27 @@ func tableArraySwapPairsCandidate(fn *Function, header *Block, bodySet map[int]b
 	} else if isHeaderPhi(idx.Def.Args[1], header) && isConstIntValue(idx.Def.Args[0], 2) {
 		phi = idx.Def.Args[1]
 	} else {
-		return cand, false
+		return cand, "loop induction step is not +2 from header phi", false
 	}
-	body, exit := header.Succs[0], header.Succs[1]
-	if body == nil || exit == nil || !bodySet[body.ID] {
-		return cand, false
+	body, exit := branchLoopBodyExit(header, bodySet)
+	if body == nil || exit == nil {
+		return cand, "could not identify loop body and exit successors", false
 	}
 	if len(body.Succs) != 1 || body.Succs[0] != header || blockTerminator(body) == nil || blockTerminator(body).Op != OpJump {
-		return cand, false
+		return cand, "loop body is not a single-block latch", false
 	}
 	seed := phiArgForPred(phi.Def, header, preheader)
 	next := phiArgForPred(phi.Def, header, body)
 	if !sameSSAValue(next, idx) {
-		return cand, false
+		return cand, "loop phi backedge is not the incremented index", false
 	}
 	start, ok := constPlus(seed, 2)
 	if !ok {
-		return cand, false
+		return cand, "loop start is not a constant seed plus two", false
 	}
 	match, ok := matchSwapPairsBody(body, idx)
 	if !ok {
-		return cand, false
+		return cand, "loop body is not adjacent table-array swap", false
 	}
 	startInstr := &Instr{
 		ID:    fn.newValueID(),
@@ -252,7 +268,25 @@ func tableArraySwapPairsCandidate(fn *Function, header *Block, bodySet map[int]b
 	cand.hi = hi
 	cand.kind = match.kind
 	cand.source = match.source
-	return cand, true
+	return cand, "", true
+}
+
+func branchLoopBodyExit(header *Block, bodySet map[int]bool) (*Block, *Block) {
+	if header == nil || bodySet == nil || len(header.Succs) != 2 {
+		return nil, nil
+	}
+	a, b := header.Succs[0], header.Succs[1]
+	if a == nil || b == nil {
+		return nil, nil
+	}
+	switch {
+	case bodySet[a.ID] && !bodySet[b.ID]:
+		return a, b
+	case bodySet[b.ID] && !bodySet[a.ID]:
+		return b, a
+	default:
+		return nil, nil
+	}
 }
 
 type swapPairsBodyMatch struct {
