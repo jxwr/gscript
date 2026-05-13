@@ -523,10 +523,37 @@ func fieldShapeInlineSplitCaseRejectReason(c FieldPolyShapeCase, callArgs []*Val
 			return "overflow-versioned-loop"
 		}
 	}
+	if callerLoopBlock {
+		if reason := fieldShapeLoopPreInlineUnsafeReason(calleeFn); reason != "" {
+			return reason
+		}
+	}
 	if config.RequirePureNumeric {
 		if reason := pureNumericInlineRejectReason(calleeFn); reason != "" {
 			_ = reason
 			return "not-pure-numeric"
+		}
+	}
+	return ""
+}
+
+func fieldShapeLoopPreInlineUnsafeReason(calleeFn *Function) string {
+	if calleeFn == nil {
+		return "callee-graph"
+	}
+	for _, block := range calleeFn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			if instr.Op == OpReturn || instr.Op == OpLoadSlot || instr.Op == OpStoreSlot ||
+				instr.Op == OpConstInt || instr.Op == OpConstFloat || instr.Op == OpConstBool ||
+				instr.Op == OpConstNil || instr.Op == OpConstString {
+				continue
+			}
+			if !fieldShapeSplitInlineOpSafe(instr.Op) {
+				return "loop-inline-exit-unsafe"
+			}
 		}
 	}
 	return ""
