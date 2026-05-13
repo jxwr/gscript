@@ -16,6 +16,7 @@ type LoopDiagnostic struct {
 	Ops              LoopOpCounts        `json:"ops"`
 	HeaderClobbers   []LoopValuePressure `json:"header_clobbers,omitempty"`
 	InvariantReloads []LoopValuePressure `json:"invariant_reloads,omitempty"`
+	FrameTraffic     []LoopValuePressure `json:"frame_traffic,omitempty"`
 	Notes            []string            `json:"notes,omitempty"`
 }
 
@@ -71,6 +72,13 @@ func BuildLoopDiagnostics(fn *Function, alloc *RegAllocation) []LoopDiagnostic {
 	headerFPRegs := li.computeHeaderExitFPRegs(fn, alloc)
 	safeHdrRegs := computeSafeHeaderRegs(fn, li, alloc, headerRegs)
 	safeHdrFPRegs := computeSafeHeaderFPRegs(fn, li, alloc, headerFPRegs)
+	blockLiveIn, _ := computeBlockLiveness(fn)
+	rawIntCarryNoStore := map[int]bool(nil)
+	if enableSinglePredRawIntCarry(fn) {
+		rawIntCarryNoStore = computeSinglePredRawIntStoreElision(fn, alloc, blockLiveIn)
+	}
+	loopPhiOnlyArgs := computeLoopPhiArgs(fn, li, alloc, safeHdrRegs)
+	loopFPPhiOnlyArgs := computeLoopFPPhiArgs(fn, li, alloc, safeHdrFPRegs)
 
 	headers := make([]int, 0, len(li.loopHeaders))
 	for headerID := range li.loopHeaders {
@@ -89,13 +97,15 @@ func BuildLoopDiagnostics(fn *Function, alloc *RegAllocation) []LoopDiagnostic {
 		diag.HeaderClobbers = headerClobberDiagnostics(fn, alloc, body, headerID, defs,
 			crossBlockLive, headerRegs, headerFPRegs, safeHdrRegs, safeHdrFPRegs)
 		diag.InvariantReloads = invariantReloadDiagnostics(fn, alloc, body, defs, defBlocks, uses)
+		diag.FrameTraffic = frameTrafficDiagnostics(fn, alloc, body, defs, defBlocks, uses,
+			crossBlockLive, loopPhiOnlyArgs, loopFPPhiOnlyArgs, rawIntCarryNoStore)
 		if diag.Ops.FloatDiv > 0 {
 			diag.Notes = append(diag.Notes, fmt.Sprintf("%d FloatDiv op(s) remain in the loop body", diag.Ops.FloatDiv))
 		}
 		if diag.Ops.TableArrayLoad > 0 {
 			diag.Notes = append(diag.Notes, "typed array loads still carry per-load bounds checks")
 		}
-		if len(diag.HeaderClobbers)+len(diag.InvariantReloads) > 0 {
+		if len(diag.HeaderClobbers)+len(diag.InvariantReloads)+len(diag.FrameTraffic) > 0 {
 			diag.Notes = append(diag.Notes, "register pressure forces loop values through the VM frame")
 		}
 		out = append(out, diag)
@@ -251,6 +261,82 @@ func invariantReloadDiagnostics(fn *Function, alloc *RegAllocation, body map[int
 	return out
 }
 
+func frameTrafficDiagnostics(fn *Function, alloc *RegAllocation, body map[int]bool,
+	defs map[int]*Instr, defBlocks map[int]int, uses map[int][]loopUse,
+	crossBlockLive map[int]bool, loopPhiOnlyArgs, loopFPPhiOnlyArgs loopPhiArgSet,
+	rawIntCarryNoStore map[int]bool) []LoopValuePressure {
+	var out []LoopValuePressure
+	for _, block := range fn.Blocks {
+		if !body[block.ID] {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr.Op == OpPhi || instr.Op.IsTerminator() || !crossBlockLive[instr.ID] {
+				continue
+			}
+			pr, ok := alloc.ValueRegs[instr.ID]
+			if !ok {
+				continue
+			}
+			reason := ""
+			if pr.IsFloat {
+				if !isRawFloatOp(instr.Op) || loopFPPhiOnlyArgs[instr.ID] {
+					continue
+				}
+				reason = "cross-block raw float is boxed and written through by storeRawFloat"
+			} else {
+				if loopPhiOnlyArgs[instr.ID] || rawIntCarryNoStore[instr.ID] {
+					continue
+				}
+				switch {
+				case isRawIntOp(instr.Op):
+					reason = "cross-block raw int is boxed and written through by storeRawInt"
+				case isRawTablePtrOp(instr.Op):
+					reason = "cross-block raw table pointer is boxed and written through by storeRawTablePtr"
+				case isRawDataPtrOp(instr.Op):
+					reason = "cross-block raw data pointer is written through by storeRawDataPtr"
+				default:
+					reason = "cross-block boxed value is written through by storeResultNB"
+				}
+			}
+
+			pressure := loopPressure(instr.ID, defs[instr.ID], regName(pr.Reg, pr.IsFloat), nil, reason)
+			if use, ok := firstCrossBlockUse(instr.ID, defBlocks, uses); ok {
+				pressure.UseBlock = use.blockID
+				if use.instr != nil {
+					pressure.UseValueID = use.instr.ID
+					pressure.UseOp = use.instr.Op.String()
+				}
+			}
+			out = append(out, pressure)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].UseBlock != out[j].UseBlock {
+			return out[i].UseBlock < out[j].UseBlock
+		}
+		if out[i].Register != out[j].Register {
+			return out[i].Register < out[j].Register
+		}
+		return out[i].ValueID < out[j].ValueID
+	})
+	limitLoopPressure(&out, 16)
+	return out
+}
+
+func firstCrossBlockUse(valueID int, defBlocks map[int]int, uses map[int][]loopUse) (loopUse, bool) {
+	defBlock, ok := defBlocks[valueID]
+	if !ok {
+		return loopUse{}, false
+	}
+	for _, use := range uses[valueID] {
+		if use.blockID != defBlock {
+			return use, true
+		}
+	}
+	return loopUse{}, false
+}
+
 func firstRegisterClobber(fn *Function, alloc *RegAllocation, body map[int]bool, skipBlockID, reg int, isFloat bool) *Instr {
 	for _, block := range fn.Blocks {
 		if !body[block.ID] || block.ID == skipBlockID {
@@ -326,6 +412,7 @@ func FormatLoopDiagnostics(diags []LoopDiagnostic) string {
 			diag.Ops.LoopHeaderPhi, diag.Ops.LoopCarriedFloats)
 		writeLoopPressures(&b, "  header clobbers", diag.HeaderClobbers)
 		writeLoopPressures(&b, "  invariant reloads", diag.InvariantReloads)
+		writeLoopPressures(&b, "  frame traffic", diag.FrameTraffic)
 		for _, note := range diag.Notes {
 			fmt.Fprintf(&b, "  note: %s\n", note)
 		}
