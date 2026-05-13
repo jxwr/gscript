@@ -16,14 +16,24 @@ func FieldShapeCallSplitPass(fn *Function) (*Function, error) {
 	if fn == nil || len(fn.FieldPolyShapeFacts) == 0 {
 		return fn, nil
 	}
-	for _, block := range append([]*Block(nil), fn.Blocks...) {
-		for idx, instr := range block.Instrs {
-			if instr == nil || instr.Op != OpFieldCallFloor {
-				continue
+	for splits := 0; splits < 16; splits++ {
+		changed := false
+		for _, block := range append([]*Block(nil), fn.Blocks...) {
+			for idx, instr := range block.Instrs {
+				if instr == nil || instr.Op != OpFieldCallFloor {
+					continue
+				}
+				if fieldShapeSplitSingleBlockCase(fn, block, idx, instr) {
+					changed = true
+					break
+				}
 			}
-			if fieldShapeSplitSingleBlockCase(fn, block, idx, instr) {
-				return fn, nil
+			if changed {
+				break
 			}
+		}
+		if !changed {
+			break
 		}
 	}
 	return fn, nil
