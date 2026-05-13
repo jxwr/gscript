@@ -277,11 +277,15 @@ func callABITypedPeerDescriptorFor(fn *Function, instr *Instr, callee *vm.FuncPr
 	if numArgs != callee.NumParams || len(abi.Params) != numArgs {
 		return CallABIDescriptor{}, false, "argument count does not match typed-peer ABI"
 	}
-	for _, rep := range abi.Params {
+	params := callABIRefineTypedPeerParamsFromFeedback(fn, instr, abi.Params)
+	for _, rep := range params {
 		switch rep {
 		case SpecializedABIParamRawInt:
 			// The typed-peer emitter guards non-TypeInt actuals before
 			// unboxing, so global/profiled values can still use the ABI.
+		case SpecializedABIParamRawFloat:
+			// Float arguments are passed as raw IEEE bits in the same Xn slots
+			// used by the typed entry and are guarded by the caller when needed.
 		case SpecializedABIParamRawTablePtr:
 			// The native call path guards the boxed argument at runtime before
 			// passing the raw table pointer. A fixed receiver shape fact is only
@@ -295,10 +299,44 @@ func callABITypedPeerDescriptorFor(fn *Function, instr *Instr, callee *vm.FuncPr
 		NumArgs:   numArgs,
 		NumRets:   wantRets,
 		TypedPeer: true,
-		ParamReps: append([]SpecializedABIParamRep(nil), abi.Params...),
+		ParamReps: append([]SpecializedABIParamRep(nil), params...),
 		ReturnRep: abi.Return,
 		ArgFacts:  cloneCallABIArgFacts(argFacts),
 	}, true, ""
+}
+
+func callABIRefineTypedPeerParamsFromFeedback(fn *Function, instr *Instr, params []SpecializedABIParamRep) []SpecializedABIParamRep {
+	out := append([]SpecializedABIParamRep(nil), params...)
+	if instr == nil {
+		return out
+	}
+	for i := range out {
+		if i+1 < len(instr.Args) && instr.Args[i+1] != nil &&
+			instr.Args[i+1].Def != nil && instr.Args[i+1].Def.Type == TypeFloat &&
+			out[i] == SpecializedABIParamRawInt {
+			out[i] = SpecializedABIParamRawFloat
+		}
+	}
+	if fn == nil || fn.Proto == nil || instr == nil || !instr.HasSource ||
+		instr.SourcePC < 0 || instr.SourcePC >= len(fn.Proto.CallSiteFeedback) {
+		return out
+	}
+	fb := fn.Proto.CallSiteFeedback[instr.SourcePC]
+	if fb.Count < wholeCallKernelMinStableObservations ||
+		fb.Flags&(vm.CallSiteCalleePolymorphic|vm.CallSiteArityPolymorphic) != 0 ||
+		int(fb.NArgs) != len(instr.Args)-1 ||
+		fb.ResultArity != uint8(instr.Aux2) {
+		return out
+	}
+	for i := range out {
+		if i >= len(fb.ArgTypes) {
+			break
+		}
+		if out[i] == SpecializedABIParamRawInt && fb.ArgTypes[i] == vm.FBFloat {
+			out[i] = SpecializedABIParamRawFloat
+		}
+	}
+	return out
 }
 
 func callABITypedPeerArgFacts(fn *Function, instr *Instr, callee *vm.FuncProto) map[int]FixedShapeTableFact {

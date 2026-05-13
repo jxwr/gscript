@@ -48,5 +48,6 @@ func clearFuncProtoDirectEntries(proto *vm.FuncProto) bool {
 	proto.Tier2LeafEntryPtr = 0
 	proto.Tier2NumericEntryPtr = 0
 	proto.Tier2TypedEntryPtr = 0
+	proto.Tier2TypedEntryABI = 0
 	return changed
 }

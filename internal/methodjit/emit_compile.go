@@ -1453,6 +1453,20 @@ func (ec *emitContext) emitTypedSelfEntry() {
 					}
 				}
 			}
+		case SpecializedABIParamRawFloat:
+			asm.STR(src, mRegRegs, slotOffset(i))
+			if hasLoad {
+				if pr, ok := ec.alloc.ValueRegs[load.ID]; ok {
+					if pr.IsFloat {
+						asm.FMOVtoFP(jit.FReg(pr.Reg), src)
+					} else {
+						dst := jit.Reg(pr.Reg)
+						if dst != src {
+							asm.MOVreg(dst, src)
+						}
+					}
+				}
+			}
 		case SpecializedABIParamRawTablePtr:
 			emitBoxTablePtr(asm, jit.X16, src, jit.X17)
 			asm.STR(jit.X16, mRegRegs, slotOffset(i))

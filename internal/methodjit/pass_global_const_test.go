@@ -34,7 +34,7 @@ func f() {
 	}
 }
 
-func TestGlobalConstSpecializationSkipsEffectfulFunction(t *testing.T) {
+func TestGlobalConstSpecializationRewritesEffectfulFunctionWithGuard(t *testing.T) {
 	proto := compileFunction(t, `
 func f() {
     g()
@@ -48,8 +48,29 @@ func f() {
 	if err != nil {
 		t.Fatalf("globalConstSpecializationPass: %v", err)
 	}
-	if countOpHelper(got, OpGuardGlobalConst) != 0 || countOpHelper(got, OpGetGlobal) == 0 {
-		t.Fatalf("effectful function should not be global-const specialized:\n%s", Print(got))
+	if countOpHelper(got, OpGuardGlobalConst) != 1 || countOpHelper(got, OpGetGlobal) != 1 {
+		t.Fatalf("effectful function should keep call global and guard numeric global:\n%s", Print(got))
+	}
+	if countOpHelper(got, OpConstInt) == 0 {
+		t.Fatalf("expected rewritten ConstInt:\n%s", Print(got))
+	}
+}
+
+func TestBuildProtoNumericStableGlobals(t *testing.T) {
+	proto := compileTop(t, `
+N := 1000
+dt := 0.01
+func step() {}
+step()
+`)
+	values := buildProtoNumericStableGlobals(proto)
+	nIdx := findConstStringIndex(t, proto, "N")
+	dtIdx := findConstStringIndex(t, proto, "dt")
+	if got := values[nIdx]; !got.IsInt() || got.Int() != 1000 {
+		t.Fatalf("N value=%v, want int 1000", got)
+	}
+	if got := values[dtIdx]; !got.IsFloat() || got.Float() != 0.01 {
+		t.Fatalf("dt value=%v, want float 0.01", got)
 	}
 }
 

@@ -1236,6 +1236,9 @@ func (ec *emitContext) emitCallNativeTypedPeerIfEligible(instr *Instr) bool {
 	asm.STR(jit.X6, jit.SP, rawPeerFuncOff)
 	ec.emitTypedPeerArgsInRegsAndSave(instr, desc, fallbackLabel)
 
+	// Argument guards use X6 as scratch. Restore the callee closure value
+	// before validating and extracting the typed entry.
+	asm.LDR(jit.X6, jit.SP, rawPeerFuncOff)
 	asm.LSRimm(jit.X7, jit.X6, uint8(nbPtrSubShift))
 	asm.LoadImm64(jit.X8, int64((jit.NB_TagPtrShr48<<4)|nbPtrSubVMClosure))
 	asm.CMPreg(jit.X7, jit.X8)
@@ -1248,6 +1251,7 @@ func (ec *emitContext) emitCallNativeTypedPeerIfEligible(instr *Instr) bool {
 	asm.BCond(jit.CondNE, fallbackLabel)
 	asm.LDR(jit.X16, jit.X7, funcProtoOffTier2TypedEntryPtr)
 	asm.CBZ(jit.X16, fallbackLabel)
+	ec.emitTypedPeerABICheck(jit.X7, desc, fallbackLabel)
 
 	asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
 	asm.CMPimm(jit.X8, maxNativeCallDepth)
@@ -1583,6 +1587,7 @@ func (ec *emitContext) emitCallNativeFieldShapeTypedPeerIfEligible(instr *Instr)
 		}
 		asm.LDR(jit.X16, jit.X7, funcProtoOffTier2TypedEntryPtr)
 		asm.CBZ(jit.X16, fallbackLabel)
+		ec.emitTypedPeerABICheck(jit.X7, c.desc, fallbackLabel)
 
 		if !c.callee.LeafNoCall {
 			asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
@@ -1782,6 +1787,7 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 		asm.Label(validateMethodLabel + "_entry")
 		asm.LDR(jit.X16, jit.X7, funcProtoOffTier2TypedEntryPtr)
 		asm.CBZ(jit.X16, callFallbackLabel)
+		ec.emitTypedPeerABICheck(jit.X7, c.desc, callFallbackLabel)
 
 		if !c.callee.LeafNoCall {
 			asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
@@ -1987,6 +1993,7 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNativeSingleCase(instr *Inst
 	asm.Label(validateMethodLabel + "_entry")
 	asm.LDR(jit.X16, jit.X7, funcProtoOffTier2TypedEntryPtr)
 	asm.CBZ(jit.X16, callFallbackLabel)
+	ec.emitTypedPeerABICheck(jit.X7, c.desc, callFallbackLabel)
 
 	if !c.callee.LeafNoCall {
 		asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
@@ -2664,6 +2671,19 @@ func (ec *emitContext) emitTypedPeerArgsFromValuesInRegsAndSave(args []*Value, d
 				jit.EmitUnboxInt(asm, dst, dst)
 			}
 			asm.STR(dst, jit.SP, rawPeerArgsOff+i*jit.ValueSize)
+		case SpecializedABIParamRawFloat:
+			if ec.irTypes[arg.ID] == TypeFloat {
+				src := ec.resolveRawFloat(arg.ID, jit.FReg(int(jit.D0)+i))
+				asm.FMOVtoGP(dst, src)
+			} else {
+				src := ec.resolveValueNB(arg.ID, dst)
+				if src != dst {
+					asm.MOVreg(dst, src)
+				}
+				jit.EmitIsTagged(asm, dst, jit.X6)
+				asm.BCond(jit.CondEQ, fallbackLabel)
+			}
+			asm.STR(dst, jit.SP, rawPeerArgsOff+i*jit.ValueSize)
 		case SpecializedABIParamRawTablePtr:
 			src := ec.resolveValueNB(arg.ID, dst)
 			if src != dst {
@@ -2684,6 +2704,23 @@ func (ec *emitContext) emitTypedPeerArgsFromValuesInRegsAndSave(args []*Value, d
 			asm.B(fallbackLabel)
 		}
 	}
+}
+
+func (ec *emitContext) emitTypedPeerABICheck(protoReg jit.Reg, desc CallABIDescriptor, fallbackLabel string) {
+	sig := typedABISignature(TypedSelfABI{
+		Eligible:  true,
+		NumParams: desc.NumArgs,
+		Params:    desc.ParamReps,
+		Return:    desc.ReturnRep,
+	})
+	if sig == 0 {
+		ec.asm.B(fallbackLabel)
+		return
+	}
+	ec.asm.LDR(jit.X9, protoReg, funcProtoOffTier2TypedEntryABI)
+	ec.asm.LoadImm64(jit.X8, int64(sig))
+	ec.asm.CMPreg(jit.X9, jit.X8)
+	ec.asm.BCond(jit.CondNE, fallbackLabel)
 }
 
 func (ec *emitContext) emitMaterializeTypedPeerCallFrame(funcSlot, nArgs int, desc CallABIDescriptor) {

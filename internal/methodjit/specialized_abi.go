@@ -28,6 +28,7 @@ type SpecializedABIParamRep uint8
 const (
 	SpecializedABIParamBoxed SpecializedABIParamRep = iota
 	SpecializedABIParamRawInt
+	SpecializedABIParamRawFloat
 	SpecializedABIParamRawTablePtr
 )
 
@@ -56,6 +57,8 @@ func specializedABIParamName(rep SpecializedABIParamRep) string {
 	switch rep {
 	case SpecializedABIParamRawInt:
 		return "raw-int"
+	case SpecializedABIParamRawFloat:
+		return "raw-float"
 	case SpecializedABIParamRawTablePtr:
 		return "raw-table"
 	case SpecializedABIParamBoxed:
@@ -63,6 +66,19 @@ func specializedABIParamName(rep SpecializedABIParamRep) string {
 	default:
 		return "unknown"
 	}
+}
+
+func typedABISignature(abi TypedSelfABI) uint64 {
+	if !abi.Eligible {
+		return 0
+	}
+	sig := uint64(0x54414249) // "TABI"
+	sig = sig*131 + uint64(abi.NumParams)
+	sig = sig*131 + uint64(abi.Return)
+	for _, rep := range abi.Params {
+		sig = sig*131 + uint64(rep+1)
+	}
+	return sig
 }
 
 func specializedABIParamSummary(params []SpecializedABIParamRep) string {
@@ -819,12 +835,39 @@ func inferTypedSelfABIParams(proto *vm.FuncProto) ([]SpecializedABIParamRep, str
 		params[idx] = rep
 		return ""
 	}
+	setParamFromNumericPeer := func(slot int, peer specializedSlotRep, op vm.Opcode) string {
+		if typedSelfSlotIsFloat(peer) {
+			return setParam(slot, SpecializedABIParamRawFloat)
+		}
+		if op == vm.OP_DIV {
+			return setParam(slot, SpecializedABIParamRawInt)
+		}
+		return setParam(slot, SpecializedABIParamRawInt)
+	}
+	slotReps := make([]specializedSlotRep, maxTrackedSlots)
+	resetSlotReps := func() {
+		for i := range slotReps {
+			slotReps[i] = specializedSlotUnknown
+		}
+		for i, rep := range params {
+			switch rep {
+			case SpecializedABIParamRawInt:
+				slotReps[i] = specializedSlotRawInt
+			case SpecializedABIParamRawFloat:
+				slotReps[i] = specializedSlotRawFloat
+			case SpecializedABIParamRawTablePtr:
+				slotReps[i] = specializedSlotRawTable
+			}
+		}
+	}
 
 	resetOrigins()
+	resetSlotReps()
 	branchTargets := specializedABIBranchTargets(proto.Code)
 	for pc, inst := range proto.Code {
 		if pc > 0 && branchTargets[pc] {
 			resetOrigins()
+			resetSlotReps()
 		}
 		op := vm.DecodeOp(inst)
 		a := vm.DecodeA(inst)
@@ -834,23 +877,32 @@ func inferTypedSelfABIParams(proto *vm.FuncProto) ([]SpecializedABIParamRep, str
 		case vm.OP_MOVE:
 			if a >= 0 && a < len(origins) {
 				origins[a] = -1
+				slotReps[a] = specializedSlotUnknown
 				if b >= 0 && b < len(origins) {
 					origins[a] = origins[b]
+					slotReps[a] = slotReps[b]
 				}
 			}
 		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_DIV, vm.OP_MOD:
+			leftRep, _ := typedSelfInferRKNumericRep(slotReps, proto, b)
+			rightRep, _ := typedSelfInferRKNumericRep(slotReps, proto, c)
 			if b < vm.RKBit {
-				if reason := setParam(b, SpecializedABIParamRawInt); reason != "" {
+				if reason := setParamFromNumericPeer(b, rightRep, op); reason != "" {
 					return nil, reason
 				}
 			}
 			if c < vm.RKBit {
-				if reason := setParam(c, SpecializedABIParamRawInt); reason != "" {
+				if reason := setParamFromNumericPeer(c, leftRep, op); reason != "" {
 					return nil, reason
 				}
 			}
 			if a >= 0 && a < len(origins) {
 				origins[a] = -1
+				if op == vm.OP_DIV || typedSelfSlotIsFloat(leftRep) || typedSelfSlotIsFloat(rightRep) {
+					slotReps[a] = specializedSlotRawFloat
+				} else {
+					slotReps[a] = specializedSlotRawInt
+				}
 			}
 		case vm.OP_UNM:
 			if reason := setParam(b, SpecializedABIParamRawInt); reason != "" {
@@ -858,6 +910,7 @@ func inferTypedSelfABIParams(proto *vm.FuncProto) ([]SpecializedABIParamRep, str
 			}
 			if a >= 0 && a < len(origins) {
 				origins[a] = -1
+				slotReps[a] = specializedSlotRawInt
 			}
 		case vm.OP_EQ, vm.OP_LT, vm.OP_LE:
 			if b < vm.RKBit && typedSelfConstOrOriginSuggestsInt(proto, c) {
@@ -881,6 +934,16 @@ func inferTypedSelfABIParams(proto *vm.FuncProto) ([]SpecializedABIParamRep, str
 			}
 			if a >= 0 && a < len(origins) && (op == vm.OP_GETFIELD || op == vm.OP_GETTABLE) {
 				origins[a] = -1
+				switch {
+				case typedSelfFeedbackResultIsFloat(proto, pc):
+					slotReps[a] = specializedSlotRawFloat
+				case typedSelfFeedbackResultIsInt(proto, pc):
+					slotReps[a] = specializedSlotRawInt
+				case typedSelfFeedbackResultIsTable(proto, pc):
+					slotReps[a] = specializedSlotRawTable
+				default:
+					slotReps[a] = specializedSlotUnknown
+				}
 			}
 		case vm.OP_SETFIELD:
 			if reason := setParam(a, SpecializedABIParamRawTablePtr); reason != "" {
@@ -913,6 +976,7 @@ func inferTypedSelfABIParams(proto *vm.FuncProto) ([]SpecializedABIParamRep, str
 			vm.OP_CLOSURE, vm.OP_VARARG, vm.OP_SELF, vm.OP_APPEND:
 			if a >= 0 && a < len(origins) {
 				origins[a] = -1
+				slotReps[a] = specializedSlotUnknown
 			}
 		}
 	}
@@ -940,6 +1004,8 @@ func typedSelfResetSlots(slots []specializedSlotRep, params []SpecializedABIPara
 		switch rep {
 		case SpecializedABIParamRawInt:
 			slots[i] = specializedSlotRawInt
+		case SpecializedABIParamRawFloat:
+			slots[i] = specializedSlotRawFloat
 		case SpecializedABIParamRawTablePtr:
 			slots[i] = specializedSlotRawTable
 		}
@@ -1562,11 +1628,30 @@ func typedSelfSlotMatchesParam(rep specializedSlotRep, param SpecializedABIParam
 	switch param {
 	case SpecializedABIParamRawInt:
 		return typedSelfSlotIsInt(rep)
+	case SpecializedABIParamRawFloat:
+		return typedSelfSlotIsFloat(rep)
 	case SpecializedABIParamRawTablePtr:
 		return typedSelfSlotIsTable(rep)
 	default:
 		return false
 	}
+}
+
+func typedSelfInferRKNumericRep(slots []specializedSlotRep, proto *vm.FuncProto, idx int) (specializedSlotRep, bool) {
+	if idx >= vm.RKBit {
+		k := idx - vm.RKBit
+		if specializedABIConstIsFloat(proto, k) {
+			return specializedSlotRawFloat, true
+		}
+		if specializedABIConstIsInt(proto, k) {
+			return specializedSlotRawInt, true
+		}
+		return specializedSlotUnknown, false
+	}
+	if idx >= 0 && idx < len(slots) && typedSelfSlotIsNumeric(slots[idx]) {
+		return slots[idx], true
+	}
+	return specializedSlotUnknown, false
 }
 
 func typedSelfReturnRep(slot specializedSlotRep, current SpecializedABIReturnRep) SpecializedABIReturnRep {

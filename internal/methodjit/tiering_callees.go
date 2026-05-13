@@ -26,6 +26,9 @@ func (tm *TieringManager) buildInlineGlobals() map[string]*vm.FuncProto {
 
 func (tm *TieringManager) buildNumericGlobalConstValues(proto *vm.FuncProto) map[int]runtime.Value {
 	values := make(map[int]runtime.Value)
+	for constIdx, v := range buildProtoNumericStableGlobals(proto) {
+		values[constIdx] = v
+	}
 	if tm == nil || tm.callVM == nil || proto == nil {
 		return values
 	}
@@ -42,6 +45,59 @@ func (tm *TieringManager) buildNumericGlobalConstValues(proto *vm.FuncProto) map
 			continue
 		}
 		values[constIdx] = v
+	}
+	return values
+}
+
+func buildProtoNumericStableGlobals(proto *vm.FuncProto) map[int]runtime.Value {
+	values := make(map[int]runtime.Value)
+	if proto == nil {
+		return values
+	}
+	invalid := make(map[int]bool)
+	regValues := make(map[int]runtime.Value)
+	for _, inst := range proto.Code {
+		op := vm.DecodeOp(inst)
+		a := vm.DecodeA(inst)
+		switch op {
+		case vm.OP_LOADINT:
+			regValues[a] = runtime.IntValue(int64(vm.DecodesBx(inst)))
+		case vm.OP_LOADK:
+			k := vm.DecodeBx(inst)
+			if k >= 0 && k < len(proto.Constants) && (proto.Constants[k].IsInt() || proto.Constants[k].IsFloat()) {
+				regValues[a] = proto.Constants[k]
+			} else {
+				delete(regValues, a)
+			}
+		case vm.OP_MOVE:
+			b := vm.DecodeB(inst)
+			if v, ok := regValues[b]; ok {
+				regValues[a] = v
+			} else {
+				delete(regValues, a)
+			}
+		case vm.OP_SETGLOBAL:
+			constIdx := vm.DecodeBx(inst)
+			if constIdx < 0 || constIdx >= len(proto.Constants) || !proto.Constants[constIdx].IsString() || invalid[constIdx] {
+				continue
+			}
+			v, ok := regValues[a]
+			if !ok || (!v.IsInt() && !v.IsFloat()) {
+				invalid[constIdx] = true
+				delete(values, constIdx)
+				continue
+			}
+			if prev, seen := values[constIdx]; seen && prev != v {
+				invalid[constIdx] = true
+				delete(values, constIdx)
+				continue
+			}
+			values[constIdx] = v
+		case vm.OP_CLOSE:
+			continue
+		default:
+			delete(regValues, a)
+		}
 	}
 	return values
 }

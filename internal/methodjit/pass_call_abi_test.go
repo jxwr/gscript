@@ -85,6 +85,36 @@ result := inc(41)`
 	}
 }
 
+func TestCallABIRefinesRawIntParamToRawFloatFromIRType(t *testing.T) {
+	proto := &vm.FuncProto{Name: "caller", Code: make([]uint32, 1)}
+	proto.EnsureFeedback()
+	call := &Instr{
+		ID:        10,
+		Op:        OpCall,
+		HasSource: true,
+		SourcePC:  0,
+		Aux2:      1,
+		Args: []*Value{
+			{ID: 1, Def: &Instr{ID: 1, Type: TypeFunction}},
+			{ID: 2, Def: &Instr{ID: 2, Type: TypeTable}},
+			{ID: 3, Def: &Instr{ID: 3, Type: TypeInt}},
+			{ID: 4, Def: &Instr{ID: 4, Type: TypeFloat}},
+		},
+	}
+	params := callABIRefineTypedPeerParamsFromFeedback(
+		&Function{Proto: proto},
+		call,
+		[]SpecializedABIParamRep{
+			SpecializedABIParamRawTablePtr,
+			SpecializedABIParamRawInt,
+			SpecializedABIParamRawInt,
+		},
+	)
+	if got, want := params[2], SpecializedABIParamRawFloat; got != want {
+		t.Fatalf("param[2]=%s want %s", specializedABIParamName(got), specializedABIParamName(want))
+	}
+}
+
 func TestCallReturnProjection_FoldsRawIntCallFloor(t *testing.T) {
 	fn := &Function{NumRegs: 4, nextID: 5}
 	b := &Block{ID: 0}

@@ -9,7 +9,7 @@ func GlobalConstSpecializationPass(values map[int]runtime.Value) PassFunc {
 }
 
 func globalConstSpecializationPass(fn *Function, values map[int]runtime.Value) (*Function, error) {
-	if fn == nil || len(values) == 0 || !globalConstFunctionSafe(fn) {
+	if fn == nil || len(values) == 0 {
 		return fn, nil
 	}
 	for _, block := range fn.Blocks {
