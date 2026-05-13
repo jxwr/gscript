@@ -423,7 +423,7 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 		asm.BCond(jit.CondNE, deoptLabel)
 		asm.SBFX(jit.X1, jit.X1, 0, 48)
 	}
-	if kv, isConst := ec.constInts[keyID]; (!isConst || kv < 0) && !ec.intNonNegative(keyID) {
+	if kv, isConst := ec.constInts[keyID]; (!isConst || kv < 0) && !ec.intNonNegative(keyID) && !ec.tableArrayLowerBoundSafe(instr.ID) {
 		asm.CMPimm(jit.X1, 0)
 		asm.BCond(jit.CondLT, deoptLabel)
 	}
@@ -550,7 +550,7 @@ func (ec *emitContext) emitTableArrayStore(instr *Instr) {
 		return
 	}
 	keyID := instr.Args[3].ID
-	if kv, isConst := ec.constInts[keyID]; (!isConst || kv < 0) && !ec.intNonNegative(keyID) {
+	if kv, isConst := ec.constInts[keyID]; (!isConst || kv < 0) && !ec.intNonNegative(keyID) && !ec.tableArrayLowerBoundSafe(instr.ID) {
 		asm.CMPimm(jit.X1, 0)
 		asm.BCond(jit.CondLT, missLabel)
 	}
@@ -970,6 +970,13 @@ func (ec *emitContext) tableArrayUpperBoundSafe(id int) bool {
 		return false
 	}
 	return ec.fn.TableArrayUpperBoundSafe[id]
+}
+
+func (ec *emitContext) tableArrayLowerBoundSafe(id int) bool {
+	if ec.fn == nil || ec.fn.TableArrayLowerBoundSafe == nil {
+		return false
+	}
+	return ec.fn.TableArrayLowerBoundSafe[id]
 }
 
 func (ec *emitContext) recordTableArrayBoundedKey(instr *Instr) {

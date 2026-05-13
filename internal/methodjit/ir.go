@@ -122,6 +122,12 @@ type Function struct {
 	// separate facts prove those safe.
 	TableArrayUpperBoundSafe map[int]bool
 
+	// TableArrayLowerBoundSafe is the set of table-array access instruction IDs
+	// whose key >= 0 check is already guaranteed by loop-region induction facts.
+	// It is separate from IntNonNegative so versioning-derived facts remain
+	// local to the guarded loop region.
+	TableArrayLowerBoundSafe map[int]bool
+
 	// LoopTableArrayFacts records the table/len/data/key contract behind each
 	// TableArrayUpperBoundSafe access. It is diagnostic and a staging point for
 	// broader loop-region versioning; codegen treats missing entries as a lack

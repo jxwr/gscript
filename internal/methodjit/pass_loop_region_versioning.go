@@ -27,6 +27,7 @@ func LoopRegionVersioningPass(fn *Function) (*Function, error) {
 		return fn, nil
 	}
 	fn.TableArrayUpperBoundSafe = nil
+	fn.TableArrayLowerBoundSafe = nil
 	fn.LoopTableArrayFacts = nil
 
 	li := computeLoopInfo(fn)
@@ -37,6 +38,7 @@ func LoopRegionVersioningPass(fn *Function) (*Function, error) {
 	dom := computeDominators(fn)
 	preheaders := computeLoopPreheaders(fn, li)
 	safe := make(map[int]bool)
+	lowerSafe := make(map[int]bool)
 	accessFacts := make(map[int]LoopTableArrayFact)
 
 	for _, header := range fn.Blocks {
@@ -99,6 +101,11 @@ func LoopRegionVersioningPass(fn *Function) (*Function, error) {
 					continue
 				}
 				safe[instr.ID] = true
+				if loopRegionKeyNonNegative(fn, li, header, key) {
+					lowerSafe[instr.ID] = true
+					functionRemarks(fn).Add("LoopRegionVersioning", "changed", block.ID, instr.ID, instr.Op,
+						"loop induction proves table-array access lower bound")
+				}
 				accessFacts[instr.ID] = fact
 				functionRemarks(fn).Add("LoopRegionVersioning", "changed", block.ID, instr.ID, instr.Op,
 					"preheader table-array fact and loop header guard prove access upper bound")
@@ -110,8 +117,47 @@ func LoopRegionVersioningPass(fn *Function) (*Function, error) {
 		return fn, nil
 	}
 	fn.TableArrayUpperBoundSafe = safe
+	if len(lowerSafe) > 0 {
+		fn.TableArrayLowerBoundSafe = lowerSafe
+	}
 	fn.LoopTableArrayFacts = accessFacts
 	return fn, nil
+}
+
+func loopRegionKeyNonNegative(fn *Function, li *loopInfo, header *Block, key *Value) bool {
+	if fn == nil || li == nil || header == nil || key == nil {
+		return false
+	}
+	if fn.IntNonNegative != nil && fn.IntNonNegative[key.ID] {
+		return true
+	}
+	if c, ok := constIntFromValue(key); ok {
+		return c >= 0
+	}
+	if key.Def == nil {
+		return false
+	}
+	if r, ok := fn.IntRanges[key.ID]; ok && r.nonNegative() {
+		return true
+	}
+	for _, instr := range header.Instrs {
+		if instr == nil || instr.Op != OpPhi || !instr.Type.isIntegerLike() {
+			break
+		}
+		ind, ok := analyzeForwardInduction(instr, li)
+		if !ok || ind.step <= 0 || ind.init.min < 0 {
+			continue
+		}
+		if key.ID == instr.ID || (ind.update != nil && key.ID == ind.update.ID) {
+			return true
+		}
+		if key.Def != nil {
+			if step, ok := forwardStepFromPhi(key.Def, instr.ID); ok && step >= 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // TableArrayBoundsCheckHoistPass is kept as the compatibility entry point for

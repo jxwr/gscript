@@ -17,6 +17,9 @@ func TestTableArrayBoundsCheckHoist_MarksHeaderBoundedLoad(t *testing.T) {
 	if out.TableArrayUpperBoundSafe == nil || !out.TableArrayUpperBoundSafe[load.ID] {
 		t.Fatalf("expected loop-header guard to prove TableArrayLoad upper bound:\n%s", Print(out))
 	}
+	if out.TableArrayLowerBoundSafe == nil || !out.TableArrayLowerBoundSafe[load.ID] {
+		t.Fatalf("expected non-negative induction to prove TableArrayLoad lower bound:\n%s", Print(out))
+	}
 	fact, ok := out.LoopTableArrayFacts[load.ID]
 	if !ok || fact.AccessOp != OpTableArrayLoad || fact.KeyID != load.Args[2].ID || fact.LenID != load.Args[1].ID {
 		t.Fatalf("expected loop-region metadata for bounded load, fact=%+v\n%s", fact, Print(out))
@@ -78,6 +81,9 @@ func TestLoopRegionVersioning_MarksCheckedStoreUpperBound(t *testing.T) {
 	}
 	if out.TableArrayUpperBoundSafe == nil || !out.TableArrayUpperBoundSafe[load.ID] || !out.TableArrayUpperBoundSafe[store.ID] {
 		t.Fatalf("expected loop-region facts to prove load and store upper bounds:\n%s", Print(out))
+	}
+	if out.TableArrayLowerBoundSafe == nil || !out.TableArrayLowerBoundSafe[load.ID] || !out.TableArrayLowerBoundSafe[store.ID] {
+		t.Fatalf("expected non-negative induction to prove load and store lower bounds:\n%s", Print(out))
 	}
 	storeFact, ok := out.LoopTableArrayFacts[store.ID]
 	if !ok || storeFact.AccessOp != OpTableArrayStore || storeFact.TableID != store.Args[0].ID ||
