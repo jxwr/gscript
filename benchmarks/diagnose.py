@@ -62,6 +62,7 @@ class DiagnosticRow:
     work_priority: int = 0
     readiness: str = ""
     runtime_summary: dict[str, Any] = field(default_factory=dict)
+    tier2_call_summary: dict[str, Any] = field(default_factory=dict)
     pprof_runs: int = 0
     pprof_script_repeat: int = 0
     pprof_samples_seconds: float = 0.0
@@ -232,6 +233,23 @@ def summarize_runtime_paths(data: Any) -> dict[str, Any]:
     }
 
 
+def summarize_tier2_calls(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        return {}
+    calls = data.get("calls")
+    if not isinstance(calls, list):
+        return {}
+    out: dict[str, Any] = {}
+    for row in calls:
+        if not isinstance(row, dict):
+            continue
+        kind = row.get("kind") or "call"
+        outcome = row.get("outcome") or "unknown"
+        key = f"{kind}_{outcome}"
+        out[key] = int(out.get(key, 0)) + int(row.get("count") or 0)
+    return out
+
+
 def top_exit_site(exit_json: Any) -> dict[str, Any] | None:
     if not isinstance(exit_json, dict):
         return None
@@ -400,6 +418,7 @@ def collect_for_benchmark(
     summary_text = Path(artifacts[0].raw).read_text(errors="replace")
     exit_json = read_artifact_json(artifacts, "exit_stats")
     runtime_json = read_artifact_json(artifacts, "runtime_paths")
+    tier2_perf_json = read_artifact_json(artifacts, "tier2_perf")
     work_json = read_artifact_json(artifacts, "spec_worklist")
     top_exit = top_exit_site(exit_json)
     work = top_work_item(work_json)
@@ -421,6 +440,7 @@ def collect_for_benchmark(
         exit_total=parse_counter(EXIT_TOTAL_RE, summary_text),
         top_exit=top_exit,
         runtime_summary=summarize_runtime_paths(runtime_json),
+        tier2_call_summary=summarize_tier2_calls(tier2_perf_json),
         pprof_runs=pprof_runs,
         pprof_script_repeat=pprof_script_repeat,
         pprof_samples_seconds=pprof_samples,
@@ -479,6 +499,10 @@ def render_summary(rows: list[DiagnosticRow]) -> str:
             value = row.runtime_summary.get(key)
             if value:
                 runtime_bits.append(f"{key}={value}")
+        for key in sorted(row.tier2_call_summary):
+            value = row.tier2_call_summary.get(key)
+            if value:
+                runtime_bits.append(f"tier2_{key}={value}")
         lines.append(
             "| "
             + " | ".join(

@@ -648,6 +648,12 @@ type CompiledFunction struct {
 	// counter code.
 	Tier2BlockCounters    []uint64
 	Tier2BlockCounterMeta []Tier2BlockCounterMeta
+
+	// Tier2CallCounters and metadata are populated only for opt-in perf
+	// diagnostics. They count native call-site outcomes such as successful
+	// typed-peer calls versus fallback/exit recovery.
+	Tier2CallCounters    []uint64
+	Tier2CallCounterMeta []Tier2CallCounterMeta
 }
 
 func (cf *CompiledFunction) resumeOffset(instrID int, numericPass bool) (int, bool) {

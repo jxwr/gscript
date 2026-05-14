@@ -335,6 +335,7 @@ func CompileWithOptions(fn *Function, alloc *RegAllocation, opts CompileOptions)
 	}
 	if opts.EnableTier2BlockCounters {
 		ec.initTier2BlockCounters()
+		ec.initTier2CallCounters()
 	}
 	if exitResumeCheckEnabled() {
 		ec.exitResumeCheck = newExitResumeCheckMetadata()
@@ -489,6 +490,8 @@ func CompileWithOptions(fn *Function, alloc *RegAllocation, opts CompileOptions)
 		ExitResumeCheck:          ec.exitResumeCheck,
 		Tier2BlockCounters:       ec.tier2BlockCounters,
 		Tier2BlockCounterMeta:    ec.tier2BlockCounterMeta,
+		Tier2CallCounters:        ec.tier2CallCounters,
+		Tier2CallCounterMeta:     ec.tier2CallCounterMeta,
 	}, nil
 }
 
@@ -564,6 +567,68 @@ func (ec *emitContext) emitTier2BlockCounter(block *Block) {
 		return
 	}
 	base := uintptr(unsafe.Pointer(&ec.tier2BlockCounters[0]))
+	ec.asm.LoadImm64(jit.X16, int64(base))
+	offset := idx * 8
+	if offset <= 32760 {
+		ec.asm.LDR(jit.X17, jit.X16, offset)
+		ec.asm.ADDimm(jit.X17, jit.X17, 1)
+		ec.asm.STR(jit.X17, jit.X16, offset)
+	} else {
+		ec.asm.LoadImm64(jit.X17, int64(offset))
+		ec.asm.ADDreg(jit.X16, jit.X16, jit.X17)
+		ec.asm.LDR(jit.X17, jit.X16, 0)
+		ec.asm.ADDimm(jit.X17, jit.X17, 1)
+		ec.asm.STR(jit.X17, jit.X16, 0)
+	}
+}
+
+func (ec *emitContext) initTier2CallCounters() {
+	if ec == nil || ec.fn == nil {
+		return
+	}
+	protoName := ""
+	if ec.fn.Proto != nil {
+		protoName = ec.fn.Proto.Name
+	}
+	for _, block := range ec.fn.Blocks {
+		if block == nil {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpFieldCallFloor {
+				continue
+			}
+			for _, outcome := range []string{"success", "fallback", "exit"} {
+				ec.tier2CallCounterMeta = append(ec.tier2CallCounterMeta, Tier2CallCounterMeta{
+					Proto:   protoName,
+					InstrID: instr.ID,
+					Op:      instr.Op.String(),
+					Kind:    "field_call_floor",
+					Outcome: outcome,
+				})
+			}
+		}
+	}
+	if len(ec.tier2CallCounterMeta) > 0 {
+		ec.tier2CallCounters = make([]uint64, len(ec.tier2CallCounterMeta))
+	}
+}
+
+func (ec *emitContext) emitTier2CallCounter(instr *Instr, kind, outcome string) {
+	if ec == nil || instr == nil || len(ec.tier2CallCounters) == 0 {
+		return
+	}
+	idx := -1
+	for i, meta := range ec.tier2CallCounterMeta {
+		if meta.InstrID == instr.ID && meta.Kind == kind && meta.Outcome == outcome {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return
+	}
+	base := uintptr(unsafe.Pointer(&ec.tier2CallCounters[0]))
 	ec.asm.LoadImm64(jit.X16, int64(base))
 	offset := idx * 8
 	if offset <= 32760 {
@@ -1027,6 +1092,8 @@ type emitContext struct {
 	tier2BlockCounterIndex map[int]int
 	tier2BlockCounterMeta  []Tier2BlockCounterMeta
 	tier2BlockCounters     []uint64
+	tier2CallCounterMeta   []Tier2CallCounterMeta
+	tier2CallCounters      []uint64
 }
 
 // computeTailCalls (R107) scans the IR for the tail-call pattern:

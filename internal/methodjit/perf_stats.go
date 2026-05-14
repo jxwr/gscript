@@ -66,11 +66,35 @@ type Tier2BlockPerfRow struct {
 	Ops      []string `json:"ops,omitempty"`
 }
 
+// Tier2CallCounterMeta describes one emitted Tier 2 call-site path counter.
+// Kind is a stable route such as field_call_floor; Outcome is success,
+// fallback, or exit.
+type Tier2CallCounterMeta struct {
+	Proto   string `json:"proto"`
+	InstrID int    `json:"instr_id"`
+	Op      string `json:"op"`
+	Kind    string `json:"kind"`
+	Outcome string `json:"outcome"`
+}
+
+// Tier2CallPerfRow is a native call-site path counter row for opt-in Tier 2
+// diagnostics. It lets benchmarks distinguish successful JIT-to-JIT calls from
+// Go fallback/exit recovery without instrumenting normal production code.
+type Tier2CallPerfRow struct {
+	Proto   string `json:"proto"`
+	InstrID int    `json:"instr_id"`
+	Op      string `json:"op"`
+	Kind    string `json:"kind"`
+	Outcome string `json:"outcome"`
+	Count   uint64 `json:"count"`
+}
+
 // Tier2PerfStatsSnapshot is a stable, JSON-friendly diagnostic snapshot.
 type Tier2PerfStatsSnapshot struct {
 	Enabled bool                `json:"enabled"`
 	Rows    []Tier2PerfStatsRow `json:"rows"`
 	Blocks  []Tier2BlockPerfRow `json:"blocks,omitempty"`
+	Calls   []Tier2CallPerfRow  `json:"calls,omitempty"`
 }
 
 func (s *tier2PerfStatsCollector) setEnabled(enabled bool) {
@@ -165,6 +189,7 @@ func (tm *TieringManager) Tier2PerfStats() Tier2PerfStatsSnapshot {
 	}
 	snap := tm.perfStats.snapshot()
 	snap.Blocks = tm.tier2BlockPerfRows()
+	snap.Calls = tm.tier2CallPerfRows()
 	return snap
 }
 
@@ -206,6 +231,51 @@ func (tm *TieringManager) tier2BlockPerfRows() []Tier2BlockPerfRow {
 	return rows
 }
 
+func (tm *TieringManager) tier2CallPerfRows() []Tier2CallPerfRow {
+	if tm == nil {
+		return nil
+	}
+	rows := make([]Tier2CallPerfRow, 0)
+	tm.forEachTier2Compiled(func(_proto *vm.FuncProto, cf *CompiledFunction) {
+		if cf == nil || len(cf.Tier2CallCounters) == 0 {
+			return
+		}
+		for i, count := range cf.Tier2CallCounters {
+			if count == 0 {
+				continue
+			}
+			meta := Tier2CallCounterMeta{}
+			if i < len(cf.Tier2CallCounterMeta) {
+				meta = cf.Tier2CallCounterMeta[i]
+			}
+			rows = append(rows, Tier2CallPerfRow{
+				Proto:   meta.Proto,
+				InstrID: meta.InstrID,
+				Op:      meta.Op,
+				Kind:    meta.Kind,
+				Outcome: meta.Outcome,
+				Count:   count,
+			})
+		}
+	})
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Count != rows[j].Count {
+			return rows[i].Count > rows[j].Count
+		}
+		if rows[i].Proto != rows[j].Proto {
+			return rows[i].Proto < rows[j].Proto
+		}
+		if rows[i].InstrID != rows[j].InstrID {
+			return rows[i].InstrID < rows[j].InstrID
+		}
+		if rows[i].Kind != rows[j].Kind {
+			return rows[i].Kind < rows[j].Kind
+		}
+		return rows[i].Outcome < rows[j].Outcome
+	})
+	return rows
+}
+
 // WriteTier2PerfStatsText prints Tier 2 protocol/timing diagnostics in a stable
 // text form. Durations are inclusive for the named phase.
 func (tm *TieringManager) WriteTier2PerfStatsText(w io.Writer) {
@@ -221,6 +291,13 @@ func (tm *TieringManager) WriteTier2PerfStatsText(w io.Writer) {
 		fmt.Fprintln(w, "  blocks:")
 		for _, row := range snap.Blocks {
 			fmt.Fprintf(w, "    %s B%d: count=%d ops=%v\n", row.Proto, row.BlockID, row.Count, row.Ops)
+		}
+	}
+	if len(snap.Calls) > 0 {
+		fmt.Fprintln(w, "  calls:")
+		for _, row := range snap.Calls {
+			fmt.Fprintf(w, "    %s #%d %s/%s/%s: count=%d\n",
+				row.Proto, row.InstrID, row.Op, row.Kind, row.Outcome, row.Count)
 		}
 	}
 }

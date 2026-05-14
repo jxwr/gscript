@@ -1652,6 +1652,7 @@ func (ec *emitContext) emitCallNativeFieldShapeTypedPeerIfEligible(instr *Instr)
 		} else {
 			ec.emitRestoreTypedPeerCallerState()
 		}
+		ec.emitTier2CallCounter(instr, "field_call_floor", "success")
 		asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
 		ec.emitReloadTypedPeerLiveForSuccess(liveFPRs)
 		ec.restoreValueReprSnapshot(preReprs)
@@ -1670,6 +1671,7 @@ func (ec *emitContext) emitCallNativeFieldShapeTypedPeerIfEligible(instr *Instr)
 	asm.B(fallbackLabel)
 
 	asm.Label(exitLabel)
+	ec.emitTier2CallCounter(instr, "field_call_floor", "exit")
 	ec.emitPushNativeCallExitFrameIfNested(jit.X8, jit.X9, jit.X10, jit.X11)
 	asm.LDR(jit.X8, mRegCtx, execCtxOffExitCode)
 	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeExitCode)
@@ -1856,6 +1858,7 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 		} else {
 			ec.emitRestoreTypedPeerCallerState()
 		}
+		ec.emitTier2CallCounter(instr, "field_call_floor", "success")
 		asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
 		ec.emitReloadTypedPeerLiveForSuccess(liveFPRs)
 		ec.restoreValueReprSnapshot(preReprs)
@@ -1877,6 +1880,7 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 	asm.B(callFallbackLabel)
 
 	asm.Label(exitLabel)
+	ec.emitTier2CallCounter(instr, "field_call_floor", "exit")
 	ec.emitPushNativeCallExitFrameIfNested(jit.X8, jit.X9, jit.X10, jit.X11)
 	asm.LDR(jit.X8, mRegCtx, execCtxOffExitCode)
 	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeExitCode)
@@ -1912,6 +1916,7 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 	asm.B(doneLabel)
 
 	asm.Label(callFallbackLabel)
+	ec.emitTier2CallCounter(instr, "field_call_floor", "fallback")
 	asm.STR(jit.X6, jit.SP, rawPeerFuncOff)
 	if allLeafCallees {
 		ec.emitRestoreTypedPeerCallerModeClosureOnly()
@@ -2075,6 +2080,7 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNativeSingleCase(instr *Inst
 	} else {
 		ec.emitRestoreTypedPeerCallerState()
 	}
+	ec.emitTier2CallCounter(instr, "field_call_floor", "success")
 	asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
 	ec.emitReloadTypedPeerLiveForSuccess(liveFPRs)
 	ec.restoreValueReprSnapshot(preReprs)
@@ -2092,6 +2098,7 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNativeSingleCase(instr *Inst
 	asm.B(doneLabel)
 
 	asm.Label(exitLabel)
+	ec.emitTier2CallCounter(instr, "field_call_floor", "exit")
 	ec.emitPushNativeCallExitFrameIfNested(jit.X8, jit.X9, jit.X10, jit.X11)
 	asm.LDR(jit.X8, mRegCtx, execCtxOffExitCode)
 	asm.STR(jit.X8, mRegCtx, execCtxOffNativeCalleeExitCode)
@@ -2127,6 +2134,7 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNativeSingleCase(instr *Inst
 	asm.B(doneLabel)
 
 	asm.Label(callFallbackLabel)
+	ec.emitTier2CallCounter(instr, "field_call_floor", "fallback")
 	asm.STR(jit.X6, jit.SP, rawPeerFuncOff)
 	if c.callee.LeafNoCall {
 		ec.emitRestoreTypedPeerCallerModeClosureOnly()
