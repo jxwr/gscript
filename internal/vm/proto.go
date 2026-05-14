@@ -55,6 +55,7 @@ type FuncProto struct {
 	DirectEntryVersion           uint64                             // increments when DirectEntryPtr/Tier2DirectEntryPtr publication changes
 	Tier2NumericEntryPtr         uintptr                            // pointer to Tier 2 raw-int numeric entry for guarded peer calls
 	Tier2TypedEntryPtr           uintptr                            // pointer to Tier 2 typed table/int entry for guarded peer calls
+	Tier2TypedClobberEntryPtr    uintptr                            // pointer to Tier 2 typed peer entry with caller-saved clobber protocol
 	Tier2TypedEntryABI           uint64                             // signature for Tier2TypedEntryPtr parameter/result ABI
 	GlobalValCachePtr            uintptr                            // pointer to BaselineFunc.GlobalValCache[0] (for BLR callee GETGLOBAL)
 	GlobalValCacheGen            uint64                             // BaselineFunc.CachedGlobalGen (for BLR callee generation check)

@@ -433,9 +433,15 @@ func CompileWithOptions(fn *Function, alloc *RegAllocation, opts CompileOptions)
 		}
 	}
 	typedEntryOff := 0
+	typedClobberEntryOff := 0
 	if typedEntryABI.Eligible {
 		if off := ec.asm.LabelOffset("t2_typed_self_entry"); off >= 0 {
 			typedEntryOff = off
+		}
+		if typedPeerClobberABIEnabled(typedEntryABI) {
+			if off := ec.asm.LabelOffset("t2_typed_peer_clobber_entry"); off >= 0 {
+				typedClobberEntryOff = off
+			}
 		}
 	}
 	typedPeerFramePlan := AnalyzeTypedPeerFramePlan(fn, alloc, typedPeerABI)
@@ -471,6 +477,7 @@ func CompileWithOptions(fn *Function, alloc *RegAllocation, opts CompileOptions)
 		TypedSelfABI:             typedEntryABI,
 		TypedPeerABI:             typedPeerABI,
 		TypedEntryOffset:         typedEntryOff,
+		TypedClobberEntryOffset:  typedClobberEntryOff,
 		TypedPeerFramePlan:       typedPeerFramePlan,
 		GlobalCache:              globalCache,
 		GlobalCacheConsts:        ec.globalCacheConsts,
@@ -1503,13 +1510,46 @@ func (ec *emitContext) entryParamLoad(slot int) (*Instr, bool) {
 func (ec *emitContext) emitTypedSelfEntry() {
 	asm := ec.asm
 	asm.Label("t2_typed_self_entry")
-	entryParamLoads := ec.typedSelfEntryParamLoads(ec.fn.Entry)
 	ec.emitTier2EntryMark()
 	asm.SUBimm(jit.SP, jit.SP, uint16(ec.typedSelfFrameSize()))
 	asm.STP(jit.X29, jit.X30, jit.SP, 0)
 	asm.ADDimm(jit.X29, jit.SP, 0)
 	ec.emitSaveTypedSelfFrameRegs()
+	asm.B("t2_typed_entry_params")
+}
 
+func (ec *emitContext) emitTypedPeerClobberEntry() {
+	asm := ec.asm
+	asm.Label("t2_typed_peer_clobber_entry")
+	ec.emitTier2EntryMark()
+	asm.SUBimm(jit.SP, jit.SP, 16)
+	asm.STP(jit.X29, jit.X30, jit.SP, 0)
+	asm.ADDimm(jit.X29, jit.SP, 0)
+	asm.B("t2_typed_entry_params")
+}
+
+func (ec *emitContext) emitTypedEntryParamsLabel() {
+	ec.asm.Label("t2_typed_entry_params")
+	ec.emitTypedEntryParams()
+}
+
+func (ec *emitContext) typedPeerClobberEntryEnabled() bool {
+	if ec == nil {
+		return false
+	}
+	return typedPeerClobberABIEnabled(ec.typedSelfABI)
+}
+
+func typedPeerClobberABIEnabled(abi TypedSelfABI) bool {
+	return abi.Eligible &&
+		len(abi.Params) == 2 &&
+		abi.Params[0] == SpecializedABIParamRawTablePtr &&
+		abi.Params[1] == SpecializedABIParamRawInt
+}
+
+func (ec *emitContext) emitTypedEntryParams() {
+	asm := ec.asm
+	entryParamLoads := ec.typedSelfEntryParamLoads(ec.fn.Entry)
 	for i, rep := range ec.typedSelfABI.Params {
 		src := jit.Reg(int(jit.X0) + i)
 		load, hasLoad := ec.entryParamLoad(i)
@@ -1564,6 +1604,13 @@ func (ec *emitContext) emitTypedSelfEntry() {
 	}
 }
 
+func (ec *emitContext) emitTypedPeerClobberRestoreAndReturn() {
+	asm := ec.asm
+	asm.LDP(jit.X29, jit.X30, jit.SP, 0)
+	asm.ADDimm(jit.SP, jit.SP, 16)
+	asm.RET()
+}
+
 func (ec *emitContext) emitTypedSelfRawIntReturnEpilogue() {
 	ec.asm.Label("t2_typed_self_raw_int_epilogue")
 	ec.asm.MOVimm16(jit.X16, 0)
@@ -1571,11 +1618,25 @@ func (ec *emitContext) emitTypedSelfRawIntReturnEpilogue() {
 	ec.emitTypedSelfFrameRestoreAndReturn()
 }
 
+func (ec *emitContext) emitTypedPeerClobberRawIntReturnEpilogue() {
+	ec.asm.Label("t2_typed_peer_clobber_raw_int_epilogue")
+	ec.asm.MOVimm16(jit.X16, 0)
+	ec.asm.STR(jit.X16, mRegCtx, execCtxOffExitCode)
+	ec.emitTypedPeerClobberRestoreAndReturn()
+}
+
 func (ec *emitContext) emitTypedSelfRawFloatReturnEpilogue() {
 	ec.asm.Label("t2_typed_self_raw_float_epilogue")
 	ec.asm.MOVimm16(jit.X16, 0)
 	ec.asm.STR(jit.X16, mRegCtx, execCtxOffExitCode)
 	ec.emitTypedSelfFrameRestoreAndReturn()
+}
+
+func (ec *emitContext) emitTypedPeerClobberRawFloatReturnEpilogue() {
+	ec.asm.Label("t2_typed_peer_clobber_raw_float_epilogue")
+	ec.asm.MOVimm16(jit.X16, 0)
+	ec.asm.STR(jit.X16, mRegCtx, execCtxOffExitCode)
+	ec.emitTypedPeerClobberRestoreAndReturn()
 }
 
 func (ec *emitContext) emitTypedSelfReturnEpilogue() {
@@ -1613,6 +1674,41 @@ func (ec *emitContext) emitTypedSelfReturnEpilogue() {
 
 	asm.Label(doneLabel)
 	ec.emitTypedSelfFrameRestoreAndReturn()
+}
+
+func (ec *emitContext) emitTypedPeerClobberReturnEpilogue() {
+	asm := ec.asm
+	asm.Label("t2_typed_peer_clobber_epilogue")
+	failLabel := ec.uniqueLabel("typed_peer_clobber_return_fail")
+	doneLabel := ec.uniqueLabel("typed_peer_clobber_return_done")
+
+	switch ec.typedSelfABI.Return {
+	case SpecializedABIReturnNone:
+	case SpecializedABIReturnRawInt:
+		emitCheckIsInt(asm, jit.X0, jit.X1)
+		asm.BCond(jit.CondNE, failLabel)
+		jit.EmitUnboxInt(asm, jit.X0, jit.X0)
+	case SpecializedABIReturnRawFloat:
+		asm.LSRimm(jit.X1, jit.X0, 48)
+		asm.MOVimm16(jit.X2, jit.NB_TagNilShr48)
+		asm.CMPreg(jit.X1, jit.X2)
+		asm.BCond(jit.CondGE, failLabel)
+	case SpecializedABIReturnRawTablePtr:
+		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, failLabel)
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+	default:
+		asm.B(failLabel)
+	}
+	asm.MOVimm16(jit.X16, 0)
+	asm.STR(jit.X16, mRegCtx, execCtxOffExitCode)
+	asm.B(doneLabel)
+
+	asm.Label(failLabel)
+	asm.LoadImm64(jit.X16, ExitDeopt)
+	asm.STR(jit.X16, mRegCtx, execCtxOffExitCode)
+
+	asm.Label(doneLabel)
+	ec.emitTypedPeerClobberRestoreAndReturn()
 }
 
 func (ec *emitContext) emitSaveTypedSelfFrameRegs() {
@@ -1815,11 +1911,16 @@ func (ec *emitContext) emitEpilogue() {
 	asm.Label("deopt_epilogue")
 	leafDeoptLabel := ec.uniqueLabel("leaf_deopt_epilogue")
 	typedDeoptLabel := ec.uniqueLabel("typed_deopt_epilogue")
+	typedClobberDeoptLabel := ec.uniqueLabel("typed_clobber_deopt_epilogue")
 	leafDeoptContinueLabel := ec.uniqueLabel("leaf_deopt_continue")
 	ec.emitLoadCallMode(jit.X16)
 	if ec.typedSelfABI.Eligible {
 		asm.CMPimm(jit.X16, callModeTypedSelf)
 		asm.BCond(jit.CondEQ, typedDeoptLabel)
+		if ec.typedPeerClobberEntryEnabled() {
+			asm.CMPimm(jit.X16, callModeTypedPeerClobber)
+			asm.BCond(jit.CondEQ, typedClobberDeoptLabel)
+		}
 	}
 	asm.CMPimm(jit.X16, callModeLeafX0)
 	asm.BCond(jit.CondEQ, leafDeoptLabel)
@@ -1827,6 +1928,10 @@ func (ec *emitContext) emitEpilogue() {
 	if ec.typedSelfABI.Eligible {
 		asm.Label(typedDeoptLabel)
 		ec.emitTypedSelfFrameRestoreAndReturn()
+		if ec.typedPeerClobberEntryEnabled() {
+			asm.Label(typedClobberDeoptLabel)
+			ec.emitTypedPeerClobberRestoreAndReturn()
+		}
 	}
 	asm.Label(leafDeoptLabel)
 	ec.emitRestoreCalleeSavedFPRs()
@@ -1979,11 +2084,22 @@ func (ec *emitContext) emitEpilogue() {
 	if ec.typedSelfABI.Eligible {
 		if ec.typedSelfABI.Return == SpecializedABIReturnRawInt {
 			ec.emitTypedSelfRawIntReturnEpilogue()
+			if ec.typedPeerClobberEntryEnabled() {
+				ec.emitTypedPeerClobberRawIntReturnEpilogue()
+			}
 		} else if ec.typedSelfABI.Return == SpecializedABIReturnRawFloat {
 			ec.emitTypedSelfRawFloatReturnEpilogue()
+			if ec.typedPeerClobberEntryEnabled() {
+				ec.emitTypedPeerClobberRawFloatReturnEpilogue()
+			}
 		}
 		ec.emitTypedSelfReturnEpilogue()
 		ec.emitTypedSelfEntry()
+		if ec.typedPeerClobberEntryEnabled() {
+			ec.emitTypedPeerClobberReturnEpilogue()
+			ec.emitTypedPeerClobberEntry()
+		}
+		ec.emitTypedEntryParamsLabel()
 	}
 
 	if ec.numericParamCount > 0 && ec.fn != nil && ec.fn.Proto != nil {

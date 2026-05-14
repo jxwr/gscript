@@ -43,30 +43,31 @@ var (
 	vmClosureOffUpvalues       int // vm.Closure.Upvalues offset (should be 8)
 	vmClosureOffInlineUpvalue0 int // vm.Closure.inlineUpvalue[0] offset
 
-	funcProtoOffCompiledCodePtr        int // vm.FuncProto.CompiledCodePtr offset
-	funcProtoOffDirectEntryPtr         int // vm.FuncProto.DirectEntryPtr offset
-	funcProtoOffTier2DirectEntryPtr    int // vm.FuncProto.Tier2DirectEntryPtr offset
-	funcProtoOffTier2LeafEntryPtr      int // vm.FuncProto.Tier2LeafEntryPtr offset
-	funcProtoOffDirectEntryVersion     int // vm.FuncProto.DirectEntryVersion offset
-	funcProtoOffTier2NumericEntryPtr   int // vm.FuncProto.Tier2NumericEntryPtr offset
-	funcProtoOffTier2TypedEntryPtr     int // vm.FuncProto.Tier2TypedEntryPtr offset
-	funcProtoOffTier2TypedEntryABI     int // vm.FuncProto.Tier2TypedEntryABI offset
-	funcProtoOffConstants              int // vm.FuncProto.Constants offset (slice header)
-	funcProtoOffFieldCache             int // vm.FuncProto.FieldCache offset (slice header)
-	funcProtoOffFieldPolyCache         int // vm.FuncProto.FieldPolyCache offset (slice header)
-	funcProtoOffTableStringKeyCache    int // vm.FuncProto.TableStringKeyCache offset (slice header)
-	funcProtoOffMaxStack               int // vm.FuncProto.MaxStack offset
-	funcProtoOffNumParams              int // vm.FuncProto.NumParams offset
-	funcProtoOffIsVarArg               int // vm.FuncProto.IsVarArg offset
-	funcProtoOffGlobalValCachePtr      int // vm.FuncProto.GlobalValCachePtr offset
-	funcProtoOffTier2GlobalCachePtr    int // vm.FuncProto.Tier2GlobalCachePtr offset
-	funcProtoOffTier2GlobalCacheGenPtr int // vm.FuncProto.Tier2GlobalCacheGenPtr offset
-	funcProtoOffTier2GlobalIndexPtr    int // vm.FuncProto.Tier2GlobalIndexPtr offset
-	funcProtoOffCallCount              int // vm.FuncProto.CallCount offset
-	funcProtoOffTier2Promoted          int // vm.FuncProto.Tier2Promoted offset
-	funcProtoOffLeafNoCall             int // vm.FuncProto.LeafNoCall offset
-	funcProtoOffTier2LeafNoCall        int // vm.FuncProto.Tier2LeafNoCall offset
-	funcProtoOffNoGlobalOps            int // vm.FuncProto.NoGlobalOps offset
+	funcProtoOffCompiledCodePtr           int // vm.FuncProto.CompiledCodePtr offset
+	funcProtoOffDirectEntryPtr            int // vm.FuncProto.DirectEntryPtr offset
+	funcProtoOffTier2DirectEntryPtr       int // vm.FuncProto.Tier2DirectEntryPtr offset
+	funcProtoOffTier2LeafEntryPtr         int // vm.FuncProto.Tier2LeafEntryPtr offset
+	funcProtoOffDirectEntryVersion        int // vm.FuncProto.DirectEntryVersion offset
+	funcProtoOffTier2NumericEntryPtr      int // vm.FuncProto.Tier2NumericEntryPtr offset
+	funcProtoOffTier2TypedEntryPtr        int // vm.FuncProto.Tier2TypedEntryPtr offset
+	funcProtoOffTier2TypedClobberEntryPtr int // vm.FuncProto.Tier2TypedClobberEntryPtr offset
+	funcProtoOffTier2TypedEntryABI        int // vm.FuncProto.Tier2TypedEntryABI offset
+	funcProtoOffConstants                 int // vm.FuncProto.Constants offset (slice header)
+	funcProtoOffFieldCache                int // vm.FuncProto.FieldCache offset (slice header)
+	funcProtoOffFieldPolyCache            int // vm.FuncProto.FieldPolyCache offset (slice header)
+	funcProtoOffTableStringKeyCache       int // vm.FuncProto.TableStringKeyCache offset (slice header)
+	funcProtoOffMaxStack                  int // vm.FuncProto.MaxStack offset
+	funcProtoOffNumParams                 int // vm.FuncProto.NumParams offset
+	funcProtoOffIsVarArg                  int // vm.FuncProto.IsVarArg offset
+	funcProtoOffGlobalValCachePtr         int // vm.FuncProto.GlobalValCachePtr offset
+	funcProtoOffTier2GlobalCachePtr       int // vm.FuncProto.Tier2GlobalCachePtr offset
+	funcProtoOffTier2GlobalCacheGenPtr    int // vm.FuncProto.Tier2GlobalCacheGenPtr offset
+	funcProtoOffTier2GlobalIndexPtr       int // vm.FuncProto.Tier2GlobalIndexPtr offset
+	funcProtoOffCallCount                 int // vm.FuncProto.CallCount offset
+	funcProtoOffTier2Promoted             int // vm.FuncProto.Tier2Promoted offset
+	funcProtoOffLeafNoCall                int // vm.FuncProto.LeafNoCall offset
+	funcProtoOffTier2LeafNoCall           int // vm.FuncProto.Tier2LeafNoCall offset
+	funcProtoOffNoGlobalOps               int // vm.FuncProto.NoGlobalOps offset
 )
 
 func init() {
@@ -84,6 +85,7 @@ func init() {
 	funcProtoOffDirectEntryVersion = int(unsafe.Offsetof(proto.DirectEntryVersion))
 	funcProtoOffTier2NumericEntryPtr = int(unsafe.Offsetof(proto.Tier2NumericEntryPtr))
 	funcProtoOffTier2TypedEntryPtr = int(unsafe.Offsetof(proto.Tier2TypedEntryPtr))
+	funcProtoOffTier2TypedClobberEntryPtr = int(unsafe.Offsetof(proto.Tier2TypedClobberEntryPtr))
 	funcProtoOffTier2TypedEntryABI = int(unsafe.Offsetof(proto.Tier2TypedEntryABI))
 	funcProtoOffConstants = int(unsafe.Offsetof(proto.Constants))
 	funcProtoOffFieldCache = int(unsafe.Offsetof(proto.FieldCache))

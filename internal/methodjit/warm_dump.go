@@ -36,28 +36,30 @@ type WarmDumpSession struct {
 
 // WarmDumpRecord is the captured artifact for one production Tier 2 attempt.
 type WarmDumpRecord struct {
-	Attempt             int
-	ProtoName           string
-	NumParams           int
-	MaxStack            int
-	IRBefore            string
-	IRAfter             string
-	IntrinsicNotes      []string
-	OptimizationRemarks []OptimizationRemark
-	Specialization      Tier2SpecializationSummary
-	RegAllocMap         string
-	SourceMap           []IRASMMapEntry
-	LoopDiagnostics     []LoopDiagnostic
-	PipelineStages      []PipelineStageTiming
-	CompiledCode        []byte
-	CodeStart           uintptr
-	CodeEnd             uintptr
-	InsnCount           int
-	InsnHistogram       map[string]int
-	DirectEntryOff      int
-	NumSpills           int
-	TypedPeerFramePlan  Tier2TypedPeerFramePlan
-	CompileErr          string
+	Attempt              int
+	ProtoName            string
+	NumParams            int
+	MaxStack             int
+	IRBefore             string
+	IRAfter              string
+	IntrinsicNotes       []string
+	OptimizationRemarks  []OptimizationRemark
+	Specialization       Tier2SpecializationSummary
+	RegAllocMap          string
+	SourceMap            []IRASMMapEntry
+	LoopDiagnostics      []LoopDiagnostic
+	PipelineStages       []PipelineStageTiming
+	CompiledCode         []byte
+	CodeStart            uintptr
+	CodeEnd              uintptr
+	InsnCount            int
+	InsnHistogram        map[string]int
+	DirectEntryOff       int
+	TypedEntryOff        int
+	TypedClobberEntryOff int
+	NumSpills            int
+	TypedPeerFramePlan   Tier2TypedPeerFramePlan
+	CompileErr           string
 }
 
 type warmDumpManifest struct {
@@ -66,31 +68,33 @@ type warmDumpManifest struct {
 }
 
 type warmDumpProtoManifest struct {
-	Name                string                     `json:"name"`
-	Status              string                     `json:"status"`
-	Attempt             int                        `json:"attempt,omitempty"`
-	Entered             bool                       `json:"entered"`
-	Compiled            bool                       `json:"compiled"`
-	Failed              bool                       `json:"failed"`
-	FailureReason       string                     `json:"failure_reason,omitempty"`
-	CallCount           int                        `json:"call_count"`
-	Tier2Promoted       bool                       `json:"tier2_promoted"`
-	NumParams           int                        `json:"num_params"`
-	MaxStack            int                        `json:"max_stack"`
-	InsnCount           int                        `json:"insn_count,omitempty"`
-	InsnHistogram       map[string]int             `json:"insn_histogram,omitempty"`
-	CodeBytes           int                        `json:"code_bytes,omitempty"`
-	CodeStart           string                     `json:"code_start,omitempty"`
-	CodeEnd             string                     `json:"code_end,omitempty"`
-	DirectEntryOff      int                        `json:"direct_entry_offset,omitempty"`
-	NumSpills           int                        `json:"num_spills,omitempty"`
-	TypedPeerFramePlan  Tier2TypedPeerFramePlan    `json:"typed_peer_frame_plan,omitempty"`
-	OptimizationRemarks []OptimizationRemark       `json:"optimization_remarks,omitempty"`
-	Specialization      Tier2SpecializationSummary `json:"specialization,omitempty"`
-	LoopDiagnostics     []LoopDiagnostic           `json:"loop_diagnostics,omitempty"`
-	PipelineStages      []PipelineStageTiming      `json:"pipeline_stages,omitempty"`
-	Feedback            warmFeedbackSummary        `json:"feedback"`
-	Files               map[string]string          `json:"files,omitempty"`
+	Name                 string                     `json:"name"`
+	Status               string                     `json:"status"`
+	Attempt              int                        `json:"attempt,omitempty"`
+	Entered              bool                       `json:"entered"`
+	Compiled             bool                       `json:"compiled"`
+	Failed               bool                       `json:"failed"`
+	FailureReason        string                     `json:"failure_reason,omitempty"`
+	CallCount            int                        `json:"call_count"`
+	Tier2Promoted        bool                       `json:"tier2_promoted"`
+	NumParams            int                        `json:"num_params"`
+	MaxStack             int                        `json:"max_stack"`
+	InsnCount            int                        `json:"insn_count,omitempty"`
+	InsnHistogram        map[string]int             `json:"insn_histogram,omitempty"`
+	CodeBytes            int                        `json:"code_bytes,omitempty"`
+	CodeStart            string                     `json:"code_start,omitempty"`
+	CodeEnd              string                     `json:"code_end,omitempty"`
+	DirectEntryOff       int                        `json:"direct_entry_offset,omitempty"`
+	TypedEntryOff        int                        `json:"typed_entry_offset,omitempty"`
+	TypedClobberEntryOff int                        `json:"typed_clobber_entry_offset,omitempty"`
+	NumSpills            int                        `json:"num_spills,omitempty"`
+	TypedPeerFramePlan   Tier2TypedPeerFramePlan    `json:"typed_peer_frame_plan,omitempty"`
+	OptimizationRemarks  []OptimizationRemark       `json:"optimization_remarks,omitempty"`
+	Specialization       Tier2SpecializationSummary `json:"specialization,omitempty"`
+	LoopDiagnostics      []LoopDiagnostic           `json:"loop_diagnostics,omitempty"`
+	PipelineStages       []PipelineStageTiming      `json:"pipeline_stages,omitempty"`
+	Feedback             warmFeedbackSummary        `json:"feedback"`
+	Files                map[string]string          `json:"files,omitempty"`
 }
 
 type warmDumpPCMap struct {
@@ -212,6 +216,8 @@ func (s *WarmDumpSession) record(proto *vm.FuncProto, trace *Tier2Trace, cf *Com
 	}
 	if cf != nil {
 		rec.DirectEntryOff = cf.DirectEntryOffset
+		rec.TypedEntryOff = cf.TypedEntryOffset
+		rec.TypedClobberEntryOff = cf.TypedClobberEntryOffset
 		rec.NumSpills = cf.NumSpills
 		rec.TypedPeerFramePlan = cf.TypedPeerFramePlan
 		rec.CompiledCode = make([]byte, cf.Code.Size())
@@ -383,6 +389,8 @@ func (s *WarmDumpSession) write(tm *TieringManager, top *vm.FuncProto) error {
 				protoManifest.CodeEnd = fmt.Sprintf("0x%x", rec.CodeEnd)
 			}
 			protoManifest.DirectEntryOff = rec.DirectEntryOff
+			protoManifest.TypedEntryOff = rec.TypedEntryOff
+			protoManifest.TypedClobberEntryOff = rec.TypedClobberEntryOff
 			protoManifest.NumSpills = rec.NumSpills
 			protoManifest.TypedPeerFramePlan = rec.TypedPeerFramePlan
 			protoManifest.OptimizationRemarks = append([]OptimizationRemark(nil), rec.OptimizationRemarks...)

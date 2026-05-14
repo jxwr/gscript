@@ -5,9 +5,10 @@ package methodjit
 import "github.com/gscript/gscript/internal/jit"
 
 const (
-	callModeDirect    = 1
-	callModeTypedSelf = 2
-	callModeLeafX0    = 3
+	callModeDirect           = 1
+	callModeTypedSelf        = 2
+	callModeLeafX0           = 3
+	callModeTypedPeerClobber = 4
 
 	tier2LeafEntryTag = 1
 )

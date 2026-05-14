@@ -1737,7 +1737,6 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 	asm := ec.asm
 
 	liveGPRs, liveFPRs := ec.computeLiveAcrossCall(instr)
-	ec.emitSpillTypedPeerLiveForSuccess(liveFPRs)
 
 	fallbackLabel := ec.uniqueLabel("t2fieldmethod_fallback")
 	callFallbackLabel := ec.uniqueLabel("t2fieldmethod_call_fallback")
@@ -1749,11 +1748,17 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 	argDesc.ArgFacts = nil
 	allLeafCallees := fieldShapeTypedPeerCasesAllLeaf(cases)
 	restoreConstsOnSuccess := ec.fnUsesConstPool()
+	useClobberEntry := ec.shouldUseTypedPeerClobberEntry(liveGPRs, liveFPRs)
 
 	asm.SUBimm(jit.SP, jit.SP, rawPeerFrameSize)
 	if !allLeafCallees {
 		asm.STR(mRegRegs, jit.SP, rawPeerRegsOff)
 		asm.STR(mRegConsts, jit.SP, rawPeerConstsOff)
+	}
+	if useClobberEntry {
+		ec.emitSpillSelectiveForCall(liveGPRs, liveFPRs)
+	} else {
+		ec.emitSpillTypedPeerLiveForSuccess(liveFPRs)
 	}
 	asm.LDR(jit.X8, mRegCtx, execCtxOffBaselineClosurePtr)
 	asm.STR(jit.X8, jit.SP, rawPeerClosureOff)
@@ -1810,7 +1815,11 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 			asm.BCond(jit.CondNE, callFallbackLabel)
 		}
 		asm.Label(validateMethodLabel + "_entry")
-		asm.LDR(jit.X16, jit.X7, funcProtoOffTier2TypedEntryPtr)
+		if useClobberEntry {
+			asm.LDR(jit.X16, jit.X7, funcProtoOffTier2TypedClobberEntryPtr)
+		} else {
+			asm.LDR(jit.X16, jit.X7, funcProtoOffTier2TypedEntryPtr)
+		}
 		asm.CBZ(jit.X16, callFallbackLabel)
 
 		if !c.callee.LeafNoCall {
@@ -1838,7 +1847,11 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 			asm.ADDreg(mRegRegs, mRegRegs, jit.X8)
 		}
 		asm.LDR(mRegConsts, jit.X7, funcProtoOffConstants)
-		asm.MOVimm16(jit.X8, callModeTypedSelf)
+		if useClobberEntry {
+			asm.MOVimm16(jit.X8, callModeTypedPeerClobber)
+		} else {
+			asm.MOVimm16(jit.X8, callModeTypedSelf)
+		}
 		ec.emitStoreCallMode(jit.X8)
 		if !c.callee.LeafNoCall {
 			asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
@@ -1862,7 +1875,11 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 		}
 		ec.emitTier2CallCounter(instr, "field_call_floor", "success")
 		asm.ADDimm(jit.SP, jit.SP, rawPeerFrameSize)
-		ec.emitReloadTypedPeerLiveForSuccess(liveFPRs)
+		if useClobberEntry {
+			ec.emitReloadSelectiveForCall(liveGPRs, liveFPRs)
+		} else {
+			ec.emitReloadTypedPeerLiveForSuccess(liveFPRs)
+		}
 		ec.restoreValueReprSnapshot(preReprs)
 		switch c.desc.ReturnRep {
 		case SpecializedABIReturnRawInt:
@@ -1904,7 +1921,9 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 		ec.emitRestoreTypedPeerCallerState()
 	}
 	ec.restoreValueReprSnapshot(preReprs)
-	ec.emitSpillSelectiveForCall(liveGPRs, nil)
+	if !useClobberEntry {
+		ec.emitSpillSelectiveForCall(liveGPRs, nil)
+	}
 	if allLeafCallees {
 		ec.emitMaterializeTypedPeerCallFrameFromValues(funcSlot, instr.Args, jit.X6)
 	} else {
@@ -2645,6 +2664,17 @@ func (ec *emitContext) emitSpillTypedPeerLiveForSuccess(liveFPRs map[int]bool) {
 
 func (ec *emitContext) emitReloadTypedPeerLiveForSuccess(liveFPRs map[int]bool) {
 	ec.emitReloadSelectiveForCall(nil, liveFPRs)
+}
+
+func (ec *emitContext) shouldUseTypedPeerClobberEntry(liveGPRs, liveFPRs map[int]bool) bool {
+	// The clobber entry is profitable only when the caller has fewer live
+	// registers to preserve than the callee would save in its compact typed
+	// frame. Keep this conservative until per-callee clobber metadata is wired
+	// into the call-site decision.
+	if len(liveFPRs) != 0 {
+		return false
+	}
+	return len(liveGPRs) <= 2
 }
 
 func (ec *emitContext) emitRestoreTypedPeerCallerModeClosureOnly() {

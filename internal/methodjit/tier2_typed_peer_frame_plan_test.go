@@ -35,6 +35,9 @@ func TestTypedPeerFramePlanRequiresFullFrameForAllocatedCalleeSavedRegs(t *testi
 		t.Fatalf("typed peer ABI rejected: %s", abi.RejectWhy)
 	}
 	plan := AnalyzeTypedPeerFramePlan(fn, AllocateRegisters(fn), abi)
+	if !typedPeerClobberABIEnabled(abi) {
+		t.Fatalf("table/int typed peer ABI should allow clobber entry")
+	}
 	if plan.CanUseThinEntry {
 		t.Fatalf("thin entry unexpectedly allowed: %+v", plan)
 	}

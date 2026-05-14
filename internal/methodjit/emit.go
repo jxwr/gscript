@@ -514,6 +514,11 @@ type CompiledFunction struct {
 	// callers use FuncProto.Tier2TypedEntryPtr after runtime type guards.
 	TypedEntryOffset int
 
+	// TypedClobberEntryOffset is the byte offset of t2_typed_peer_clobber_entry.
+	// Peer callers using this entry preserve their own live registers at the
+	// call site, allowing the callee to skip callee-saved register traffic.
+	TypedClobberEntryOffset int
+
 	// TypedPeerFramePlan records why the published typed peer entry must use
 	// the conservative full frame, or why a future thin JIT-to-JIT entry would
 	// be allowed.

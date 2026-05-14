@@ -24,6 +24,25 @@ func (ec *emitContext) emitReturn(instr *Instr, block *Block) {
 		return
 	}
 
+	if ec.typedPeerClobberEntryEnabled() &&
+		ec.typedSelfABI.Return == SpecializedABIReturnRawInt &&
+		len(instr.Args) > 0 &&
+		ec.irTypes[instr.Args[0].ID] == TypeInt {
+		clobberReturnLabel := ec.uniqueLabel("typed_peer_clobber_raw_int_return")
+		afterClobberLabel := ec.uniqueLabel("typed_self_after_clobber_int")
+		ec.emitLoadCallMode(jit.X1)
+		ec.asm.CMPimm(jit.X1, callModeTypedPeerClobber)
+		ec.asm.BCond(jit.CondEQ, clobberReturnLabel)
+		ec.asm.B(afterClobberLabel)
+		ec.asm.Label(clobberReturnLabel)
+		src := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
+		if src != jit.X0 {
+			ec.asm.MOVreg(jit.X0, src)
+		}
+		ec.asm.B("t2_typed_peer_clobber_raw_int_epilogue")
+		ec.asm.Label(afterClobberLabel)
+	}
+
 	if ec.typedSelfABI.Eligible &&
 		ec.typedSelfABI.Return == SpecializedABIReturnRawInt &&
 		len(instr.Args) > 0 &&
@@ -38,6 +57,26 @@ func (ec *emitContext) emitReturn(instr *Instr, block *Block) {
 		}
 		ec.asm.B("t2_typed_self_raw_int_epilogue")
 		ec.asm.Label(genericReturnLabel)
+	}
+
+	if ec.typedPeerClobberEntryEnabled() &&
+		ec.typedSelfABI.Return == SpecializedABIReturnRawFloat &&
+		len(instr.Args) > 0 &&
+		ec.irTypes[instr.Args[0].ID] == TypeFloat {
+		clobberReturnLabel := ec.uniqueLabel("typed_peer_clobber_raw_float_return")
+		afterClobberLabel := ec.uniqueLabel("typed_self_after_clobber_float")
+		ec.emitLoadCallMode(jit.X1)
+		ec.asm.CMPimm(jit.X1, callModeTypedPeerClobber)
+		ec.asm.BCond(jit.CondEQ, clobberReturnLabel)
+		ec.asm.B(afterClobberLabel)
+		ec.asm.Label(clobberReturnLabel)
+		src := ec.resolveRawFloat(instr.Args[0].ID, jit.D0)
+		if src != jit.D0 {
+			ec.asm.FMOVd(jit.D0, src)
+		}
+		ec.asm.FMOVtoGP(jit.X0, jit.D0)
+		ec.asm.B("t2_typed_peer_clobber_raw_float_epilogue")
+		ec.asm.Label(afterClobberLabel)
 	}
 
 	if ec.typedSelfABI.Eligible &&
@@ -103,6 +142,10 @@ func (ec *emitContext) emitReturn(instr *Instr, block *Block) {
 	if ec.typedSelfABI.Eligible {
 		ec.asm.CMPimm(jit.X1, callModeTypedSelf)
 		ec.asm.BCond(jit.CondEQ, "t2_typed_self_epilogue")
+		if ec.typedPeerClobberEntryEnabled() {
+			ec.asm.CMPimm(jit.X1, callModeTypedPeerClobber)
+			ec.asm.BCond(jit.CondEQ, "t2_typed_peer_clobber_epilogue")
+		}
 	}
 	ec.asm.CBNZ(jit.X1, "t2_direct_epilogue")
 	ec.asm.B("epilogue")
