@@ -49,10 +49,40 @@ func tier2MatrixNativeLoweringModules() []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
 		tier2PassModule("DenseMatrixNestedLoadLower", Tier2PhaseMatrixNative, DenseMatrixNestedLoadLowerPass),
 		tier2PassModule("MatrixLower", Tier2PhaseMatrixNative, MatrixLowerPass),
-		tier2PassModule("LoadElimination (post-MatrixLower)", Tier2PhaseMatrixNative, LoadEliminationPass),
+		{
+			Name:  "LoadElimination (post-MatrixLower)",
+			Phase: Tier2PhaseMatrixNative,
+			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
+				if !hasMatrixNativeIR(fn) {
+					return fn, nil
+				}
+				return LoadEliminationPass(fn)
+			},
+		},
 		tier2PassModule("MatrixRowPtrFactoring", Tier2PhaseMatrixNative, MatrixRowPtrFactoringPass),
 		tier2PassModule("MatrixUnitStride", Tier2PhaseMatrixNative, MatrixUnitStridePass),
 	}
+}
+
+func hasMatrixNativeIR(fn *Function) bool {
+	if fn == nil {
+		return false
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			switch instr.Op {
+			case OpMatrixDense, OpMatrixGetF, OpMatrixSetF,
+				OpMatrixFlat, OpMatrixStride, OpMatrixLoadFAt, OpMatrixStoreFAt,
+				OpMatrixRowPtr, OpMatrixLoadFRow, OpMatrixStoreFRow,
+				OpMatrixLoadFRowConst, OpMatrixStoreFRowConst:
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func tier2FloatNumericModules() []Tier2OptimizerModule {
