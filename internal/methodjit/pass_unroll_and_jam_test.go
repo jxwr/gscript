@@ -1,6 +1,7 @@
 package methodjit
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -54,6 +55,60 @@ func TestUnrollAndJam_FloatReductionUnrollsWithScalarTail(t *testing.T) {
 		}
 		want := runVM(t, src, []runtime.Value{runtime.IntValue(n)})
 		assertValuesEqual(t, "f", got[0], want[0])
+	}
+}
+
+func TestUnrollAndJam_DivFloatReductionUsesSplitAccumulator(t *testing.T) {
+	src := `func f(n) {
+		s := 0.0
+		for i := 0; i < n; i++ {
+			x := i + 1.0
+			s = s + 1.0 / (x * x + 1.0)
+		}
+		return s
+	}`
+
+	proto := compileFunction(t, src)
+	fn := BuildGraph(proto)
+	var err error
+	fn, err = TypeSpecializePass(fn)
+	if err != nil {
+		t.Fatalf("TypeSpecializePass: %v", err)
+	}
+	fn, err = ConstPropPass(fn)
+	if err != nil {
+		t.Fatalf("ConstPropPass: %v", err)
+	}
+	fn, err = DCEPass(fn)
+	if err != nil {
+		t.Fatalf("DCEPass: %v", err)
+	}
+
+	fn, err = UnrollAndJamPass(fn)
+	if err != nil {
+		t.Fatalf("UnrollAndJamPass: %v", err)
+	}
+	assertValidates(t, fn, "after split-accumulator UnrollAndJam")
+	ir := Print(fn)
+	if !strings.Contains(ir, "split-accumulator") && strings.Count(ir, "Phi") < 3 {
+		t.Fatalf("expected extra accumulator phi after split unroll, IR:\n%s", ir)
+	}
+	if strings.Count(ir, "DivFloat") < 2 {
+		t.Fatalf("expected cloned high-latency division body, IR:\n%s", ir)
+	}
+
+	for _, n := range []int64{0, 1, 2, 3, 7, 8, 17} {
+		got, err := Interpret(fn, []runtime.Value{runtime.IntValue(n)})
+		if err != nil {
+			t.Fatalf("Interpret f(%d): %v\nIR:\n%s", n, err, ir)
+		}
+		want := runVM(t, src, []runtime.Value{runtime.IntValue(n)})
+		if len(got) == 0 || len(want) == 0 || !got[0].IsFloat() || !want[0].IsFloat() {
+			t.Fatalf("f(%d) result types got=%v want=%v", n, got, want)
+		}
+		if math.Abs(got[0].Float()-want[0].Float()) > 1e-12 {
+			t.Fatalf("f(%d)=%0.17g want %0.17g\nIR:\n%s", n, got[0].Float(), want[0].Float(), ir)
+		}
 	}
 }
 

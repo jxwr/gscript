@@ -57,12 +57,24 @@ func UnrollAndJamPass(fn *Function) (*Function, error) {
 				continue
 			}
 			factor := 4
+			splitAccumulators := false
 			if len(cand.recurrences) != 0 {
 				if !floatReductionBodyCanUseLatencyWideUnroll(cand.bodyBlock) {
 					factor = 2
 				}
 			} else if !floatReductionBodyCanUseWideUnroll(cand.bodyBlock) {
 				factor = 2
+				splitAccumulators = floatReductionBodyHasDivFloat(cand.bodyBlock)
+			}
+			if splitAccumulators {
+				if err := unrollFloatReductionLoopSplitAccumulator(fn, cand); err != nil {
+					return nil, err
+				}
+				unrolledHeaders[headerID] = true
+				changed = true
+				functionRemarks(fn).Add("UnrollAndJam", "changed", cand.header.ID, cand.updateInstr.ID, cand.updateInstr.Op,
+					"2-way split-accumulator unroll with scalar tail for high-latency float reduction loop")
+				break
 			}
 			if err := unrollFloatReductionLoop(fn, cand, factor); err != nil {
 				return nil, err
@@ -434,6 +446,124 @@ func unrollFloatReductionLoop(fn *Function, cand *floatReductionCandidate, facto
 	return nil
 }
 
+func unrollFloatReductionLoopSplitAccumulator(fn *Function, cand *floatReductionCandidate) error {
+	body, header, exit, preheader := cand.bodyBlock, cand.header, cand.exitBlock, cand.outsidePred
+	if body == nil || header == nil || exit == nil || preheader == nil || len(body.Instrs) == 0 {
+		return nil
+	}
+	term := body.Instrs[len(body.Instrs)-1]
+	if term.Op != OpJump {
+		return fmt.Errorf("split-unroll: body B%d terminator is %s, want Jump", body.ID, term.Op)
+	}
+	bodyPredIdx := predIndex(header, body)
+	preheaderPredIdx := predIndex(header, preheader)
+	if bodyPredIdx < 0 || preheaderPredIdx < 0 {
+		return fmt.Errorf("split-unroll: header B%d missing preheader/body predecessors", header.ID)
+	}
+
+	tailCheck := &Block{ID: nextBlockID(fn), defs: make(map[int]*Value)}
+	tailBody := &Block{ID: tailCheck.ID + 1, defs: make(map[int]*Value)}
+	insertBlockAfter(fn, header, tailCheck)
+	insertBlockAfter(fn, tailCheck, tailBody)
+
+	zero := &Instr{
+		ID:    fn.newValueID(),
+		Op:    OpConstFloat,
+		Type:  TypeFloat,
+		Aux:   0,
+		Block: preheader,
+	}
+	insertBeforeTerminator(preheader, zero)
+	acc2Phi := &Instr{
+		ID:    fn.newValueID(),
+		Op:    OpPhi,
+		Type:  TypeFloat,
+		Args:  make([]*Value, len(header.Preds)),
+		Block: header,
+	}
+	acc2Phi.Args[preheaderPredIdx] = zero.Value()
+	insertHeaderPhiAfter(header, cand.accPhi, acc2Phi)
+
+	hotLimit := &Instr{
+		ID:    fn.newValueID(),
+		Op:    OpSubInt,
+		Type:  TypeInt,
+		Args:  []*Value{cand.limitValue, cand.stepValue},
+		Block: preheader,
+	}
+	insertBeforeTerminator(preheader, hotLimit)
+	headerCmp := header.Instrs[len(header.Instrs)-2]
+	if headerCmp.Op != OpLeInt || len(headerCmp.Args) != 2 || headerCmp.Args[0].ID != cand.stepInstr.ID {
+		return fmt.Errorf("split-unroll: header B%d compare shape changed", header.ID)
+	}
+	headerCmp.Args[1] = hotLimit.Value()
+
+	originalBody := append([]*Instr(nil), body.Instrs[:len(body.Instrs)-1]...)
+	body.Instrs = body.Instrs[:len(body.Instrs)-1]
+	nextStep := appendStepAdd(fn, body, cand.stepInstr.Value(), cand.stepValue, cand.stepInstr.Aux2)
+	remap := map[int]*Value{
+		cand.stepInstr.ID:   nextStep.Value(),
+		cand.accPhi.ID:      acc2Phi.Value(),
+		cand.updateInstr.ID: acc2Phi.Value(),
+	}
+	cloneUpdate, err := cloneBodyInstructions(fn, body, originalBody, remap, cand.updateInstr.ID)
+	if err != nil {
+		return err
+	}
+	body.Instrs = append(body.Instrs, cloneTerminator(fn, body, OpJump, nil, header, nil, term))
+	cand.accPhi.Args[bodyPredIdx] = cand.updateInstr.Value()
+	cand.ivPhi.Args[bodyPredIdx] = nextStep.Value()
+	acc2Phi.Args[bodyPredIdx] = cloneUpdate.Value()
+
+	combine := &Instr{
+		ID:    fn.newValueID(),
+		Op:    OpAddFloat,
+		Type:  TypeFloat,
+		Args:  []*Value{cand.accPhi.Value(), acc2Phi.Value()},
+		Block: tailCheck,
+	}
+	cond := &Instr{
+		ID:    fn.newValueID(),
+		Op:    OpLeInt,
+		Type:  TypeBool,
+		Args:  []*Value{cand.stepInstr.Value(), cand.limitValue},
+		Block: tailCheck,
+	}
+	branch := cloneTerminator(fn, tailCheck, OpBranch, []*Value{cond.Value()}, tailBody, exit, nil)
+	tailCheck.Instrs = []*Instr{combine, cond, branch}
+	tailCheck.Preds = []*Block{header}
+	tailCheck.Succs = []*Block{tailBody, exit}
+
+	tailRemap := map[int]*Value{
+		cand.stepInstr.ID:   cand.stepInstr.Value(),
+		cand.accPhi.ID:      combine.Value(),
+		cand.updateInstr.ID: combine.Value(),
+	}
+	tailUpdate, err := cloneBodyInstructions(fn, tailBody, originalBody, tailRemap, cand.updateInstr.ID)
+	if err != nil {
+		return err
+	}
+	tailBody.Instrs = append(tailBody.Instrs, cloneTerminator(fn, tailBody, OpJump, nil, exit, nil, term))
+	tailBody.Preds = []*Block{tailCheck}
+	tailBody.Succs = []*Block{exit}
+
+	header.Succs[1] = tailCheck
+	headerTerm := header.Instrs[len(header.Instrs)-1]
+	headerTerm.Aux2 = int64(tailCheck.ID)
+	replacePredsWith(exit, header, []*Block{tailCheck, tailBody})
+
+	exitAcc := &Instr{
+		ID:    fn.newValueID(),
+		Op:    OpPhi,
+		Type:  TypeFloat,
+		Args:  []*Value{combine.Value(), tailUpdate.Value()},
+		Block: exit,
+	}
+	exit.Instrs = append([]*Instr{exitAcc}, exit.Instrs...)
+	replaceValueUsesInBlock(exit, cand.accPhi.ID, exitAcc.Value(), 1)
+	return nil
+}
+
 func appendStepAdd(fn *Function, block *Block, base, step *Value, aux2 int64) *Instr {
 	add := &Instr{
 		ID:    fn.newValueID(),
@@ -445,6 +575,25 @@ func appendStepAdd(fn *Function, block *Block, base, step *Value, aux2 int64) *I
 	}
 	block.Instrs = append(block.Instrs, add)
 	return add
+}
+
+func insertHeaderPhiAfter(header *Block, after, phi *Instr) {
+	if header == nil || phi == nil {
+		return
+	}
+	insertAt := 0
+	for insertAt < len(header.Instrs) && header.Instrs[insertAt] != nil && header.Instrs[insertAt].Op == OpPhi {
+		insertAt++
+	}
+	for i, instr := range header.Instrs[:insertAt] {
+		if instr == after {
+			insertAt = i + 1
+			break
+		}
+	}
+	header.Instrs = append(header.Instrs, nil)
+	copy(header.Instrs[insertAt+1:], header.Instrs[insertAt:])
+	header.Instrs[insertAt] = phi
 }
 
 func copyValueMap(in map[int]*Value) map[int]*Value {
@@ -667,6 +816,18 @@ func floatReductionBodyCanUseLatencyWideUnroll(body *Block) bool {
 		}
 	}
 	return hasSqrt
+}
+
+func floatReductionBodyHasDivFloat(body *Block) bool {
+	if body == nil || len(body.Instrs) == 0 {
+		return false
+	}
+	for _, instr := range body.Instrs[:len(body.Instrs)-1] {
+		if instr.Op == OpDivFloat {
+			return true
+		}
+	}
+	return false
 }
 
 func isUnrollCloneableOp(op Op) bool {
