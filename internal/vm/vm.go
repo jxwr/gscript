@@ -262,6 +262,24 @@ func (vm *VM) GetGlobal(name string) runtime.Value {
 	return runtime.NilValue()
 }
 
+func (vm *VM) GlobalIndex(name string) (int, bool) {
+	if vm == nil || !vm.noGlobalLock || vm.globalOverrides != nil {
+		return 0, false
+	}
+	idx, ok := vm.globalIndex[name]
+	if !ok || idx < 0 || idx >= len(vm.globalArray) {
+		return 0, false
+	}
+	return idx, true
+}
+
+func (vm *VM) GetGlobalByIndex(idx int) (runtime.Value, bool) {
+	if vm == nil || !vm.noGlobalLock || vm.globalOverrides != nil || idx < 0 || idx >= len(vm.globalArray) {
+		return runtime.NilValue(), false
+	}
+	return vm.globalArray[idx], true
+}
+
 // SetGlobal writes a global variable with proper locking.
 func (vm *VM) SetGlobal(name string, val runtime.Value) {
 	if vm.noGlobalLock {

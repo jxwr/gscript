@@ -25,6 +25,7 @@ type mutualRecursiveIntSCCProtocol struct {
 	names       []string
 	indexByName map[string]int
 	entryIndex  int
+	globalIdx   []int
 	memoMu      sync.Mutex
 	memo        map[mutualRecursiveIntKey]int64
 	active      map[mutualRecursiveIntKey]bool
@@ -328,12 +329,37 @@ func (tm *TieringManager) mutualRecursiveIntSCCGlobalsMatch(protocol *mutualRecu
 	if tm == nil || tm.callVM == nil || protocol == nil || len(protocol.protos) != len(protocol.names) {
 		return false
 	}
+	if len(protocol.globalIdx) == len(protocol.names) {
+		for i, idx := range protocol.globalIdx {
+			v, ok := tm.callVM.GetGlobalByIndex(idx)
+			if !ok {
+				protocol.globalIdx = nil
+				break
+			}
+			cl, ok := vmClosureFromValue(v)
+			if !ok || cl == nil || cl.Proto != protocol.protos[i] {
+				return false
+			}
+		}
+		if len(protocol.globalIdx) == len(protocol.names) {
+			return true
+		}
+	}
 	for i, name := range protocol.names {
 		cl, ok := vmClosureFromValue(tm.callVM.GetGlobal(name))
 		if !ok || cl == nil || cl.Proto != protocol.protos[i] {
 			return false
 		}
 	}
+	idxs := make([]int, len(protocol.names))
+	for i, name := range protocol.names {
+		idx, ok := tm.callVM.GlobalIndex(name)
+		if !ok {
+			return true
+		}
+		idxs[i] = idx
+	}
+	protocol.globalIdx = idxs
 	return true
 }
 
