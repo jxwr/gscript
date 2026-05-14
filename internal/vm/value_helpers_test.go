@@ -59,7 +59,7 @@ func TestNewClosureUsesInlineStorageForOneUpvalue(t *testing.T) {
 	}
 }
 
-func TestNewClosureAllocatesSliceForMultipleUpvalues(t *testing.T) {
+func TestNewClosureUsesInlineStorageForTwoUpvalues(t *testing.T) {
 	proto := &FuncProto{
 		Name: "two",
 		Upvalues: []UpvalDesc{
@@ -71,7 +71,7 @@ func TestNewClosureAllocatesSliceForMultipleUpvalues(t *testing.T) {
 	if len(cl.Upvalues) != 2 {
 		t.Fatalf("len(Upvalues)=%d, want 2", len(cl.Upvalues))
 	}
-	if &cl.Upvalues[0] == &cl.inlineUpvalue[0] {
-		t.Fatal("multi-upvalue closure should not use one-slot inline storage")
+	if &cl.Upvalues[0] != &cl.inlineUpvalue[0] || &cl.Upvalues[1] != &cl.inlineUpvalue[1] {
+		t.Fatal("two-upvalue closure should use inline storage")
 	}
 }

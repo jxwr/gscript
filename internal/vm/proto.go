@@ -155,7 +155,7 @@ type UpvalDesc struct {
 type Closure struct {
 	Proto               *FuncProto
 	Upvalues            []*Upvalue
-	inlineUpvalue       [1]*Upvalue
+	inlineUpvalue       [2]*Upvalue
 	inlineClosedUpvalue Upvalue
 }
 
@@ -168,7 +168,7 @@ func ClosureInlineUpvalue0Offset() int {
 }
 
 // NewClosure creates a closure and avoids a second heap allocation for the
-// common one-upvalue case by backing the Upvalues slice with the closure.
+// common one/two-upvalue cases by backing the Upvalues slice with the closure.
 func NewClosure(proto *FuncProto) *Closure {
 	cl := &Closure{Proto: proto}
 	if proto == nil {
@@ -179,6 +179,8 @@ func NewClosure(proto *FuncProto) *Closure {
 		return cl
 	case 1:
 		cl.Upvalues = cl.inlineUpvalue[:1]
+	case 2:
+		cl.Upvalues = cl.inlineUpvalue[:2]
 	default:
 		cl.Upvalues = make([]*Upvalue, n)
 	}

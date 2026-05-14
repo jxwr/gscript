@@ -933,6 +933,20 @@ func emitLoadClosureTwoUpvalueRefs(asm *jit.Assembler, closureReg jit.Reg, upval
 		asm.B(slowLabel)
 		return
 	}
+	if upvalCount == 2 && ((upval1 == 0 && upval2 == 1) || (upval1 == 1 && upval2 == 0)) {
+		if upval1 == 0 {
+			asm.LDP(upval1Reg, upval2Reg, closureReg, vmClosureOffInlineUpvalue0)
+		} else {
+			asm.LDP(upval2Reg, upval1Reg, closureReg, vmClosureOffInlineUpvalue0)
+		}
+		asm.CBZ(upval1Reg, slowLabel)
+		asm.CBZ(upval2Reg, slowLabel)
+		asm.LDR(dstRef1Reg, upval1Reg, 0)
+		asm.LDR(dstRef2Reg, upval2Reg, 0)
+		asm.CBZ(dstRef1Reg, slowLabel)
+		asm.CBZ(dstRef2Reg, slowLabel)
+		return
+	}
 	asm.LDR(dataReg, closureReg, vmClosureOffUpvalues)
 	asm.CBZ(dataReg, slowLabel)
 	if upval1+1 == upval2 {
