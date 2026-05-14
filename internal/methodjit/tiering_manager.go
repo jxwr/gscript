@@ -411,31 +411,80 @@ func (tm *TieringManager) tryMidRunTier2Refresh(proto *vm.FuncProto, cf *Compile
 	}
 	key, ok := tier2ContinuationKeyForRuntimeExit(cf, ctx)
 	if !ok {
+		tm.traceEvent("tier2_mid_run_switch_rejected", "tier2", proto, map[string]any{
+			"reason": "missing_runtime_continuation_key",
+		})
 		return nil, 0, false
 	}
 	oldCont, ok := cf.Continuations[key]
 	if !ok || oldCont.Ambiguous {
+		reason := "missing_old_continuation"
+		if ok && oldCont.Ambiguous {
+			reason = "ambiguous_old_continuation"
+		}
+		tm.traceEvent("tier2_mid_run_switch_rejected", "tier2", proto, map[string]any{
+			"pc":           key.PC,
+			"kind":         int(key.Kind),
+			"numeric_pass": key.NumericPass,
+			"reason":       reason,
+		})
 		return nil, 0, false
 	}
 	if !oldCont.Switchable {
+		tm.traceEvent("tier2_mid_run_switch_rejected", "tier2", proto, map[string]any{
+			"pc":           key.PC,
+			"kind":         int(key.Kind),
+			"numeric_pass": key.NumericPass,
+			"reason":       oldCont.NotSwitchableWhy,
+		})
 		return nil, 0, false
 	}
 	nextCF, err := tm.compileTier2(proto)
 	if err != nil || nextCF == nil {
+		reason := "compile_failed"
+		if err != nil {
+			reason = err.Error()
+		}
+		tm.traceEvent("tier2_mid_run_switch_rejected", "tier2", proto, map[string]any{
+			"pc":           key.PC,
+			"kind":         int(key.Kind),
+			"numeric_pass": key.NumericPass,
+			"reason":       reason,
+		})
 		return nil, 0, false
 	}
 	newCont, ok := nextCF.Continuations[key]
 	if !ok {
 		_ = nextCF.Code.Free()
+		tm.traceEvent("tier2_mid_run_switch_rejected", "tier2", proto, map[string]any{
+			"pc":           key.PC,
+			"kind":         int(key.Kind),
+			"numeric_pass": key.NumericPass,
+			"reason":       "missing_new_continuation",
+		})
 		return nil, 0, false
 	}
-	if compatible, _ := tier2ContinuationExactStateCompatible(oldCont, newCont); !compatible {
+	if compatible, reason := tier2ContinuationExactStateCompatible(oldCont, newCont); !compatible {
 		_ = nextCF.Code.Free()
+		tm.traceEvent("tier2_mid_run_switch_rejected", "tier2", proto, map[string]any{
+			"pc":             key.PC,
+			"kind":           int(key.Kind),
+			"numeric_pass":   key.NumericPass,
+			"reason":         reason,
+			"version_before": fmt.Sprintf("%x", cf.SpecializationVersion.Hash),
+			"version_after":  fmt.Sprintf("%x", nextCF.SpecializationVersion.Hash),
+		})
 		return nil, 0, false
 	}
 	resumeOff, ok := nextCF.continuationOffset(key)
 	if !ok {
 		_ = nextCF.Code.Free()
+		tm.traceEvent("tier2_mid_run_switch_rejected", "tier2", proto, map[string]any{
+			"pc":           key.PC,
+			"kind":         int(key.Kind),
+			"numeric_pass": key.NumericPass,
+			"reason":       "missing_new_resume_offset",
+		})
 		return nil, 0, false
 	}
 	tm.markTier2Compiled(proto, nextCF)
