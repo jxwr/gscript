@@ -401,6 +401,54 @@ func (tm *TieringManager) retireStaleTier2AfterFeedback(proto *vm.FuncProto, cf 
 	tm.clearTier2Install(proto)
 }
 
+func (tm *TieringManager) tryMidRunTier2Refresh(proto *vm.FuncProto, cf *CompiledFunction, ctx *ExecContext) (*CompiledFunction, int, bool) {
+	if tm == nil || proto == nil || cf == nil || ctx == nil {
+		return nil, 0, false
+	}
+	current := tm.currentTier2SpeculationProfile(proto)
+	if !tm.recompile.ShouldRefreshProfileForProto(proto, cf, current) {
+		return nil, 0, false
+	}
+	key, ok := tier2ContinuationKeyForRuntimeExit(cf, ctx)
+	if !ok {
+		return nil, 0, false
+	}
+	oldCont, ok := cf.Continuations[key]
+	if !ok || oldCont.Ambiguous {
+		return nil, 0, false
+	}
+	if !oldCont.Switchable {
+		return nil, 0, false
+	}
+	nextCF, err := tm.compileTier2(proto)
+	if err != nil || nextCF == nil {
+		return nil, 0, false
+	}
+	newCont, ok := nextCF.Continuations[key]
+	if !ok {
+		_ = nextCF.Code.Free()
+		return nil, 0, false
+	}
+	if compatible, _ := tier2ContinuationExactStateCompatible(oldCont, newCont); !compatible {
+		_ = nextCF.Code.Free()
+		return nil, 0, false
+	}
+	resumeOff, ok := nextCF.continuationOffset(key)
+	if !ok {
+		_ = nextCF.Code.Free()
+		return nil, 0, false
+	}
+	tm.markTier2Compiled(proto, nextCF)
+	tm.traceEvent("tier2_mid_run_switch", "tier2", proto, map[string]any{
+		"pc":             key.PC,
+		"kind":           int(key.Kind),
+		"numeric_pass":   key.NumericPass,
+		"version_before": fmt.Sprintf("%x", cf.SpecializationVersion.Hash),
+		"version_after":  fmt.Sprintf("%x", nextCF.SpecializationVersion.Hash),
+	})
+	return nextCF, resumeOff, true
+}
+
 func (tm *TieringManager) applyPromotionDecision(proto *vm.FuncProto, profile FuncProfile, decision PromotionDecision) interface{} {
 	switch decision.Action {
 	case TieringActionReturnCompiled:

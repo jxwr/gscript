@@ -189,3 +189,55 @@ func tier2ContinuationKindForExitName(exitName string) (Tier2ContinuationKind, b
 		return 0, false
 	}
 }
+
+func tier2ContinuationKeyForRuntimeExit(cf *CompiledFunction, ctx *ExecContext) (Tier2ContinuationKey, bool) {
+	if cf == nil || ctx == nil {
+		return Tier2ContinuationKey{}, false
+	}
+	instrID := 0
+	var kind Tier2ContinuationKind
+	switch ctx.ExitCode {
+	case ExitCallExit, ExitNativeCallExit:
+		instrID = int(ctx.CallID)
+		kind = Tier2ContinuationCall
+	case ExitGlobalExit:
+		instrID = int(ctx.GlobalExitID)
+		kind = Tier2ContinuationGlobal
+	case ExitTableExit:
+		instrID = int(ctx.TableExitID)
+		kind = Tier2ContinuationTable
+	case ExitOpExit:
+		instrID = int(ctx.OpExitID)
+		kind = Tier2ContinuationOp
+	default:
+		return Tier2ContinuationKey{}, false
+	}
+	meta, ok := cf.ExitSites[instrID]
+	if !ok || meta.PC < 0 {
+		return Tier2ContinuationKey{}, false
+	}
+	return Tier2ContinuationKey{PC: meta.PC, Kind: kind, NumericPass: ctx.ResumeNumericPass != 0}, true
+}
+
+func tier2ContinuationExactStateCompatible(oldCont, newCont Tier2Continuation) (bool, string) {
+	if oldCont.Ambiguous || newCont.Ambiguous {
+		return false, "ambiguous_key"
+	}
+	if len(oldCont.LiveSlots) != len(newCont.LiveSlots) {
+		return false, "live_slot_count_changed"
+	}
+	oldBySlot := make(map[int]exitResumeLiveSlot, len(oldCont.LiveSlots))
+	for _, live := range oldCont.LiveSlots {
+		oldBySlot[live.Slot] = live
+	}
+	for _, live := range newCont.LiveSlots {
+		old, ok := oldBySlot[live.Slot]
+		if !ok {
+			return false, "live_slot_mapping_changed"
+		}
+		if old.Repr != live.Repr {
+			return false, "live_slot_repr_changed"
+		}
+	}
+	return true, ""
+}

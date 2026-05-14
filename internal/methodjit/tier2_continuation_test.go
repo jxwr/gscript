@@ -95,3 +95,21 @@ func TestBuildTier2ContinuationsMarksTempSlotNotSwitchable(t *testing.T) {
 		t.Fatalf("temp-slot continuation switchability = (%v,%q), want (false,version_local_temp_slot)", cont.Switchable, cont.NotSwitchableWhy)
 	}
 }
+
+func TestTier2ContinuationExactStateCompatible(t *testing.T) {
+	old := Tier2Continuation{LiveSlots: []exitResumeLiveSlot{
+		{Slot: 0, Repr: valueReprRawInt},
+		{Slot: 1, Repr: valueReprRawTablePtr},
+	}}
+	next := Tier2Continuation{LiveSlots: []exitResumeLiveSlot{
+		{Slot: 1, Repr: valueReprRawTablePtr},
+		{Slot: 0, Repr: valueReprRawInt},
+	}}
+	if ok, reason := tier2ContinuationExactStateCompatible(old, next); !ok || reason != "" {
+		t.Fatalf("compatible continuation state = (%v,%q), want (true,\"\")", ok, reason)
+	}
+	next.LiveSlots[1].Repr = valueReprBoxed
+	if ok, reason := tier2ContinuationExactStateCompatible(old, next); ok || reason != "live_slot_repr_changed" {
+		t.Fatalf("changed repr compatibility = (%v,%q), want (false,live_slot_repr_changed)", ok, reason)
+	}
+}

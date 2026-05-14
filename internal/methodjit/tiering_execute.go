@@ -109,6 +109,54 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			ctx.BaselineClosurePtr = uintptr(unsafe.Pointer(cl))
 		}
 	}
+	refreshCFContext := func(next *CompiledFunction) bool {
+		if next == nil {
+			return false
+		}
+		needed := base + next.numRegs
+		if needed > len(regs) {
+			if tm.callVM == nil {
+				return false
+			}
+			regs = tm.callVM.EnsureRegs(needed)
+		}
+		oldNumRegs := cf.numRegs
+		cf = next
+		for i := base + oldNumRegs; i < base+cf.numRegs && i < len(regs); i++ {
+			regs[i] = runtime.NilValue()
+		}
+		ctx.Regs = uintptr(unsafe.Pointer(&regs[base]))
+		ctx.RegsBase = uintptr(unsafe.Pointer(&regs[0]))
+		ctx.RegsEnd = ctx.RegsBase + uintptr(len(regs)*jit.ValueSize)
+		ctx.RawSelfRegsEnd = rawSelfRegsEnd(ctx.Regs, ctx.RegsEnd, cf.numRegs)
+		if len(cf.GlobalCache) > 0 {
+			ctx.Tier2GlobalCache = uintptr(unsafe.Pointer(&cf.GlobalCache[0]))
+			ctx.Tier2GlobalCacheGen = uintptr(unsafe.Pointer(&cf.GlobalCacheGen))
+		} else {
+			ctx.Tier2GlobalCache = 0
+			ctx.Tier2GlobalCacheGen = 0
+		}
+		if len(cf.CallCache) > 0 {
+			ctx.Tier2CallCache = uintptr(unsafe.Pointer(&cf.CallCache[0]))
+		} else {
+			ctx.Tier2CallCache = 0
+		}
+		exitCheck = newExitResumeCheckState(cf)
+		ctx.ExitResumeCheckShadow = exitCheck.shadowPtr()
+		return true
+	}
+	tryMidRunRefresh := func(currentResumeOff int) int {
+		nextCF, nextResumeOff, switched := tm.tryMidRunTier2Refresh(proto, cf, ctx)
+		if !switched {
+			tm.retireStaleTier2AfterFeedback(proto, cf)
+			return currentResumeOff
+		}
+		if !refreshCFContext(nextCF) {
+			tm.retireStaleTier2AfterFeedback(proto, cf)
+			return currentResumeOff
+		}
+		return nextResumeOff
+	}
 	syncNativeGlobals := func() {
 		if tm.callVM == nil || len(cf.NativeSetGlobals) == 0 || len(cf.GlobalIndexByConst) == 0 {
 			return
@@ -220,7 +268,6 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 				}
 				return nil, fmt.Errorf("tier2: call-exit: %w", err)
 			}
-			tm.retireStaleTier2AfterFeedback(proto, cf)
 			resyncRegs()
 			if err := exitCheck.checkAfter(site, before, regs, base, protoNameForCheck(proto)); err != nil {
 				return nil, err
@@ -230,6 +277,7 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			if !ok {
 				return nil, fmt.Errorf("tier2: no resume for call %d", callID)
 			}
+			resumeOff = tryMidRunRefresh(resumeOff)
 			if tm.perfStatsEnabled {
 				start := time.Now()
 				codePtr = tier2ExitResumeCodePtr(cf, ctx, resumeOff)
@@ -256,13 +304,13 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 				}
 				return nil, fmt.Errorf("tier2: native-call-exit: %w", err)
 			}
-			tm.retireStaleTier2AfterFeedback(proto, cf)
 			resyncRegs()
 			callID := int(ctx.CallID)
 			resumeOff, ok := cf.resumeOffset(callID, ctx.ResumeNumericPass != 0)
 			if !ok {
 				return nil, fmt.Errorf("tier2: no resume for native call %d", callID)
 			}
+			resumeOff = tryMidRunRefresh(resumeOff)
 			if tm.perfStatsEnabled {
 				start := time.Now()
 				codePtr = tier2ExitResumeCodePtr(cf, ctx, resumeOff)
@@ -281,7 +329,6 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			if err := tm.executeGlobalExit(ctx, regs, base, proto, cf); err != nil {
 				return nil, fmt.Errorf("tier2: global-exit: %w", err)
 			}
-			tm.retireStaleTier2AfterFeedback(proto, cf)
 			resyncRegs()
 			if err := exitCheck.checkAfter(site, before, regs, base, protoNameForCheck(proto)); err != nil {
 				return nil, err
@@ -291,6 +338,7 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			if !ok {
 				return nil, fmt.Errorf("tier2: no resume for global %d", globalID)
 			}
+			resumeOff = tryMidRunRefresh(resumeOff)
 			if tm.perfStatsEnabled {
 				start := time.Now()
 				codePtr = tier2ExitResumeCodePtr(cf, ctx, resumeOff)
@@ -316,7 +364,6 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			if err != nil {
 				return nil, fmt.Errorf("tier2: table-exit: %w", err)
 			}
-			tm.retireStaleTier2AfterFeedback(proto, cf)
 			resyncRegs()
 			if err := exitCheck.checkAfter(site, before, regs, base, protoNameForCheck(proto)); err != nil {
 				return nil, err
@@ -326,6 +373,7 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			if !ok {
 				return nil, fmt.Errorf("tier2: no resume for table %d", tableID)
 			}
+			resumeOff = tryMidRunRefresh(resumeOff)
 			if tm.perfStatsEnabled {
 				start := time.Now()
 				codePtr = tier2ExitResumeCodePtr(cf, ctx, resumeOff)
