@@ -492,11 +492,14 @@ func mainProtoHasRecursiveChild(proto *vm.FuncProto) bool {
 		return false
 	}
 	childNames := make(map[string]bool, len(proto.Protos))
+	children := make(map[string]*vm.FuncProto, len(proto.Protos))
 	for _, child := range proto.Protos {
 		if child != nil && child.Name != "" {
 			childNames[child.Name] = true
+			children[child.Name] = child
 		}
 	}
+	childRefs := make(map[string]map[string]bool, len(proto.Protos))
 	for _, child := range proto.Protos {
 		if child == nil {
 			continue
@@ -509,9 +512,43 @@ func mainProtoHasRecursiveChild(proto *vm.FuncProto) bool {
 				continue
 			}
 			name := protoConstString(child, vm.DecodeBx(inst))
-			if name != "" && name != child.Name && childNames[name] {
+			if name == "" || name == child.Name || !childNames[name] {
+				continue
+			}
+			if childRefs[child.Name] == nil {
+				childRefs[child.Name] = make(map[string]bool, 1)
+			}
+			childRefs[child.Name][name] = true
+		}
+	}
+	for from, refs := range childRefs {
+		for to := range refs {
+			if childRefs[to][from] || childReachableThroughSiblings(to, from, childRefs, children) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func childReachableThroughSiblings(start, target string, refs map[string]map[string]bool, children map[string]*vm.FuncProto) bool {
+	if start == "" || target == "" || children[start] == nil || children[target] == nil {
+		return false
+	}
+	seen := map[string]bool{start: true}
+	work := []string{start}
+	for len(work) > 0 {
+		cur := work[len(work)-1]
+		work = work[:len(work)-1]
+		for next := range refs[cur] {
+			if next == target {
+				return true
+			}
+			if seen[next] || children[next] == nil {
+				continue
+			}
+			seen[next] = true
+			work = append(work, next)
 		}
 	}
 	return false
