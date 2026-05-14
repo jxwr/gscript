@@ -2,6 +2,7 @@ package methodjit
 
 import (
 	"testing"
+	"unsafe"
 
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
@@ -298,6 +299,30 @@ func TestTier2SpecializationProfileRequiresMaturePolymorphicCallFeedback(t *test
 	profile = BuildTier2SpecializationProfile(proto)
 	if profile.Summary().GuardKinds[string(SpecGuardCallPolymorphic)] != 0 {
 		t.Fatalf("arity-polymorphic call produced guard: %+v", profile.Summary())
+	}
+}
+
+func TestTier2SpecializationProfilePrefersStableVMClosureGuard(t *testing.T) {
+	proto := &vm.FuncProto{Name: "caller", Code: make([]uint32, 2)}
+	callee := &vm.FuncProto{Name: "step"}
+	cl := vm.NewClosure(callee)
+	proto.EnsureFeedback()
+	fb := &proto.CallSiteFeedback[1]
+	fb.Count = 3
+	fb.NArgs = 0
+	fb.ResultArity = 1
+	fb.CalleeVMProto = callee
+	fb.CalleeVMClosure = uintptr(unsafe.Pointer(cl))
+	fb.CalleeVMProtos[0] = callee
+	fb.CalleeVMProtoCount = 1
+
+	profile := BuildTier2SpecializationProfile(proto)
+	summary := profile.Summary()
+	if summary.GuardKinds[string(SpecGuardCallVMClosure)] != 1 {
+		t.Fatalf("closure guard count mismatch: %+v", summary)
+	}
+	if summary.GuardKinds[string(SpecGuardCallVMProto)] != 0 {
+		t.Fatalf("stable closure should suppress weaker proto guard: %+v", summary)
 	}
 }
 

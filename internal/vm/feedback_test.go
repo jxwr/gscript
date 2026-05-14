@@ -643,6 +643,44 @@ func TestCallSiteFeedback_MaturePolymorphicVMProtosRequiresStableArityAndTwoProt
 	}
 }
 
+func TestCallSiteFeedback_StableVMClosureIdentity(t *testing.T) {
+	proto := &FuncProto{Name: "step"}
+	cl := NewClosure(proto)
+	v := runtime.VMClosureFunctionValue(unsafe.Pointer(cl), cl)
+	var cf CallSiteFeedback
+	cf.ObserveCall(v, nil, 0, 2)
+	cf.ObserveCall(v, nil, 0, 2)
+	got, gotProto, ok := cf.StableCalleeVMClosure()
+	if !ok || got != uintptr(unsafe.Pointer(cl)) || gotProto != proto {
+		t.Fatalf("stable closure=(%#x,%v,%v), want (%#x,%v,true)",
+			got, gotProto, ok, uintptr(unsafe.Pointer(cl)), proto)
+	}
+	if _, ok := cf.StableCalleeVMProto(); !ok {
+		t.Fatal("stable closure call should still expose stable callee proto")
+	}
+}
+
+func TestCallSiteFeedback_VMClosureIdentityPolymorphicForSameProto(t *testing.T) {
+	proto := &FuncProto{Name: "step"}
+	clA := NewClosure(proto)
+	clB := NewClosure(proto)
+	var cf CallSiteFeedback
+	cf.ObserveCall(runtime.VMClosureFunctionValue(unsafe.Pointer(clA), clA), nil, 0, 2)
+	cf.ObserveCall(runtime.VMClosureFunctionValue(unsafe.Pointer(clB), clB), nil, 0, 2)
+	if cf.Flags&CallSiteVMClosurePolymorphic == 0 {
+		t.Fatalf("same-proto closure identity polymorphism not recorded: flags=%02x", cf.Flags)
+	}
+	if cf.Flags&CallSiteCalleePolymorphic != 0 {
+		t.Fatalf("same-proto closure identity must not poison callee proto stability: flags=%02x", cf.Flags)
+	}
+	if _, _, ok := cf.StableCalleeVMClosure(); ok {
+		t.Fatal("polymorphic closure identity reported as stable")
+	}
+	if got, ok := cf.StableCalleeVMProto(); !ok || got != proto {
+		t.Fatalf("stable proto=(%v,%v), want same proto despite closure identity polymorphism", got, ok)
+	}
+}
+
 func TestFeedback_SubMulDiv(t *testing.T) {
 	proto := compileFeedback(t, `a := 10; b := 3; s := a - b; m := a * b; d := a / b`)
 	for _, op := range []Opcode{OP_SUB, OP_MUL, OP_DIV} {

@@ -47,6 +47,7 @@ const (
 	SpecGuardFieldShape      SpecializationGuardKind = "field_shape"
 	SpecGuardStringShapeKey  SpecializationGuardKind = "string_shape_key"
 	SpecGuardCallNative      SpecializationGuardKind = "call_native"
+	SpecGuardCallVMClosure   SpecializationGuardKind = "call_vm_closure"
 	SpecGuardCallVMProto     SpecializationGuardKind = "call_vm_proto"
 	SpecGuardCallPolymorphic SpecializationGuardKind = "call_poly_vm_proto"
 	SpecGuardCallResultRange SpecializationGuardKind = "call_result_range"
@@ -67,6 +68,7 @@ type SpecializationGuard struct {
 
 	CalleeNativeKind uint8
 	CalleeNativeData uintptr
+	CalleeVMClosure  uintptr
 	CalleeVMProto    *vm.FuncProto
 	CalleeVMProtos   []*vm.FuncProto
 	NArgs            uint8
@@ -261,6 +263,18 @@ func BuildTier2SpecializationProfile(proto *vm.FuncProto) Tier2SpecializationPro
 			})
 			continue
 		}
+		if closure, callee, ok := fb.StableCalleeVMClosure(); ok {
+			profile.addGuard(SpecializationGuard{
+				Kind:            SpecGuardCallVMClosure,
+				PC:              pc,
+				Count:           fb.Count,
+				CalleeVMClosure: closure,
+				CalleeVMProto:   callee,
+				NArgs:           fb.NArgs,
+				ResultArity:     fb.ResultArity,
+			})
+			continue
+		}
 		if callee, ok := fb.StableCalleeVMProto(); ok {
 			profile.addGuard(SpecializationGuard{
 				Kind:          SpecGuardCallVMProto,
@@ -407,7 +421,7 @@ func specializationGuardOpName(kind SpecializationGuardKind) string {
 		return "GuardTableKind"
 	case SpecGuardStringShapeKey:
 		return "GuardConstString"
-	case SpecGuardCallNative, SpecGuardCallVMProto, SpecGuardCallPolymorphic:
+	case SpecGuardCallNative, SpecGuardCallVMClosure, SpecGuardCallVMProto, SpecGuardCallPolymorphic:
 		return "GuardCalleeProto"
 	default:
 		return ""

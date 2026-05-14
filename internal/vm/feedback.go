@@ -155,6 +155,7 @@ const MaxCallSiteFeedbackVMProtos = 4
 const (
 	CallSiteCalleePolymorphic uint8 = 1 << iota
 	CallSiteArityPolymorphic
+	CallSiteVMClosurePolymorphic
 )
 
 const callSiteHotNativeObservationLimit uint32 = 64
@@ -171,6 +172,7 @@ type CallSiteFeedback struct {
 	CalleeNativeKind   uint8
 	CalleeNativeData   uintptr
 	CalleeVMProto      *FuncProto
+	CalleeVMClosure    uintptr
 	CalleeVMProtos     [MaxCallSiteFeedbackVMProtos]*FuncProto
 	CalleeVMProtoCount uint8
 	ArgTypes           [MaxCallSiteFeedbackArgs]FeedbackType
@@ -861,14 +863,18 @@ func (cf *CallSiteFeedback) ObserveCall(fn runtime.Value, args []runtime.Value, 
 	cf.CalleeType.Observe(fn.Type())
 	nativeKind, nativeData := callFeedbackNativeIdentity(fn)
 	vmProto := callFeedbackVMProto(fn)
+	vmClosure := callFeedbackVMClosure(fn)
 	if cf.Count == 1 {
 		cf.CalleeNativeKind = nativeKind
 		cf.CalleeNativeData = nativeData
 		cf.CalleeVMProto = vmProto
+		cf.CalleeVMClosure = vmClosure
 		cf.observeVMProto(vmProto)
 	} else if cf.CalleeNativeKind != nativeKind || cf.CalleeNativeData != nativeData || cf.CalleeVMProto != vmProto {
 		cf.Flags |= CallSiteCalleePolymorphic
 		cf.observeVMProto(vmProto)
+	} else if vmClosure != 0 && cf.CalleeVMClosure != 0 && cf.CalleeVMClosure != vmClosure {
+		cf.Flags |= CallSiteVMClosurePolymorphic
 	}
 	limit := nArgs
 	if limit > len(args) {
@@ -934,6 +940,15 @@ func (cf CallSiteFeedback) StableCalleeVMProto() (*FuncProto, bool) {
 		return nil, false
 	}
 	return cf.CalleeVMProto, true
+}
+
+func (cf CallSiteFeedback) StableCalleeVMClosure() (uintptr, *FuncProto, bool) {
+	if cf.Count == 0 ||
+		cf.Flags&(CallSiteCalleePolymorphic|CallSiteVMClosurePolymorphic) != 0 ||
+		cf.CalleeVMClosure == 0 || cf.CalleeVMProto == nil {
+		return 0, nil, false
+	}
+	return cf.CalleeVMClosure, cf.CalleeVMProto, true
 }
 
 func (cf CallSiteFeedback) PolymorphicVMProtos() []*FuncProto {
