@@ -235,3 +235,76 @@ func TestFieldSvalsLower_CrossBlockDominatedLoads(t *testing.T) {
 		t.Fatalf("loads did not share cross-block FieldSvals:\n%s", Print(out))
 	}
 }
+
+func TestFieldSvalsLower_CrossBlockDominatedShapePreservingStore(t *testing.T) {
+	fn, b0, obj := newFieldNumFusionFn("field_svals_cross_block_store")
+	b1 := &Block{ID: 1}
+	b0.Succs = []*Block{b1}
+	b1.Preds = []*Block{b0}
+	fn.Blocks = []*Block{b0, b1}
+
+	gx := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeInt,
+		Args: []*Value{obj.Value()}, Aux: 1, Aux2: int64(42)<<32 | 0, Block: b0}
+	one := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: b0}
+	localSet := &Instr{ID: fn.newValueID(), Op: OpSetField, Type: TypeUnknown,
+		Args: []*Value{obj.Value(), one.Value()}, Aux: 4, Aux2: int64(42)<<32 | 3, Block: b0}
+	gy := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeInt,
+		Args: []*Value{obj.Value()}, Aux: 2, Aux2: int64(42)<<32 | 1, Block: b0}
+	jump := &Instr{ID: fn.newValueID(), Op: OpJump, Block: b0}
+	set := &Instr{ID: fn.newValueID(), Op: OpSetField, Type: TypeUnknown,
+		Args: []*Value{obj.Value(), gx.Value()}, Aux: 3, Aux2: int64(42)<<32 | 2, Block: b1}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{gy.Value()}, Block: b1}
+	b0.Instrs = []*Instr{obj, gx, one, localSet, gy, jump}
+	b1.Instrs = []*Instr{set, ret}
+
+	out, err := FieldSvalsLowerPass(fn)
+	if err != nil {
+		t.Fatalf("FieldSvalsLowerPass: %v", err)
+	}
+	if errs := Validate(out); len(errs) > 0 {
+		t.Fatalf("invalid IR after lower: %v\n%s", errs, Print(out))
+	}
+	var svals *Instr
+	for _, instr := range b0.Instrs {
+		if instr.Op == OpFieldSvals {
+			svals = instr
+		}
+	}
+	if svals == nil {
+		t.Fatalf("missing FieldSvals:\n%s", Print(out))
+	}
+	if set.Op != OpFieldStore || len(set.Args) != 2 || set.Args[0].ID != svals.ID || set.Args[1].ID != gx.ID || set.Aux != 2 {
+		t.Fatalf("dominated shape-preserving SetField was not lowered through existing svals:\n%s", Print(out))
+	}
+}
+
+func TestFieldSvalsLower_CrossBlockCallBlocksExistingSvalsReuse(t *testing.T) {
+	fn, b0, obj := newFieldNumFusionFn("field_svals_cross_block_call_barrier")
+	b1 := &Block{ID: 1}
+	b0.Succs = []*Block{b1}
+	b1.Preds = []*Block{b0}
+	fn.Blocks = []*Block{b0, b1}
+
+	gx := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeInt,
+		Args: []*Value{obj.Value()}, Aux: 1, Aux2: int64(42)<<32 | 0, Block: b0}
+	one := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: b0}
+	localSet := &Instr{ID: fn.newValueID(), Op: OpSetField, Type: TypeUnknown,
+		Args: []*Value{obj.Value(), one.Value()}, Aux: 4, Aux2: int64(42)<<32 | 3, Block: b0}
+	gy := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeInt,
+		Args: []*Value{obj.Value()}, Aux: 2, Aux2: int64(42)<<32 | 1, Block: b0}
+	call := &Instr{ID: fn.newValueID(), Op: OpCall, Type: TypeAny, Block: b0}
+	jump := &Instr{ID: fn.newValueID(), Op: OpJump, Block: b0}
+	set := &Instr{ID: fn.newValueID(), Op: OpSetField, Type: TypeUnknown,
+		Args: []*Value{obj.Value(), gx.Value()}, Aux: 3, Aux2: int64(42)<<32 | 2, Block: b1}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{gy.Value()}, Block: b1}
+	b0.Instrs = []*Instr{obj, gx, one, localSet, gy, call, jump}
+	b1.Instrs = []*Instr{set, ret}
+
+	out, err := FieldSvalsLowerPass(fn)
+	if err != nil {
+		t.Fatalf("FieldSvalsLowerPass: %v", err)
+	}
+	if set.Op != OpSetField {
+		t.Fatalf("call barrier should block cross-block svals reuse:\n%s", Print(out))
+	}
+}

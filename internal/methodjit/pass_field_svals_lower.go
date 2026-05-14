@@ -110,7 +110,13 @@ func FieldSvalsLowerPass(fn *Function) (*Function, error) {
 		block.Instrs = newInstrs
 	}
 	if !changed {
+		if crossBlockExistingFieldSvalsLower(fn) {
+			relinkValueDefs(fn)
+		}
 		return fn, nil
+	}
+	if crossBlockExistingFieldSvalsLower(fn) {
+		relinkValueDefs(fn)
 	}
 	return fn, nil
 }
@@ -272,6 +278,174 @@ func crossBlockFieldSvalsGlobalBarrier(instr *Instr) bool {
 	default:
 		return false
 	}
+}
+
+func crossBlockExistingFieldSvalsLower(fn *Function) bool {
+	if fn == nil || len(fn.Blocks) == 0 {
+		return false
+	}
+	dom := computeDominators(fn)
+	if dom == nil {
+		return false
+	}
+	var svalsList []*Instr
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr != nil && instr.Op == OpFieldSvals && len(instr.Args) > 0 && instr.Args[0] != nil && instr.Aux != 0 {
+				svalsList = append(svalsList, instr)
+			}
+		}
+	}
+	if len(svalsList) == 0 {
+		return false
+	}
+	changed := false
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			key, fieldIdx, ok := fieldSvalsLowerKeyForInstr(instr)
+			if !ok {
+				continue
+			}
+			svals := findDominatingFieldSvals(fn, dom, svalsList, block, instr, key)
+			if svals == nil {
+				continue
+			}
+			switch instr.Op {
+			case OpGetField:
+				instr.Op = OpFieldLoad
+				instr.Args = []*Value{svals.Value()}
+				instr.Aux = int64(fieldIdx)
+				instr.Aux2 = 0
+				changed = true
+				functionRemarks(fn).Add("FieldSvalsLower", "changed", block.ID, instr.ID, instr.Op,
+					fmt.Sprintf("lowered cross-block fixed-shape field load via existing svals v%d field %d", svals.ID, fieldIdx))
+			case OpGetFieldNumToFloat:
+				instr.Op = OpFieldLoadNumToFloat
+				instr.Args = []*Value{svals.Value()}
+				instr.Aux = int64(fieldIdx)
+				instr.Aux2 = 0
+				changed = true
+				functionRemarks(fn).Add("FieldSvalsLower", "changed", block.ID, instr.ID, instr.Op,
+					fmt.Sprintf("lowered cross-block fixed-shape numeric field load via existing svals v%d field %d", svals.ID, fieldIdx))
+			case OpSetField:
+				instr.Op = OpFieldStore
+				instr.Type = TypeUnknown
+				instr.Args = []*Value{svals.Value(), instr.Args[1]}
+				instr.Aux = int64(fieldIdx)
+				instr.Aux2 = 0
+				changed = true
+				functionRemarks(fn).Add("FieldSvalsLower", "changed", block.ID, instr.ID, instr.Op,
+					fmt.Sprintf("lowered cross-block fixed-shape field store via existing svals v%d field %d", svals.ID, fieldIdx))
+			}
+		}
+	}
+	return changed
+}
+
+func fieldSvalsLowerKeyForInstr(instr *Instr) (fieldSvalsLowerKey, int, bool) {
+	if fieldSvalsLowerable(instr) || fieldSvalsStoreLowerable(instr) {
+		shapeID := uint32(instr.Aux2 >> 32)
+		fieldIdx := int(int32(instr.Aux2 & 0xFFFFFFFF))
+		return fieldSvalsLowerKey{tableID: instr.Args[0].ID, shapeID: shapeID}, fieldIdx, true
+	}
+	return fieldSvalsLowerKey{}, 0, false
+}
+
+func findDominatingFieldSvals(fn *Function, dom *domInfo, svalsList []*Instr, targetBlock *Block, target *Instr, key fieldSvalsLowerKey) *Instr {
+	if fn == nil || dom == nil || targetBlock == nil || target == nil {
+		return nil
+	}
+	var best *Instr
+	bestOrder := fieldSvalsLowerOrder{block: -1, index: -1}
+	for _, svals := range svalsList {
+		if svals == nil || svals.Block == nil || len(svals.Args) == 0 || svals.Args[0] == nil {
+			continue
+		}
+		if svals.Args[0].ID != key.tableID || uint32(svals.Aux) != key.shapeID {
+			continue
+		}
+		if svals.Block.ID == targetBlock.ID {
+			continue
+		}
+		if !dom.dominates(svals.Block.ID, targetBlock.ID) {
+			continue
+		}
+		if !fieldSvalsPathSafe(fn, svals, target, key.tableID) {
+			continue
+		}
+		order := fieldSvalsLowerDefOrder(fn, svals.ID)
+		if best == nil || order.block > bestOrder.block || (order.block == bestOrder.block && order.index > bestOrder.index) {
+			best = svals
+			bestOrder = order
+		}
+	}
+	return best
+}
+
+func fieldSvalsPathSafe(fn *Function, svals, target *Instr, tableID int) bool {
+	if fn == nil || svals == nil || svals.Block == nil || target == nil || target.Block == nil {
+		return false
+	}
+	canReachTarget := fieldSvalsReverseReachable(target.Block)
+	seen := make(map[int]bool)
+	stack := []*Block{svals.Block}
+	for len(stack) > 0 {
+		block := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if block == nil || seen[block.ID] || !canReachTarget[block.ID] {
+			continue
+		}
+		seen[block.ID] = true
+		if !fieldSvalsBlockSegmentSafe(block, svals, target, tableID) {
+			return false
+		}
+		if block.ID == target.Block.ID {
+			continue
+		}
+		stack = append(stack, block.Succs...)
+	}
+	return seen[target.Block.ID]
+}
+
+func fieldSvalsReverseReachable(target *Block) map[int]bool {
+	reachable := make(map[int]bool)
+	stack := []*Block{target}
+	for len(stack) > 0 {
+		block := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if block == nil || reachable[block.ID] {
+			continue
+		}
+		reachable[block.ID] = true
+		stack = append(stack, block.Preds...)
+	}
+	return reachable
+}
+
+func fieldSvalsBlockSegmentSafe(block *Block, svals, target *Instr, tableID int) bool {
+	started := block != svals.Block
+	for _, instr := range block.Instrs {
+		if instr == nil {
+			continue
+		}
+		if instr == svals {
+			started = true
+			continue
+		}
+		if instr == target {
+			return true
+		}
+		if !started || instr.Op.IsTerminator() {
+			continue
+		}
+		if crossBlockFieldSvalsGlobalBarrier(instr) {
+			return false
+		}
+		if mutated, ok := fieldSvalsMutationTableID(instr); ok && mutated == tableID {
+			return false
+		}
+	}
+	return block != target.Block
 }
 
 func insertAfterInstr(block *Block, after, instr *Instr) {
