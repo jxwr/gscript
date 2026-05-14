@@ -1892,6 +1892,7 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 		default:
 			asm.B(callFallbackLabel)
 		}
+		ec.emitFieldCallPolyLenFusionStores(instr.ID, uint32(c.shapeID))
 		asm.B(doneLabel)
 		asm.Label(nextLabel)
 	}
@@ -1968,6 +1969,46 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 	ec.emitDeopt(instr)
 
 	asm.Label(doneLabel)
+	return true
+}
+
+func (ec *emitContext) emitFieldCallPolyLenFusionStores(callID int, shapeID uint32) {
+	if ec == nil || ec.fn == nil {
+		return
+	}
+	fusions := ec.fn.FieldCallPolyLenFusions[callID]
+	if len(fusions) == 0 {
+		return
+	}
+	for _, fusion := range fusions {
+		if fusion.ShapeID != shapeID {
+			continue
+		}
+		if !ec.canMaterializeFusionValueNow(fusion.LenValueID) {
+			continue
+		}
+		ec.asm.LoadImm64(jit.X8, fusion.Len)
+		ec.storeRawInt(jit.X8, fusion.LenValueID)
+	}
+}
+
+func (ec *emitContext) canMaterializeFusionValueNow(valueID int) bool {
+	if ec == nil || ec.alloc == nil {
+		return false
+	}
+	pr, ok := ec.alloc.ValueRegs[valueID]
+	if !ok || pr.IsFloat {
+		return false
+	}
+	for activeID, active := range ec.activeRegs {
+		if !active || activeID == valueID {
+			continue
+		}
+		activePR, ok := ec.alloc.ValueRegs[activeID]
+		if ok && !activePR.IsFloat && activePR.Reg == pr.Reg {
+			return false
+		}
+	}
 	return true
 }
 

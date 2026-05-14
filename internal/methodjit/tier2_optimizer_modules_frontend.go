@@ -194,6 +194,7 @@ func tier2FinalCallModules(protocolGlobals map[string]*vm.FuncProto) []Tier2Opti
 		tier2PassModule("CallReturnProjection (final)", Tier2PhaseFinalCall, CallReturnProjectionPass),
 		tier2PassModule("ModularCallFloorReduce (final)", Tier2PhaseFinalCall, ModularCallFloorReducePass),
 		tier2PassModule("CallResultRangeGuard (final)", Tier2PhaseFinalCall, CallResultRangeGuardPass),
+		tier2PassModule("FieldCallPolyLenFusion", Tier2PhaseFinalCall, FieldCallPolyLenFusionPass),
 		tier2PassModule("RangeAnalysis (post-final-call)", Tier2PhaseFinalCall, RangeAnalysisPass),
 	}
 	if os.Getenv("GSCRIPT_FIELD_SHAPE_SPLIT") == "1" {

@@ -224,7 +224,9 @@ func TestTier2FinalCallModuleOrder(t *testing.T) {
 	assertTier2ModuleOrder(t, tier2FinalCallModules(nil), Tier2PhaseFinalCall, []string{
 		"WholeCallKernelExit (final)",
 		"CallReturnProjection (final)",
+		"ModularCallFloorReduce (final)",
 		"CallResultRangeGuard (final)",
+		"FieldCallPolyLenFusion",
 		"RangeAnalysis (post-final-call)",
 	})
 }
@@ -234,7 +236,9 @@ func TestTier2FinalCallModuleOrderExperimentalFieldShapeSplit(t *testing.T) {
 	assertTier2ModuleOrder(t, tier2FinalCallModules(nil), Tier2PhaseFinalCall, []string{
 		"WholeCallKernelExit (final)",
 		"CallReturnProjection (final)",
+		"ModularCallFloorReduce (final)",
 		"CallResultRangeGuard (final)",
+		"FieldCallPolyLenFusion",
 		"RangeAnalysis (post-final-call)",
 		"FieldShapeCallSplit (experimental)",
 	})
@@ -245,7 +249,9 @@ func TestTier2FinalCallModuleOrderIgnoresOtherFieldShapeSplitValues(t *testing.T
 	assertTier2ModuleOrder(t, tier2FinalCallModules(nil), Tier2PhaseFinalCall, []string{
 		"WholeCallKernelExit (final)",
 		"CallReturnProjection (final)",
+		"ModularCallFloorReduce (final)",
 		"CallResultRangeGuard (final)",
+		"FieldCallPolyLenFusion",
 		"RangeAnalysis (post-final-call)",
 	})
 }

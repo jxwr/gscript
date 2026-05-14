@@ -322,6 +322,9 @@ func (ec *emitContext) emitFieldPolyLen(instr *Instr) {
 		ec.emitDeopt(instr)
 		return
 	}
+	if ec.hasReg(instr.ID) && ec.valueReprOf(instr.ID) == valueReprRawInt {
+		return
+	}
 	cases := ec.fn.FieldPolyShapeFacts[instr.ID]
 	if len(cases) < 2 {
 		ec.emitDeopt(instr)

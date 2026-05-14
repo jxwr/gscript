@@ -210,6 +210,13 @@ type Function struct {
 	// field index for that static field name.
 	FieldPolyShapeFacts map[int][]FieldPolyShapeCase
 
+	// FieldCallPolyLenFusions records same-block guarded field-call/field-len
+	// pairs keyed by OpFieldCallFloor instruction ID. When a field call's shape
+	// dispatch succeeds and the callee is proven not to mutate the later length
+	// field, codegen can materialize the later OpFieldPolyLen result directly
+	// from the already-matched shape case and skip a second shape dispatch.
+	FieldCallPolyLenFusions map[int][]FieldCallPolyLenFusion
+
 	// FixedShapeArgFacts records guarded fixed-shape facts keyed by parameter
 	// index. These facts come from callsites, not from the callee body, so
 	// consumers may use them only through runtime guards such as field-cache
@@ -251,6 +258,13 @@ type Function struct {
 	// Production compiles leave it nil; CompileForDiagnostics wires it so
 	// passes can explain important changes and misses without stderr prints.
 	Remarks *OptimizationRemarks
+}
+
+type FieldCallPolyLenFusion struct {
+	LenValueID int
+	FieldAux   int64
+	ShapeID    uint32
+	Len        int64
 }
 
 // CallABIDescriptor is the stable callsite ABI contract for one OpCall.
