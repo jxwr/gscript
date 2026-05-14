@@ -123,6 +123,74 @@ func driver() {
 	}
 }
 
+func TestProtocolConstCallFoldAnnotatesMutualRecursiveCall(t *testing.T) {
+	top := compileProto(t, `
+func F(n) {
+	if n == 0 { return 1 }
+	return n - M(F(n - 1))
+}
+
+func M(n) {
+	if n == 0 { return 0 }
+	return n - F(M(n - 1))
+}
+
+func driver() {
+	return F(25)
+}
+`)
+	f := findProtoByName(top, "F")
+	m := findProtoByName(top, "M")
+	driver := findProtoByName(top, "driver")
+	if f == nil || m == nil || driver == nil {
+		t.Fatalf("missing protos: F=%v M=%v driver=%v", f, m, driver)
+	}
+	if _, ok := analyzeMutualRecursiveIntSCC(f, map[string]*vm.FuncProto{"F": f, "M": m}); !ok {
+		t.Fatalf("F/M did not analyze as mutual recursive int SCC")
+	}
+	if got, names, _, ok := foldProtocolConstCall(f, map[string]*vm.FuncProto{"F": f, "M": m}, []runtime.Value{runtime.IntValue(25)}); !ok || got != 16 || len(names) != 2 {
+		t.Fatalf("foldProtocolConstCall(F,25)=(%d,%v,%v), want 16 two guards", got, names, ok)
+	}
+
+	fn := AnnotateProtocolConstCallFolds(BuildGraph(driver), map[string]*vm.FuncProto{"F": f, "M": m})
+	if len(fn.ProtocolConstCallFolds) != 1 {
+		t.Fatalf("ProtocolConstCallFolds len=%d, want 1", len(fn.ProtocolConstCallFolds))
+	}
+	for _, fact := range fn.ProtocolConstCallFolds {
+		if fact.CalleeProto != f || fact.Result != 16 {
+			t.Fatalf("unexpected fold fact: callee=%v result=%d", fact.CalleeProto, fact.Result)
+		}
+		if len(fact.GuardConsts) != 2 || len(fact.GuardProtos) != 2 {
+			t.Fatalf("missing mutual callee guards in fold fact: %#v", fact)
+		}
+	}
+
+	benchTop := compileProto(t, `
+func F(n) {
+	if n == 0 { return 1 }
+	return n - M(F(n - 1))
+}
+
+func M(n) {
+	if n == 0 { return 0 }
+	return n - F(M(n - 1))
+}
+
+N := 25
+REPS := 1000
+result := 0
+for rep := 1; rep <= REPS; rep++ {
+	result = F(N)
+}
+`)
+	benchF := findProtoByName(benchTop, "F")
+	benchM := findProtoByName(benchTop, "M")
+	mainFn := AnnotateProtocolConstCallFolds(BuildGraph(benchTop), map[string]*vm.FuncProto{"F": benchF, "M": benchM})
+	if len(mainFn.ProtocolConstCallFolds) != 1 {
+		t.Fatalf("top-level ProtocolConstCallFolds len=%d, want 1\nIR:\n%s", len(mainFn.ProtocolConstCallFolds), Print(mainFn))
+	}
+}
+
 func TestProtocolConstCallFoldFallbackAfterCalleeRebind(t *testing.T) {
 	top := compileProto(t, fixedNestedAckSrc+`
 func replacement(m, n) {

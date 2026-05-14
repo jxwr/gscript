@@ -40,7 +40,7 @@ func AnnotateProtocolConstCallFolds(fn *Function, globals map[string]*vm.FuncPro
 				guardNames = []string{name}
 				guardProtos = []*vm.FuncProto{callee}
 			}
-			guardConsts, ok := protocolGuardConstIndexes(fn.Proto, guardNames)
+			guardConsts, ok := protocolEnsureGuardConstIndexes(fn.Proto, guardNames)
 			if !ok {
 				continue
 			}
@@ -135,7 +135,7 @@ func foldProtocolConstCall(callee *vm.FuncProto, globals map[string]*vm.FuncProt
 	return 0, nil, nil, false
 }
 
-func protocolGuardConstIndexes(proto *vm.FuncProto, names []string) ([]int, bool) {
+func protocolEnsureGuardConstIndexes(proto *vm.FuncProto, names []string) ([]int, bool) {
 	if proto == nil || len(names) == 0 {
 		return nil, false
 	}
@@ -150,7 +150,8 @@ func protocolGuardConstIndexes(proto *vm.FuncProto, names []string) ([]int, bool
 			}
 		}
 		if idx < 0 {
-			return nil, false
+			idx = len(proto.Constants)
+			proto.Constants = append(proto.Constants, runtime.StringValue(name))
 		}
 		if !seen[idx] {
 			seen[idx] = true
