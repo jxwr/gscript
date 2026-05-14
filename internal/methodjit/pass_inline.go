@@ -189,11 +189,13 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 		}
 		if calleeProto == nil {
 			if summary := fieldShapeCalleeSummary(fn, instr); summary != "" {
-				if splitSummary := fieldShapeInlineSplitEligibilitySummary(fn, instr, config, block); splitSummary != "" {
-					summary = summary + "; split eligibility: " + splitSummary
+				if remarks := functionRemarks(fn); remarks != nil {
+					if splitSummary := fieldShapeInlineSplitEligibilitySummary(fn, instr, config, block); splitSummary != "" {
+						summary = summary + "; split eligibility: " + splitSummary
+					}
+					remarks.Add("Inline", "missed", block.ID, instr.ID, instr.Op,
+						fmt.Sprintf("field-shape polymorphic callee set not yet split: %s", summary))
 				}
-				functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
-					fmt.Sprintf("field-shape polymorphic callee set not yet split: %s", summary))
 				continue
 			}
 			functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
