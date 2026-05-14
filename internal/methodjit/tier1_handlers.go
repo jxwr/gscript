@@ -835,7 +835,7 @@ func (e *BaselineJITEngine) handleGetGlobal(ctx *ExecContext, regs []runtime.Val
 }
 
 // handleSetGlobal handles OP_SETGLOBAL exit.
-// Increments globalCacheGen to invalidate all GlobalValCache entries.
+// Invalidates only GlobalValCache entries that read the written name.
 func (e *BaselineJITEngine) handleSetGlobal(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto) error {
 	if e.callVM == nil {
 		return fmt.Errorf("no callVM for setglobal-exit")
@@ -850,8 +850,7 @@ func (e *BaselineJITEngine) handleSetGlobal(ctx *ExecContext, regs []runtime.Val
 	if absSlot < len(regs) {
 		e.callVM.SetGlobal(name, regs[absSlot])
 	}
-	// Invalidate all global value caches by bumping the generation.
-	e.globalCacheGen++
+	e.invalidateGlobalValueCaches(name)
 	return nil
 }
 

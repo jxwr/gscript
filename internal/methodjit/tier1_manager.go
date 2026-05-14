@@ -73,13 +73,14 @@ func IsFeedbackCollectionDisabled(proto *vm.FuncProto) bool {
 
 // BaselineJITEngine implements vm.MethodJITEngine for the Tier 1 baseline compiler.
 type BaselineJITEngine struct {
-	compiled       map[*vm.FuncProto]*BaselineFunc
-	failed         map[*vm.FuncProto]bool
-	feedbackOff    map[*vm.FuncProto]bool
-	callVM         *vm.VM
-	ctxPool        []*ExecContext // pre-allocated ExecContext pool (acts as stack for recursive calls)
-	ctxTop         int            // next free index in ctxPool
-	globalCacheGen uint64         // incremented on every SETGLOBAL; used to invalidate GlobalValCache
+	compiled        map[*vm.FuncProto]*BaselineFunc
+	failed          map[*vm.FuncProto]bool
+	feedbackOff     map[*vm.FuncProto]bool
+	callVM          *vm.VM
+	ctxPool         []*ExecContext // pre-allocated ExecContext pool (acts as stack for recursive calls)
+	ctxTop          int            // next free index in ctxPool
+	globalCacheGen  uint64         // incremented only when a broad invalidation is required
+	globalCacheRefs map[string][]baselineGlobalCacheRef
 	// tierUpThreshold: when > 0, handleCall falls to slow path (callVM.CallValue)
 	// for callees whose CallCount >= this threshold. This allows the TieringManager
 	// to intercept calls and trigger Tier 2 compilation via the VM's TryCompile.
@@ -106,6 +107,11 @@ type BaselineJITEngine struct {
 	intSpecDeoptPC int
 }
 
+type baselineGlobalCacheRef struct {
+	bf *BaselineFunc
+	pc int
+}
+
 func baselineResumeOffset(bf *BaselineFunc, pc int) (int, bool) {
 	if bf == nil {
 		return 0, false
@@ -121,10 +127,11 @@ func baselineResumeOffset(bf *BaselineFunc, pc int) (int, bool) {
 // NewBaselineJITEngine creates a new baseline JIT engine.
 func NewBaselineJITEngine() *BaselineJITEngine {
 	e := &BaselineJITEngine{
-		compiled:    make(map[*vm.FuncProto]*BaselineFunc),
-		failed:      make(map[*vm.FuncProto]bool),
-		feedbackOff: make(map[*vm.FuncProto]bool),
-		osrCounters: make(map[*vm.FuncProto]int64),
+		compiled:        make(map[*vm.FuncProto]*BaselineFunc),
+		failed:          make(map[*vm.FuncProto]bool),
+		feedbackOff:     make(map[*vm.FuncProto]bool),
+		osrCounters:     make(map[*vm.FuncProto]int64),
+		globalCacheRefs: make(map[string][]baselineGlobalCacheRef),
 	}
 	// Pre-allocate pool of ExecContexts (heap-allocated, safe for uintptr).
 	const poolSize = 32
@@ -218,6 +225,7 @@ func (e *BaselineJITEngine) TryCompile(proto *vm.FuncProto) interface{} {
 		return nil
 	}
 	e.compiled[proto] = bf
+	e.registerGlobalValueCacheRefs(bf)
 	proto.CompiledCodePtr = uintptr(bf.Code.Ptr())
 	if bf.DirectEntryOffset >= 0 && nativeBLRReplaySafe(proto) {
 		setFuncProtoDirectEntry(proto, uintptr(bf.Code.Ptr())+uintptr(bf.DirectEntryOffset))
@@ -697,22 +705,38 @@ func (e *BaselineJITEngine) invalidateGlobalValueCaches(name string) {
 	if e == nil || name == "" {
 		return
 	}
-	for _, bf := range e.compiled {
-		if bf == nil || bf.Proto == nil || len(bf.GlobalValCache) == 0 {
+	refs := e.globalCacheRefs[name]
+	if len(refs) == 0 {
+		return
+	}
+	for _, ref := range refs {
+		if ref.bf == nil || ref.pc < 0 || ref.pc >= len(ref.bf.GlobalValCache) {
 			continue
 		}
-		for pc, inst := range bf.Proto.Code {
-			if pc >= len(bf.GlobalValCache) || vm.DecodeOp(inst) != vm.OP_GETGLOBAL {
-				continue
-			}
-			bx := vm.DecodeBx(inst)
-			if bx < 0 || bx >= len(bf.Proto.Constants) {
-				continue
-			}
-			kv := bf.Proto.Constants[bx]
-			if kv.IsString() && kv.Str() == name {
-				bf.GlobalValCache[pc] = 0
-			}
+		ref.bf.GlobalValCache[ref.pc] = 0
+	}
+}
+
+func (e *BaselineJITEngine) registerGlobalValueCacheRefs(bf *BaselineFunc) {
+	if e == nil || bf == nil || bf.Proto == nil || len(bf.GlobalValCache) == 0 {
+		return
+	}
+	if e.globalCacheRefs == nil {
+		e.globalCacheRefs = make(map[string][]baselineGlobalCacheRef)
+	}
+	for pc, inst := range bf.Proto.Code {
+		if pc >= len(bf.GlobalValCache) || vm.DecodeOp(inst) != vm.OP_GETGLOBAL {
+			continue
 		}
+		bx := vm.DecodeBx(inst)
+		if bx < 0 || bx >= len(bf.Proto.Constants) {
+			continue
+		}
+		kv := bf.Proto.Constants[bx]
+		if !kv.IsString() {
+			continue
+		}
+		name := kv.Str()
+		e.globalCacheRefs[name] = append(e.globalCacheRefs[name], baselineGlobalCacheRef{bf: bf, pc: pc})
 	}
 }

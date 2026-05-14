@@ -852,7 +852,8 @@ func (cf *CallSiteFeedback) ObserveCall(fn runtime.Value, args []runtime.Value, 
 			cf.Flags |= CallSiteArityPolymorphic
 		}
 	}
-	if count >= callSiteHotNativeObservationLimit && cf.Flags == 0 && cf.CalleeNativeKind != 0 {
+	if count >= callSiteHotNativeObservationLimit && cf.Flags == 0 &&
+		(cf.CalleeNativeKind != 0 || cf.CalleeVMProto != nil) {
 		cf.Count++
 		return
 	}
