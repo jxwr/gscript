@@ -170,6 +170,7 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 	var inlineGlobals map[string]*vm.FuncProto
 	var loopCallGlobals map[string]*vm.FuncProto
 	var opts *Tier2PipelineOpts
+	var optimizerTimings []PipelineStageTiming
 	addStage("BuildPipelineOptions", func() error {
 		inlineGlobals = tm.buildInlineGlobals()
 		loopCallGlobals = inlineGlobals
@@ -217,6 +218,9 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 			ForceBoxIntIDs:                  tm.forcedBoxTier2IntValues(proto),
 			Remarks:                         remarks,
 		}
+		if trace != nil {
+			opts.OptimizerTimings = &optimizerTimings
+		}
 		return nil
 	})
 
@@ -228,6 +232,9 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 			remarks.Add("Tier2Gate", "blocked", 0, 0, OpNop,
 				"optimization pipeline failed: "+err.Error())
 			return fmt.Errorf("tier2: pipeline: %w", err)
+		}
+		if trace != nil && len(optimizerTimings) > 0 {
+			trace.PipelineStages = append(trace.PipelineStages, optimizerTimings...)
 		}
 		return nil
 	})

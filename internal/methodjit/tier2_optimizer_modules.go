@@ -2,6 +2,7 @@ package methodjit
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/gscript/gscript/internal/vm"
 )
@@ -125,10 +126,15 @@ func runTier2OptimizerModulesWithContext(fn *Function, opts *Tier2PipelineOpts, 
 		if module.RunWithContext == nil && module.Run == nil {
 			return nil, fmt.Errorf("%s: missing optimizer module runner", module.Name)
 		}
+		start := time.Now()
 		if module.RunWithContext != nil {
 			fn, err = module.RunWithContext(fn, opts, ctx)
 		} else {
 			fn, err = module.Run(fn, opts)
+		}
+		if opts != nil && opts.OptimizerTimings != nil {
+			name := fmt.Sprintf("RunTier2Pipeline/%s/%s", phase, module.Name)
+			*opts.OptimizerTimings = append(*opts.OptimizerTimings, newNestedPipelineStageTiming(name, time.Since(start), err))
 		}
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", module.Name, err)

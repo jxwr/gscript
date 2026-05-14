@@ -58,6 +58,7 @@ type PipelineStageTiming struct {
 	Name          string `json:"name"`
 	DurationNanos int64  `json:"duration_nanos"`
 	Error         string `json:"error,omitempty"`
+	Nested        bool   `json:"nested,omitempty"`
 }
 
 func newPipelineStageTiming(name string, duration time.Duration, err error) PipelineStageTiming {
@@ -68,6 +69,12 @@ func newPipelineStageTiming(name string, duration time.Duration, err error) Pipe
 	if err != nil {
 		timing.Error = err.Error()
 	}
+	return timing
+}
+
+func newNestedPipelineStageTiming(name string, duration time.Duration, err error) PipelineStageTiming {
+	timing := newPipelineStageTiming(name, duration, err)
+	timing.Nested = true
 	return timing
 }
 
@@ -201,6 +208,9 @@ func FormatPipelineStageTimings(stages []PipelineStageTiming) string {
 	}
 	var total time.Duration
 	for _, stage := range stages {
+		if stage.Nested {
+			continue
+		}
 		total += time.Duration(stage.DurationNanos)
 	}
 	var sb strings.Builder
@@ -331,6 +341,7 @@ type Tier2PipelineOpts struct {
 	FixedShapeEntryGuards           bool                          // emit callee-entry shape guards for FixedShapeArgFacts
 	ForceBoxIntIDs                  map[int]bool                  // IR value IDs forced out of raw-int after overflow feedback
 	Remarks                         *OptimizationRemarks          // optional structured optimization diagnostics
+	OptimizerTimings                *[]PipelineStageTiming        // optional per-module compile diagnostics
 }
 
 // RunTier2Pipeline runs the full production Tier 2 optimization pipeline:
