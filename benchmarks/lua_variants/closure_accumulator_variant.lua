@@ -1,6 +1,9 @@
 -- Structural variant: closure accumulators with non-unit integer delta and
 -- fractional fallback state.
 
+local INT_REPS = 5000000
+local FLOAT_REPS = 2000000
+
 local function make_accumulator(start, delta)
     local value = start
     return function()
@@ -12,7 +15,7 @@ end
 local function run_int_accumulator()
     local acc = make_accumulator(7, 3)
     local total = 0
-    for i = 1, 5000000 do
+    for i = 1, INT_REPS do
         total = total + acc()
     end
     return total
@@ -21,7 +24,7 @@ end
 local function run_float_accumulator()
     local acc = make_accumulator(0.5, 1.25)
     local total = 0.0
-    for i = 1, 2000000 do
+    for i = 1, FLOAT_REPS do
         total = total + acc()
     end
     return total

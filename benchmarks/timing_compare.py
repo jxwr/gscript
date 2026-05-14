@@ -67,6 +67,8 @@ HOT_SCALE_PROFILE = [
     "suite/coroutine_bench:N3=1000000",
     "extended/actors_dispatch_mutation:N=15000",
     "extended/actors_dispatch_mutation:TICKS=3000",
+    "variants/closure_accumulator_variant:INT_REPS=20000000",
+    "variants/closure_accumulator_variant:FLOAT_REPS=8000000",
 ]
 
 TIME_RE = re.compile(r"^Time:\s*([0-9]+(?:\.[0-9]+)?)s\b", re.MULTILINE)

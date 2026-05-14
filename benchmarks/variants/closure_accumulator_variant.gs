@@ -1,6 +1,9 @@
 // Structural variant: closure accumulators with non-unit integer delta and
 // fractional fallback state.
 
+INT_REPS := 5000000
+FLOAT_REPS := 2000000
+
 func make_accumulator(start, delta) {
     value := start
     return func() {
@@ -12,7 +15,7 @@ func make_accumulator(start, delta) {
 func run_int_accumulator() {
     acc := make_accumulator(7, 3)
     total := 0
-    for i := 1; i <= 5000000; i++ {
+    for i := 1; i <= INT_REPS; i++ {
         total = total + acc()
     }
     return total
@@ -21,7 +24,7 @@ func run_int_accumulator() {
 func run_float_accumulator() {
     acc := make_accumulator(0.5, 1.25)
     total := 0.0
-    for i := 1; i <= 2000000; i++ {
+    for i := 1; i <= FLOAT_REPS; i++ {
         total = total + acc()
     }
     return total
