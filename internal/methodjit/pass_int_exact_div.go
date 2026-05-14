@@ -12,17 +12,22 @@ package methodjit
 // result is an integer on the guarded edge, solves the surrounding
 // int-preserving cycle, and rewrites those ops back to raw integer IR.
 func IntExactDivisionPass(fn *Function) (*Function, error) {
+	out, _, err := runIntExactDivisionIfCandidate(fn)
+	return out, err
+}
+
+func runIntExactDivisionIfCandidate(fn *Function) (*Function, bool, error) {
 	if fn == nil || len(fn.Blocks) == 0 {
-		return fn, nil
+		return fn, false, nil
 	}
 
 	proven := findModuloProvenDivisions(fn)
 	if len(proven) == 0 {
-		return fn, nil
+		return fn, false, nil
 	}
 	candidates := collectIntExactDivCandidates(fn, proven)
 	if len(candidates) == 0 {
-		return fn, nil
+		return fn, false, nil
 	}
 
 	intPossible := solveIntNarrowableValues(fn, proven, candidates)
@@ -64,7 +69,7 @@ func IntExactDivisionPass(fn *Function) (*Function, error) {
 	}
 
 	if !changed {
-		return fn, nil
+		return fn, false, nil
 	}
 
 	for _, block := range fn.Blocks {
@@ -89,7 +94,7 @@ func IntExactDivisionPass(fn *Function) (*Function, error) {
 		}
 	}
 
-	return fn, nil
+	return fn, true, nil
 }
 
 func findModuloProvenDivisions(fn *Function) map[int]bool {

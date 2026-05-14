@@ -15,8 +15,29 @@ func tier2NumericModules() []Tier2OptimizerModule {
 				return OverflowBoxingPassWith(force)(fn)
 			},
 		},
-		tier2PassModule("IntExactDivision", Tier2PhaseNumeric, IntExactDivisionPass),
-		tier2PassModule("RangeAnalysis (post-IntExactDivision)", Tier2PhaseNumeric, RangeAnalysisPass),
+		{
+			Name:  "IntExactDivision",
+			Phase: Tier2PhaseNumeric,
+			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
+				out, changed, err := runIntExactDivisionIfCandidate(fn)
+				if opts != nil {
+					opts.LastPassChanged = changed
+				}
+				return out, err
+			},
+		},
+		{
+			Name:  "RangeAnalysis (post-IntExactDivision)",
+			Phase: Tier2PhaseNumeric,
+			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
+				if opts != nil && !opts.LastPassChanged {
+					functionRemarks(fn).Add("RangeAnalysis", "skipped", 0, 0, OpNop,
+						"IntExactDivision had no candidate rewrite")
+					return fn, nil
+				}
+				return RangeAnalysisPass(fn)
+			},
+		},
 		tier2PassModule("ModRangeSimplify", Tier2PhaseNumeric, ModRangeSimplifyPass),
 		tier2PassModule("DCE (post-ModRangeSimplify)", Tier2PhaseNumeric, DCEPass),
 		tier2PassModule("ModZeroCompare", Tier2PhaseNumeric, ModZeroComparePass),

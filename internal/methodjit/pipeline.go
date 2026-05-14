@@ -342,6 +342,7 @@ type Tier2PipelineOpts struct {
 	ForceBoxIntIDs                  map[int]bool                  // IR value IDs forced out of raw-int after overflow feedback
 	Remarks                         *OptimizationRemarks          // optional structured optimization diagnostics
 	OptimizerTimings                *[]PipelineStageTiming        // optional per-module compile diagnostics
+	LastPassChanged                 bool                          // scratch flag for adjacent optimizer modules
 }
 
 // RunTier2Pipeline runs the full production Tier 2 optimization pipeline:
