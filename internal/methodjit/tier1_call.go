@@ -273,7 +273,7 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.LDR(jit.X1, jit.X0, vmClosureOffProto)
 
 	if b == 1 && c == 2 {
-		emitBaselineAccumulatorClosureFastPath(asm, callerProto, slowLabel, doneLabel, a)
+		emitBaselineAccumulatorClosureFastPath(asm, callerProto, slowLabel, doneLabel, a, useCallIC, callICOff)
 	}
 	if b == 2 && c == 2 {
 		emitBaselineImmediateClosureFactoryFastPath(asm, callerProto, pc, a)
@@ -348,6 +348,9 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 		jit.EmitExtractPtr(asm, jit.X0, jit.X0) // X0 = *vm.Closure
 
 		asm.Label(callICDoneLabel)
+		if b == 1 && c == 2 {
+			emitBaselineAccumulatorClosureFastPath(asm, callerProto, slowLabel, doneLabel, a, false, 0)
+		}
 		if b == 2 && c == 2 {
 			emitBaselineSimpleClosureExprFastPath(asm, callerProto, doneLabel, a)
 		}
@@ -644,7 +647,7 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 	asm.Label(doneLabel)
 }
 
-func emitBaselineAccumulatorClosureFastPath(asm *jit.Assembler, callerProto *vm.FuncProto, slowLabel, doneLabel string, dstSlot int) {
+func emitBaselineAccumulatorClosureFastPath(asm *jit.Assembler, callerProto *vm.FuncProto, slowLabel, doneLabel string, dstSlot int, fillCallIC bool, callICOff int) {
 	fastPaths := accumulatorClosureFastPathsForProto(callerProto)
 	if len(fastPaths) == 0 {
 		return
@@ -655,12 +658,17 @@ func emitBaselineAccumulatorClosureFastPath(asm *jit.Assembler, callerProto *vm.
 		asm.LoadImm64(jit.X3, int64(uintptr(unsafe.Pointer(fast.proto))))
 		asm.CMPreg(jit.X1, jit.X3)
 		asm.BCond(jit.CondNE, nextFastLabel)
-
-		emitLoadClosureUpvalueRef(asm, jit.X0, fast.valueUpval, len(fast.proto.Upvalues), jit.X6, jit.X2, jit.X3, missLabel)
-		asm.LDR(jit.X4, jit.X6, 0) // boxed current value
+		if fillCallIC {
+			asm.LDR(jit.X5, mRegCtx, execCtxOffBaselineCallCache)
+			asm.MOVimm16(jit.X7, 0)
+			asm.STP(jit.X4, jit.X7, jit.X5, callICOff+baselineCallCacheBoxedOff)
+			asm.STP(jit.X1, jit.X7, jit.X5, callICOff+baselineCallCacheProtoOff)
+		}
 
 		switch fast.deltaKind {
 		case accumulatorDeltaConst:
+			emitLoadClosureUpvalueRef(asm, jit.X0, fast.valueUpval, len(fast.proto.Upvalues), jit.X6, jit.X2, jit.X3, missLabel)
+			asm.LDR(jit.X4, jit.X6, 0) // boxed current value
 			floatLabel := nextLabel("accum_closure_float")
 			emitCheckIsInt(asm, jit.X4, jit.X5)
 			asm.BCond(jit.CondNE, floatLabel)
@@ -684,7 +692,10 @@ func emitBaselineAccumulatorClosureFastPath(asm *jit.Assembler, callerProto *vm.
 			storeSlot(asm, dstSlot, jit.X4)
 			asm.B(doneLabel)
 		case accumulatorDeltaUpval:
-			emitLoadClosureUpvalueRef(asm, jit.X0, fast.deltaUpval, len(fast.proto.Upvalues), jit.X2, jit.X5, jit.X3, missLabel)
+			emitLoadClosureTwoUpvalueRefs(asm, jit.X0,
+				fast.valueUpval, fast.deltaUpval, len(fast.proto.Upvalues),
+				jit.X6, jit.X2, jit.X5, jit.X3, jit.X7, missLabel)
+			asm.LDR(jit.X4, jit.X6, 0) // boxed current value
 			asm.LDR(jit.X7, jit.X2, 0) // boxed delta value
 			floatLabel := nextLabel("accum_closure_float")
 			mixedFloatLabel := nextLabel("accum_closure_mixed_float")
@@ -910,6 +921,29 @@ func emitLoadClosureUpvalueRef(asm *jit.Assembler, closureReg jit.Reg, upval, up
 	asm.CBZ(upvalReg, slowLabel)
 	asm.LDR(dstRefReg, upvalReg, 0)
 	asm.CBZ(dstRefReg, slowLabel)
+}
+
+func emitLoadClosureTwoUpvalueRefs(asm *jit.Assembler, closureReg jit.Reg, upval1, upval2, upvalCount int, dstRef1Reg, dstRef2Reg, dataReg, upval1Reg, upval2Reg jit.Reg, slowLabel string) {
+	if upval1 < 0 || upval2 < 0 || upval1 >= upvalCount || upval2 >= upvalCount || upval1 == upval2 {
+		asm.B(slowLabel)
+		return
+	}
+	asm.LDR(dataReg, closureReg, vmClosureOffUpvalues)
+	asm.CBZ(dataReg, slowLabel)
+	if upval1+1 == upval2 {
+		asm.LDP(upval1Reg, upval2Reg, dataReg, upval1*8)
+	} else if upval2+1 == upval1 {
+		asm.LDP(upval2Reg, upval1Reg, dataReg, upval2*8)
+	} else {
+		asm.LDR(upval1Reg, dataReg, upval1*8)
+		asm.LDR(upval2Reg, dataReg, upval2*8)
+	}
+	asm.CBZ(upval1Reg, slowLabel)
+	asm.CBZ(upval2Reg, slowLabel)
+	asm.LDR(dstRef1Reg, upval1Reg, 0)
+	asm.LDR(dstRef2Reg, upval2Reg, 0)
+	asm.CBZ(dstRef1Reg, slowLabel)
+	asm.CBZ(dstRef2Reg, slowLabel)
 }
 
 func registerAccumulatorClosureFastPaths(root *vm.FuncProto) {
