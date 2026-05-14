@@ -163,6 +163,9 @@ func fieldShapeSplitPreInlineCase(fn *Function, block *Block, idx int, call, cal
 		Aux2:  calleeLoad.Aux2,
 		Block: caseBlock,
 	}
+	if aux2 := fieldPolyShapeCaseAux2(c); aux2 != 0 {
+		caseLoad.Aux2 = aux2
+	}
 	caseLoad.copySourceFrom(calleeLoad)
 	caseArgs := append([]*Value(nil), call.Args...)
 	caseArgs[0] = caseLoad.Value()
@@ -184,6 +187,7 @@ func fieldShapeSplitPreInlineCase(fn *Function, block *Block, idx int, call, cal
 	recordFieldPolyShapeCatalog(fn, []FieldPolyShapeCase{c})
 
 	fallbackInstrs := make([]*Instr, 0, 3)
+	remaining := fieldShapeCasesWithout(cases, caseIdx)
 	if localizeCalleeLoad {
 		fallbackLoad := &Instr{
 			ID:    fn.newValueID(),
@@ -194,17 +198,21 @@ func fieldShapeSplitPreInlineCase(fn *Function, block *Block, idx int, call, cal
 			Aux2:  calleeLoad.Aux2,
 			Block: fallbackBlock,
 		}
+		if aux2 := fieldPolyShapeCasesAux2(remaining); aux2 != 0 {
+			fallbackLoad.Aux2 = aux2
+		}
 		fallbackLoad.copySourceFrom(calleeLoad)
 		fallbackArgs := append([]*Value(nil), call.Args...)
 		fallbackArgs[0] = fallbackLoad.Value()
 		call.Args = fallbackArgs
 		fallbackInstrs = append(fallbackInstrs, fallbackLoad)
-		remaining := fieldShapeCasesWithout(cases, caseIdx)
 		fn.FieldPolyShapeFacts[fallbackLoad.ID] = remaining
 		recordFieldPolyShapeCatalog(fn, remaining)
 		delete(fn.FieldPolyShapeFacts, calleeLoad.ID)
 	} else {
-		remaining := fieldShapeCasesWithout(cases, caseIdx)
+		if aux2 := fieldPolyShapeCasesAux2(remaining); aux2 != 0 {
+			calleeLoad.Aux2 = aux2
+		}
 		fn.FieldPolyShapeFacts[calleeLoad.ID] = remaining
 		recordFieldPolyShapeCatalog(fn, remaining)
 	}
@@ -469,11 +477,25 @@ func fieldShapeSplitInlineOpSafe(op Op) bool {
 		OpEqInt, OpLtInt, OpLeInt, OpEqString, OpLtFloat, OpLeFloat,
 		OpFloor, OpNumToFloat, OpFieldSvals, OpFieldLoad, OpFieldLoadNumToFloat,
 		OpFieldPolyLen,
-		OpGuardType, OpGuardIntRange, OpGuardCalleeProto:
+		OpGuardType, OpGuardIntRange, OpGuardCalleeProto, OpGuardFieldCalleeProto:
 		return true
 	default:
 		return false
 	}
+}
+
+func fieldPolyShapeCaseAux2(c FieldPolyShapeCase) int64 {
+	if c.ShapeID == 0 || c.FieldIdx < 0 {
+		return 0
+	}
+	return int64(c.ShapeID)<<32 | int64(uint32(c.FieldIdx))
+}
+
+func fieldPolyShapeCasesAux2(cases []FieldPolyShapeCase) int64 {
+	if len(cases) != 1 {
+		return 0
+	}
+	return fieldPolyShapeCaseAux2(cases[0])
 }
 
 func fieldShapeSplitCase(fn *Function, block *Block, idx int, call *Instr, c FieldPolyShapeCase, cases []FieldPolyShapeCase, caseIdx int) {

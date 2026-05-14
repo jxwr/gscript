@@ -204,6 +204,7 @@ const (
 	OpGuardConstString
 	OpGuardTableKind   // Args[0] must be a table with array kind Aux
 	OpGuardCalleeProto // Args[0] must be a VM closure whose proto pointer is Aux
+	OpGuardFieldCalleeProto
 	OpGuardNonNil
 	OpGuardTruthy
 
@@ -357,6 +358,7 @@ var opNames = [...]string{
 	OpGuardConstString:           "GuardConstString",
 	OpGuardTableKind:             "GuardTableKind",
 	OpGuardCalleeProto:           "GuardCalleeProto",
+	OpGuardFieldCalleeProto:      "GuardFieldCalleeProto",
 	OpGuardNonNil:                "GuardNonNil",
 	OpGuardTruthy:                "GuardTruthy",
 	OpJump:                       "Jump",

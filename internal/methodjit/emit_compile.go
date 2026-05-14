@@ -763,7 +763,7 @@ func instrMayDirectDeoptWithoutFullFlush(instr *Instr) bool {
 		return false
 	}
 	switch instr.Op {
-	case OpGuardType, OpGuardIntRange, OpGuardGlobalConst, OpGuardConstString, OpGuardTableKind, OpGuardCalleeProto, OpNumToFloat, OpDivIntExact,
+	case OpGuardType, OpGuardIntRange, OpGuardGlobalConst, OpGuardConstString, OpGuardTableKind, OpGuardCalleeProto, OpGuardFieldCalleeProto, OpNumToFloat, OpDivIntExact,
 		OpGetFieldNumToFloat, OpFieldPolyLen, OpFieldSvals, OpFieldLoad, OpFieldLoadNumToFloat,
 		OpMatrixGetF, OpMatrixSetF, OpMatrixFlat, OpMatrixStride,
 		OpTableArrayHeader, OpTableArrayLoad, OpTableShapeID, OpTableArrayStore, OpTableArraySwap, OpTableArraySwapPairs, OpTableArrayNestedLoad:
@@ -1454,6 +1454,52 @@ func (ec *emitContext) seedEntryShapeGuardState(block *Block) {
 		}
 		ec.shapeVerified[instr.ID] = fact.ShapeID
 	}
+}
+
+func (ec *emitContext) seedBranchShapeGuardState(block *Block) {
+	if ec == nil || block == nil || len(block.Preds) != 1 {
+		return
+	}
+	pred := block.Preds[0]
+	if pred == nil || len(pred.Succs) == 0 || pred.Succs[0] != block || len(pred.Instrs) == 0 {
+		return
+	}
+	br := pred.Instrs[len(pred.Instrs)-1]
+	if br == nil || br.Op != OpBranch || len(br.Args) == 0 || br.Args[0] == nil || br.Args[0].Def == nil {
+		return
+	}
+	tableID, shapeID, ok := branchTableShapeEqConst(br.Args[0].Def)
+	if !ok || shapeID == 0 {
+		return
+	}
+	if ec.shapeVerified == nil {
+		ec.shapeVerified = make(map[int]uint32)
+	}
+	if ec.tableVerified == nil {
+		ec.tableVerified = make(map[int]bool)
+	}
+	ec.shapeVerified[tableID] = shapeID
+	ec.tableVerified[tableID] = true
+}
+
+func branchTableShapeEqConst(instr *Instr) (int, uint32, bool) {
+	if instr == nil || instr.Op != OpEqInt || len(instr.Args) < 2 || instr.Args[0] == nil || instr.Args[1] == nil {
+		return 0, 0, false
+	}
+	if tableID, shapeID, ok := tableShapeConstPair(instr.Args[0].Def, instr.Args[1].Def); ok {
+		return tableID, shapeID, true
+	}
+	return tableShapeConstPair(instr.Args[1].Def, instr.Args[0].Def)
+}
+
+func tableShapeConstPair(shapeDef, constDef *Instr) (int, uint32, bool) {
+	if shapeDef == nil || constDef == nil || shapeDef.Op != OpTableShapeID || constDef.Op != OpConstInt || len(shapeDef.Args) == 0 || shapeDef.Args[0] == nil {
+		return 0, 0, false
+	}
+	if constDef.Aux <= 0 || constDef.Aux > int64(^uint32(0)) {
+		return 0, 0, false
+	}
+	return shapeDef.Args[0].ID, uint32(constDef.Aux), true
 }
 
 func emitBoxTablePtr(asm *jit.Assembler, dst, ptr, scratch jit.Reg) {
@@ -2194,6 +2240,7 @@ func (ec *emitContext) emitBlock(block *Block) {
 		ec.keysDirtyWritten = make(map[int]bool)
 		ec.stringLookupCleanGuarded = make(map[int]bool)
 	}
+	ec.seedBranchShapeGuardState(block)
 	ec.tableArrayBoundedKeys = make(map[tableArrayBoundKey]bool)
 	ec.seedEntryShapeGuardState(block)
 	// R44: reset DenseMatrix verification at every block boundary. Cross-

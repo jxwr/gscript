@@ -156,6 +156,12 @@ func printInstr(sb *strings.Builder, i *Instr) {
 		if len(i.Args) > 0 {
 			fmt.Fprintf(sb, "v%d callee_proto == 0x%x", i.Args[0].ID, uint64(i.Aux))
 		}
+	case OpGuardFieldCalleeProto:
+		if len(i.Args) > 0 {
+			shapeID := uint32(i.Aux2 >> 32)
+			fieldIdx := int(int32(i.Aux2 & 0xFFFFFFFF))
+			fmt.Fprintf(sb, "v%d.shape[%d].field[%d] callee_proto == 0x%x", i.Args[0].ID, shapeID, fieldIdx, uint64(i.Aux))
+		}
 	case OpPhi:
 		args := make([]string, len(i.Args))
 		for j, a := range i.Args {

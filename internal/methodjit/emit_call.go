@@ -192,6 +192,47 @@ func (ec *emitContext) emitGuardCalleeProto(instr *Instr) {
 	asm.Label(doneLabel)
 }
 
+func (ec *emitContext) emitGuardFieldCalleeProto(instr *Instr) {
+	if len(instr.Args) == 0 {
+		return
+	}
+	shapeID := uint32(instr.Aux2 >> 32)
+	fieldIdx := int(int32(instr.Aux2 & 0xFFFFFFFF))
+	if shapeID == 0 || fieldIdx < 0 {
+		ec.emitDeopt(instr)
+		return
+	}
+	asm := ec.asm
+	deoptLabel := ec.uniqueLabel("guard_field_callee_deopt")
+	doneLabel := ec.uniqueLabel("guard_field_callee_done")
+
+	tblValueID := instr.Args[0].ID
+	ec.emitPrepareFieldTablePtr(tblValueID, shapeID, deoptLabel)
+	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals)
+	asm.LDR(jit.X0, jit.X1, fieldIdx*jit.ValueSize)
+	ec.rememberFieldSvalsCache(tblValueID, shapeID)
+
+	asm.LSRimm(jit.X1, jit.X0, 48)
+	asm.MOVimm16(jit.X2, jit.NB_TagPtrShr48)
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondNE, deoptLabel)
+	asm.LSRimm(jit.X1, jit.X0, uint8(nbPtrSubShift))
+	asm.LoadImm64(jit.X2, 0xF)
+	asm.ANDreg(jit.X1, jit.X1, jit.X2)
+	asm.CMPimm(jit.X1, nbPtrSubVMClosure)
+	asm.BCond(jit.CondNE, deoptLabel)
+	jit.EmitExtractPtr(asm, jit.X1, jit.X0)
+	asm.LDR(jit.X1, jit.X1, vmClosureOffProto)
+	asm.LoadImm64(jit.X2, instr.Aux)
+	asm.CMPreg(jit.X1, jit.X2)
+	asm.BCond(jit.CondNE, deoptLabel)
+	ec.storeResultNB(jit.X0, instr.ID)
+	asm.B(doneLabel)
+	asm.Label(deoptLabel)
+	ec.emitDeopt(instr)
+	asm.Label(doneLabel)
+}
+
 func (ec *emitContext) emitGuardConstString(instr *Instr) {
 	if len(instr.Args) == 0 || ec.fn == nil || ec.fn.Proto == nil {
 		return
