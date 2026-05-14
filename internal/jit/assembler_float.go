@@ -114,16 +114,86 @@ func (a *Assembler) FSTRdReg(rt FReg, rn, rm Reg) {
 func (a *Assembler) FNEGd(dst, src FReg) { a.emit(0x1E614000 | uint32(src)<<5 | uint32(dst)) }
 
 // FABSd: Dd = |Dn| (absolute value, double)
-func (a *Assembler) FABSd(dst, src FReg)    { a.emit(0x1e60c000 | uint32(src)<<5 | uint32(dst)) }
+func (a *Assembler) FABSd(dst, src FReg) { a.emit(0x1e60c000 | uint32(src)<<5 | uint32(dst)) }
 
 // FRINTMd: Dd = floor(Dn) (round toward -inf, double)
-func (a *Assembler) FRINTMd(dst, src FReg)  { a.emit(0x1e654000 | uint32(src)<<5 | uint32(dst)) }
+func (a *Assembler) FRINTMd(dst, src FReg) { a.emit(0x1e654000 | uint32(src)<<5 | uint32(dst)) }
 
 // FRINTPd: Dd = ceil(Dn) (round toward +inf, double)
-func (a *Assembler) FRINTPd(dst, src FReg)  { a.emit(0x1e64c000 | uint32(src)<<5 | uint32(dst)) }
+func (a *Assembler) FRINTPd(dst, src FReg) { a.emit(0x1e64c000 | uint32(src)<<5 | uint32(dst)) }
 
 // FMAXNMd: Dd = maxnum(Dn, Dm) (IEEE 754 maxNum, double)
-func (a *Assembler) FMAXNMd(dst, src1, src2 FReg) { a.emit(0x1e626800 | uint32(src2)<<16 | uint32(src1)<<5 | uint32(dst)) }
+func (a *Assembler) FMAXNMd(dst, src1, src2 FReg) {
+	a.emit(0x1e626800 | uint32(src2)<<16 | uint32(src1)<<5 | uint32(dst))
+}
 
 // FMINNMd: Dd = minnum(Dn, Dm) (IEEE 754 minNum, double)
-func (a *Assembler) FMINNMd(dst, src1, src2 FReg) { a.emit(0x1e627800 | uint32(src2)<<16 | uint32(src1)<<5 | uint32(dst)) }
+func (a *Assembler) FMINNMd(dst, src1, src2 FReg) {
+	a.emit(0x1e627800 | uint32(src2)<<16 | uint32(src1)<<5 | uint32(dst))
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// NEON/SIMD Instructions (2 x float64 vector lanes)
+// ──────────────────────────────────────────────────────────────────────────────
+
+// QLDR: Qt = [Xn + #offset] (128-bit SIMD load, offset must be 16-byte aligned)
+func (a *Assembler) QLDR(rt FReg, rn Reg, offset int) {
+	pimm := offset >> 4
+	a.emit(0x3DC00000 | uint32(pimm&0xFFF)<<10 | uint32(rn)<<5 | uint32(rt))
+}
+
+// QSTR: [Xn + #offset] = Qt (128-bit SIMD store, offset must be 16-byte aligned)
+func (a *Assembler) QSTR(rt FReg, rn Reg, offset int) {
+	pimm := offset >> 4
+	a.emit(0x3D800000 | uint32(pimm&0xFFF)<<10 | uint32(rn)<<5 | uint32(rt))
+}
+
+// QLDRReg: Qt = [Xn + Xm] (128-bit SIMD load, unscaled register offset)
+func (a *Assembler) QLDRReg(rt FReg, rn, rm Reg) {
+	a.emit(0x3CE06800 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rt))
+}
+
+// QSTRReg: [Xn + Xm] = Qt (128-bit SIMD store, unscaled register offset)
+func (a *Assembler) QSTRReg(rt FReg, rn, rm Reg) {
+	a.emit(0x3CA06800 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rt))
+}
+
+// VFADD2D: Vd.2D = Vn.2D + Vm.2D.
+func (a *Assembler) VFADD2D(rd, rn, rm FReg) {
+	a.emit(0x4E60D400 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd))
+}
+
+// VFMUL2D: Vd.2D = Vn.2D * Vm.2D.
+func (a *Assembler) VFMUL2D(rd, rn, rm FReg) {
+	a.emit(0x6E60DC00 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd))
+}
+
+// VFMLA2D: Vd.2D += Vn.2D * Vm.2D.
+func (a *Assembler) VFMLA2D(rd, rn, rm FReg) {
+	a.emit(0x4E60CC00 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd))
+}
+
+// VFSQRT2D: Vd.2D = sqrt(Vn.2D).
+func (a *Assembler) VFSQRT2D(rd, rn FReg) {
+	a.emit(0x6EE1F800 | uint32(rn)<<5 | uint32(rd))
+}
+
+// VFADDP2D: Vd.2D = pairwise_add(Vn.2D, Vm.2D).
+func (a *Assembler) VFADDP2D(rd, rn, rm FReg) {
+	a.emit(0x6E60D400 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd))
+}
+
+// VFADDPScalar2D: Dd = Vn.D[0] + Vn.D[1].
+func (a *Assembler) VFADDPScalar2D(rd, rn FReg) {
+	a.emit(0x7E70D800 | uint32(rn)<<5 | uint32(rd))
+}
+
+// VDUP2DFromGP: Vd.2D = Xn replicated into both lanes.
+func (a *Assembler) VDUP2DFromGP(rd FReg, rn Reg) {
+	a.emit(0x4E080C00 | uint32(rn)<<5 | uint32(rd))
+}
+
+// VDUP2DFromLane0: Vd.2D = Vn.D[0] replicated into both lanes.
+func (a *Assembler) VDUP2DFromLane0(rd, rn FReg) {
+	a.emit(0x4E080400 | uint32(rn)<<5 | uint32(rd))
+}

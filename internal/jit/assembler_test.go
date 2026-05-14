@@ -445,6 +445,37 @@ func TestFSTRdReg(t *testing.T) {
 	}
 }
 
+func TestNEON2DEncodings(t *testing.T) {
+	tests := []struct {
+		name string
+		emit func(*Assembler)
+		want uint32
+	}{
+		{name: "QLDR", emit: func(a *Assembler) { a.QLDR(D0, X1, 0) }, want: 0x3DC00020},
+		{name: "QSTR", emit: func(a *Assembler) { a.QSTR(D0, X1, 0) }, want: 0x3D800020},
+		{name: "QLDRReg", emit: func(a *Assembler) { a.QLDRReg(D2, X3, X4) }, want: 0x3CE46862},
+		{name: "QSTRReg", emit: func(a *Assembler) { a.QSTRReg(D2, X3, X4) }, want: 0x3CA46862},
+		{name: "VFADD2D", emit: func(a *Assembler) { a.VFADD2D(D0, D1, D2) }, want: 0x4E62D420},
+		{name: "VFMUL2D", emit: func(a *Assembler) { a.VFMUL2D(D3, D4, D5) }, want: 0x6E65DC83},
+		{name: "VFMLA2D", emit: func(a *Assembler) { a.VFMLA2D(D6, D7, D8) }, want: 0x4E68CCE6},
+		{name: "VFSQRT2D", emit: func(a *Assembler) { a.VFSQRT2D(D9, D10) }, want: 0x6EE1F949},
+		{name: "VFADDP2D", emit: func(a *Assembler) { a.VFADDP2D(D11, D12, D13) }, want: 0x6E6DD58B},
+		{name: "VFADDPScalar2D", emit: func(a *Assembler) { a.VFADDPScalar2D(D14, D15) }, want: 0x7E70D9EE},
+		{name: "VDUP2DFromGP", emit: func(a *Assembler) { a.VDUP2DFromGP(D16, X17) }, want: 0x4E080E30},
+		{name: "VDUP2DFromLane0", emit: func(a *Assembler) { a.VDUP2DFromLane0(D18, D19) }, want: 0x4E080672},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			a := NewAssembler()
+			tt.emit(a)
+			if got := getInst(a, 0); got != tt.want {
+				t.Fatalf("%s: got 0x%08X, want 0x%08X", tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCSET(t *testing.T) {
 	a := NewAssembler()
 	a.CSET(X0, CondEQ) // CSET X0, EQ = CSINC X0, XZR, XZR, NE

@@ -87,13 +87,13 @@ func TestJITLoop(t *testing.T) {
 	asm := NewAssembler()
 
 	// X0 = n, X1 = sum = 0, X2 = i = 1
-	asm.MOVimm16(X1, 0)  // sum = 0
-	asm.MOVimm16(X2, 1)  // i = 1
+	asm.MOVimm16(X1, 0) // sum = 0
+	asm.MOVimm16(X2, 1) // i = 1
 
 	asm.Label("loop")
-	asm.ADDreg(X1, X1, X2) // sum += i
-	asm.ADDimm(X2, X2, 1)  // i++
-	asm.CMPreg(X2, X0)     // compare i, n
+	asm.ADDreg(X1, X1, X2)    // sum += i
+	asm.ADDimm(X2, X2, 1)     // i++
+	asm.CMPreg(X2, X0)        // compare i, n
 	asm.BCond(CondLE, "loop") // if i <= n, loop
 
 	asm.MOVreg(X0, X1) // return sum
@@ -125,10 +125,10 @@ func TestJITMemoryAccess(t *testing.T) {
 	// Read an int64 from memory, add 10, store back, return the new value.
 	// func(ptr *int64) int64 { *ptr += 10; return *ptr }
 	asm := NewAssembler()
-	asm.LDR(X1, X0, 0)      // X1 = *ptr
-	asm.ADDimm(X1, X1, 10)  // X1 += 10
-	asm.STR(X1, X0, 0)      // *ptr = X1
-	asm.MOVreg(X0, X1)      // return X1
+	asm.LDR(X1, X0, 0)     // X1 = *ptr
+	asm.ADDimm(X1, X1, 10) // X1 += 10
+	asm.STR(X1, X0, 0)     // *ptr = X1
+	asm.MOVreg(X0, X1)     // return X1
 	asm.RET()
 
 	code, err := asm.Finalize()
@@ -163,10 +163,10 @@ func TestJITFloatingPoint(t *testing.T) {
 	// func(ptr *[2]float64) float64 { return ptr[0] + ptr[1] }
 
 	asm := NewAssembler()
-	asm.FLDRd(D0, X0, 0)    // D0 = ptr[0]
-	asm.FLDRd(D1, X0, 8)    // D1 = ptr[1]
-	asm.FADDd(D0, D0, D1)   // D0 = D0 + D1
-	asm.FMOVtoGP(X0, D0)    // X0 = D0 (bits)
+	asm.FLDRd(D0, X0, 0)  // D0 = ptr[0]
+	asm.FLDRd(D1, X0, 8)  // D1 = ptr[1]
+	asm.FADDd(D0, D0, D1) // D0 = D0 + D1
+	asm.FMOVtoGP(X0, D0)  // X0 = D0 (bits)
 	asm.RET()
 
 	code, err := asm.Finalize()
@@ -192,5 +192,45 @@ func TestJITFloatingPoint(t *testing.T) {
 	// 3.14 + 2.86 = 6.0
 	if result != 6.0 {
 		t.Fatalf("expected 6.0, got %f", result)
+	}
+}
+
+func TestJITNEONVectorAddReduce2D(t *testing.T) {
+	// func(ptr *[4]float64) float64 {
+	//     v0 = [ptr[0], ptr[1]]
+	//     v1 = [ptr[2], ptr[3]]
+	//     v0 = v0 + v1
+	//     return v0[0] + v0[1]
+	// }
+	asm := NewAssembler()
+	asm.QLDR(D0, X0, 0)
+	asm.QLDR(D1, X0, 16)
+	asm.VFADD2D(D0, D0, D1)
+	asm.VFADDPScalar2D(D0, D0)
+	asm.FMOVtoGP(X0, D0)
+	asm.RET()
+
+	code, err := asm.Finalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	block, err := AllocExec(len(code))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer block.Free()
+	if err := block.WriteCode(code); err != nil {
+		t.Fatal(err)
+	}
+
+	var fn func(unsafe.Pointer) uint64
+	purego.RegisterFunc(&fn, uintptr(block.ptr))
+
+	args := [4]float64{1.25, 2.75, 3.5, 4.5}
+	resultBits := fn(unsafe.Pointer(&args[0]))
+	result := *(*float64)(unsafe.Pointer(&resultBits))
+	if result != 12.0 {
+		t.Fatalf("expected 12.0, got %f", result)
 	}
 }
