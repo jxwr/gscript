@@ -321,6 +321,7 @@ func CompileWithOptions(fn *Function, alloc *RegAllocation, opts CompileOptions)
 		fusedCmps:                  fusedCmps,
 		tailCallInstrs:             computeTailCalls(fn),
 		newTableCaches:             newTableCaches,
+		exitResumeLive:             make(exitResumeLiveMetadata),
 		fixedTableArgSlots:         make(map[int][]int),
 		instrCodeRanges:            make([]InstrCodeRange, 0, fn.nextID),
 		nativeCallReplaySafe:       nativeCallReplaySafe,
@@ -415,7 +416,7 @@ func CompileWithOptions(fn *Function, alloc *RegAllocation, opts CompileOptions)
 		}
 	}
 	exitSites := buildExitSiteMeta(fn)
-	continuations := buildTier2Continuations(exitSites, ec.deferredResumes, ec.asm.LabelOffset)
+	continuations := buildTier2Continuations(exitSites, ec.deferredResumes, ec.exitResumeLive, fn.NumRegs, ec.asm.LabelOffset)
 
 	// Resolve direct entry offset for BLR callers.
 	directEntryOff := ec.asm.LabelOffset("t2_direct_entry")
@@ -845,6 +846,11 @@ type emitContext struct {
 
 	// deferredResumes tracks resume entry points to emit after the epilogue.
 	deferredResumes []deferredResume
+
+	// exitResumeLive records lightweight continuation live-state metadata for
+	// diagnostics and future safe mid-run version switching. It is independent
+	// from the opt-in shadow verifier below.
+	exitResumeLive exitResumeLiveMetadata
 
 	// loop tracks loop structure for raw-int loop optimization.
 	// When non-nil and a block is inside a loop, emitPhiMoves to loop

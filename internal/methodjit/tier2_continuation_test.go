@@ -23,7 +23,10 @@ func TestBuildTier2ContinuationsIndexesByStableSourceKey(t *testing.T) {
 		callExitResumeLabelForPass(12, false): 300,
 		callExitResumeLabelForPass(13, false): 400,
 	}
-	conts := buildTier2Continuations(sites, resumes, func(label string) int {
+	live := exitResumeLiveMetadata{
+		{InstrID: 10}: {exitResumeLiveSlot{ValueID: 1, Slot: 0}},
+	}
+	conts := buildTier2Continuations(sites, resumes, live, 2, func(label string) int {
 		if off, ok := offsets[label]; ok {
 			return off
 		}
@@ -43,6 +46,10 @@ func TestBuildTier2ContinuationsIndexesByStableSourceKey(t *testing.T) {
 	if off, ok := cf.continuationOffset(Tier2ContinuationKey{PC: 10, Kind: Tier2ContinuationCall}); !ok || off != 400 {
 		t.Fatalf("field call floor continuation = (%d,%v), want (400,true)", off, ok)
 	}
+	call := conts[Tier2ContinuationKey{PC: 7, Kind: Tier2ContinuationCall}]
+	if !call.Switchable {
+		t.Fatalf("VM-slot-only continuation should be switchable: %+v", call)
+	}
 }
 
 func TestBuildTier2ContinuationsMarksDuplicateStableKeysAmbiguous(t *testing.T) {
@@ -55,7 +62,7 @@ func TestBuildTier2ContinuationsMarksDuplicateStableKeysAmbiguous(t *testing.T) 
 		callExitResumeLabelForPass(10, false): 100,
 		callExitResumeLabelForPass(11, false): 120,
 	}
-	conts := buildTier2Continuations(sites, resumes, func(label string) int {
+	conts := buildTier2Continuations(sites, resumes, nil, 2, func(label string) int {
 		if off, ok := offsets[label]; ok {
 			return off
 		}
@@ -68,5 +75,23 @@ func TestBuildTier2ContinuationsMarksDuplicateStableKeysAmbiguous(t *testing.T) 
 	cf := &CompiledFunction{Continuations: conts}
 	if off, ok := cf.continuationOffset(key); ok {
 		t.Fatalf("ambiguous continuation should not resolve, got (%d,true)", off)
+	}
+}
+
+func TestBuildTier2ContinuationsMarksTempSlotNotSwitchable(t *testing.T) {
+	sites := map[int]ExitSiteMeta{10: {PC: 7, Op: "Call"}}
+	resumes := []deferredResume{{instrID: 10}}
+	live := exitResumeLiveMetadata{
+		{InstrID: 10}: {exitResumeLiveSlot{ValueID: 20, Slot: 5}},
+	}
+	conts := buildTier2Continuations(sites, resumes, live, 2, func(label string) int {
+		if label == callExitResumeLabelForPass(10, false) {
+			return 100
+		}
+		return -1
+	})
+	cont := conts[Tier2ContinuationKey{PC: 7, Kind: Tier2ContinuationCall}]
+	if cont.Switchable || cont.NotSwitchableWhy != "version_local_temp_slot" {
+		t.Fatalf("temp-slot continuation switchability = (%v,%q), want (false,version_local_temp_slot)", cont.Switchable, cont.NotSwitchableWhy)
 	}
 }

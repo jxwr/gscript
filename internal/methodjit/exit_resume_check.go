@@ -43,6 +43,26 @@ type exitResumeCheckMetadata struct {
 	Sites map[exitResumeCheckKey]*exitResumeCheckSite
 }
 
+type exitResumeLiveKey struct {
+	InstrID     int
+	NumericPass bool
+}
+
+type exitResumeLiveMetadata map[exitResumeLiveKey][]exitResumeLiveSlot
+
+func (m exitResumeLiveMetadata) slots(instrID int, numericPass bool) []exitResumeLiveSlot {
+	if len(m) == 0 {
+		return nil
+	}
+	live := m[exitResumeLiveKey{InstrID: instrID, NumericPass: numericPass}]
+	if len(live) == 0 {
+		return nil
+	}
+	out := make([]exitResumeLiveSlot, len(live))
+	copy(out, live)
+	return out
+}
+
 type exitResumeCheckState struct {
 	shadow []runtime.Value
 }
@@ -70,14 +90,14 @@ func (s *exitResumeCheckState) shadowPtr() uintptr {
 }
 
 func (ec *emitContext) recordExitResumeCheckSite(instr *Instr, exitCode int64, modifiedSlots []int, opts exitResumeCheckOptions) {
-	if ec.exitResumeCheck == nil || instr == nil {
+	if instr == nil {
 		return
 	}
-	ec.recordExitResumeCheckSiteWithLive(instr, exitCode, ec.exitResumeCheckLiveSlots(ec.activeRegs, ec.activeFPRegs), modifiedSlots, opts)
+	ec.recordExitResumeCheckSiteWithLive(instr, exitCode, ec.exitResumeLiveSlots(ec.activeRegs, ec.activeFPRegs), modifiedSlots, opts)
 }
 
 func (ec *emitContext) recordExitResumeCheckSiteWithLive(instr *Instr, exitCode int64, live []exitResumeLiveSlot, modifiedSlots []int, opts exitResumeCheckOptions) {
-	if ec.exitResumeCheck == nil || instr == nil {
+	if instr == nil {
 		return
 	}
 	sort.Slice(live, func(i, j int) bool {
@@ -86,6 +106,15 @@ func (ec *emitContext) recordExitResumeCheckSiteWithLive(instr *Instr, exitCode 
 		}
 		return live[i].Slot < live[j].Slot
 	})
+	if ec.exitResumeLive != nil {
+		key := exitResumeLiveKey{InstrID: instr.ID, NumericPass: ec.numericMode}
+		copied := make([]exitResumeLiveSlot, len(live))
+		copy(copied, live)
+		ec.exitResumeLive[key] = copied
+	}
+	if ec.exitResumeCheck == nil {
+		return
+	}
 	key := exitResumeCheckKey{ExitCode: exitCode, InstrID: instr.ID, NumericPass: ec.numericMode}
 	site := &exitResumeCheckSite{
 		Key:                key,
@@ -121,9 +150,10 @@ func callExitModifiedSlots(funcSlot, nRets int) []int {
 }
 
 func (ec *emitContext) exitResumeCheckLiveSlots(gprLive, fprLive map[int]bool) []exitResumeLiveSlot {
-	if ec.exitResumeCheck == nil {
-		return nil
-	}
+	return ec.exitResumeLiveSlots(gprLive, fprLive)
+}
+
+func (ec *emitContext) exitResumeLiveSlots(gprLive, fprLive map[int]bool) []exitResumeLiveSlot {
 	live := make([]exitResumeLiveSlot, 0, len(gprLive)+len(fprLive))
 	seen := make(map[int]bool, len(gprLive)+len(fprLive))
 	for valueID := range gprLive {
