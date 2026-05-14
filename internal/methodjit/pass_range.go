@@ -1271,7 +1271,7 @@ func seedGuardedForwardInductionRanges(fn *Function, ranges map[int]intRange) {
 			if !phi.Type.isIntegerLike() {
 				continue
 			}
-			ind, ok := analyzeForwardInduction(phi, li)
+			ind, ok := analyzeForwardInduction(phi, li, ranges)
 			if !ok || !ind.init.fitsInt48() {
 				continue
 			}
@@ -1300,8 +1300,12 @@ type forwardInduction struct {
 	update *Instr
 }
 
-func analyzeForwardInduction(phi *Instr, li *loopInfo) (forwardInduction, bool) {
+func analyzeForwardInduction(phi *Instr, li *loopInfo, rangeMaps ...map[int]intRange) (forwardInduction, bool) {
 	var out forwardInduction
+	var ranges map[int]intRange
+	if len(rangeMaps) != 0 {
+		ranges = rangeMaps[0]
+	}
 	bodyBlocks := li.headerBlocks[phi.Block.ID]
 	if bodyBlocks == nil {
 		return out, false
@@ -1336,7 +1340,7 @@ func analyzeForwardInduction(phi *Instr, li *loopInfo) (forwardInduction, bool) 
 			continue
 		}
 
-		init := initialRangeFromValue(arg)
+		init := initialRangeFromValue(arg, ranges)
 		if !init.known {
 			return forwardInduction{}, false
 		}
@@ -1388,7 +1392,12 @@ func forwardStepFromPhi(instr *Instr, phiID int) (int64, bool) {
 	return 0, false
 }
 
-func initialRangeFromValue(v *Value) intRange {
+func initialRangeFromValue(v *Value, ranges map[int]intRange) intRange {
+	if v != nil && ranges != nil {
+		if r, ok := ranges[v.ID]; ok && r.known {
+			return r
+		}
+	}
 	if c, ok := constIntFromValue(v); ok {
 		return pointRange(c)
 	}
