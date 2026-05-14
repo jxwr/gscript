@@ -51,7 +51,9 @@ func tier2TableFieldNativeLoweringModules(globals map[string]*vm.FuncProto) []Ti
 	return []Tier2OptimizerModule{
 		tier2PassModule("TableArrayStoreLower", Tier2PhaseTableFieldLower, TableArrayStoreLowerPass),
 		tier2PassModule("GuardFieldCallee", Tier2PhaseTableFieldLower, GuardFieldCalleePass),
+		tier2PassModule("FieldPolyLenPhi", Tier2PhaseTableFieldLower, FieldPolyLenPhiPass),
 		tier2PassModule("FieldSvalsLower", Tier2PhaseTableFieldLower, FieldSvalsLowerPass),
+		tier2PassModule("FieldSvalsCSE", Tier2PhaseTableFieldLower, FieldSvalsCSEPass),
 		{
 			Name:  "FixedShapeTableFacts (post-FieldSvalsLower)",
 			Phase: Tier2PhaseTableFieldLower,
