@@ -315,6 +315,7 @@ func RangeAnalysisPass(fn *Function) (*Function, error) {
 		}
 	}
 	staticLens := collectStaticLenRanges(fn)
+	intInstrs := rangeAnalysisIntInstrs(fn)
 
 	// Phase A: seed loop counter ranges from FORLOOP/while-loop structure.
 	seedLoopRanges(fn, ranges)
@@ -327,22 +328,17 @@ func RangeAnalysisPass(fn *Function) (*Function, error) {
 	const maxIter = 16
 	for iter := 0; iter < maxIter; iter++ {
 		changed := false
-		for _, block := range fn.Blocks {
-			for _, instr := range block.Instrs {
-				if !instr.Type.isIntegerLike() {
-					continue
-				}
-				newR := computeRange(instr, ranges, staticLens, fn.ProfiledIntRanges, fn.ProfiledLenRanges)
-				if old, ok := ranges[instr.ID]; ok {
-					if !rangeEqual(old, newR) {
-						ranges[instr.ID] = newR
-						changed = true
-					}
-				} else {
+		for _, instr := range intInstrs {
+			newR := computeRange(instr, ranges, staticLens, fn.ProfiledIntRanges, fn.ProfiledLenRanges)
+			if old, ok := ranges[instr.ID]; ok {
+				if !rangeEqual(old, newR) {
 					ranges[instr.ID] = newR
-					if newR.known {
-						changed = true
-					}
+					changed = true
+				}
+			} else {
+				ranges[instr.ID] = newR
+				if newR.known {
+					changed = true
 				}
 			}
 		}
@@ -353,22 +349,35 @@ func RangeAnalysisPass(fn *Function) (*Function, error) {
 
 	// Phase C: populate Int48Safe for int-arithmetic ops whose range fits.
 	safe := make(map[int]bool)
-	for _, block := range fn.Blocks {
-		for _, instr := range block.Instrs {
-			switch instr.Op {
-			case OpAddInt, OpSubInt, OpMulInt, OpDivIntExact, OpNegInt:
-				if r, ok := ranges[instr.ID]; ok && r.fitsInt48() {
-					safe[instr.ID] = true
-				}
+	for _, instr := range intInstrs {
+		switch instr.Op {
+		case OpAddInt, OpSubInt, OpMulInt, OpDivIntExact, OpNegInt:
+			if r, ok := ranges[instr.ID]; ok && r.fitsInt48() {
+				safe[instr.ID] = true
 			}
 		}
 	}
 	markConvergingInductionSafe(fn, safe)
 	fn.Int48Safe = safe
 	fn.IntRanges = ranges
-	fn.IntNonNegative = collectIntNonNegativeFacts(fn, ranges)
+	fn.IntNonNegative = collectIntNonNegativeFacts(intInstrs, ranges)
 	populateIntModFacts(fn, ranges)
 	return fn, nil
+}
+
+func rangeAnalysisIntInstrs(fn *Function) []*Instr {
+	if fn == nil {
+		return nil
+	}
+	out := make([]*Instr, 0)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr != nil && instr.Type.isIntegerLike() {
+				out = append(out, instr)
+			}
+		}
+	}
+	return out
 }
 
 func seedModuloRecurrenceRanges(fn *Function, ranges map[int]intRange) {
@@ -719,28 +728,21 @@ func argRange(v *Value, ranges map[int]intRange) intRange {
 	return topRange()
 }
 
-func collectIntNonNegativeFacts(fn *Function, ranges map[int]intRange) map[int]bool {
+func collectIntNonNegativeFacts(intInstrs []*Instr, ranges map[int]intRange) map[int]bool {
 	facts := make(map[int]bool)
-	for _, block := range fn.Blocks {
-		for _, instr := range block.Instrs {
-			if !instr.Type.isIntegerLike() {
-				continue
-			}
-			if r, ok := ranges[instr.ID]; ok && r.nonNegative() {
-				facts[instr.ID] = true
-			}
+	for _, instr := range intInstrs {
+		if r, ok := ranges[instr.ID]; ok && r.nonNegative() {
+			facts[instr.ID] = true
 		}
 	}
 	candidates := make(map[int]*Instr)
-	for _, block := range fn.Blocks {
-		for _, instr := range block.Instrs {
-			if instr == nil || !instr.Type.isIntegerLike() || facts[instr.ID] {
-				continue
-			}
-			if opCanDeriveNonNegative(instr) {
-				candidates[instr.ID] = instr
-				facts[instr.ID] = true
-			}
+	for _, instr := range intInstrs {
+		if instr == nil || facts[instr.ID] {
+			continue
+		}
+		if opCanDeriveNonNegative(instr) {
+			candidates[instr.ID] = instr
+			facts[instr.ID] = true
 		}
 	}
 	for changed := true; changed; {
