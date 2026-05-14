@@ -202,6 +202,8 @@ func (ec *emitContext) emitNewFixedTableNCacheFastPath(instr *Instr, doneLabel, 
 	if ec.fn == nil || !fixedTableCtorNCacheable(ec.fn.Proto, instr) {
 		return false
 	}
+	ctor, _ := fixedTableCtorNForInstr(ec.fn.Proto, instr)
+	useFixedRecord := fixedRecordCtorNCacheableForProto(ec.fn.Proto, ctor)
 	slots := fixedTableArgSlots(ec, instr)
 	if len(slots) != len(instr.Args) {
 		return false
@@ -253,7 +255,13 @@ func (ec *emitContext) emitNewFixedTableNCacheFastPath(instr *Instr, doneLabel, 
 	asm.STR(jit.X3, jit.X2, newTableCacheEntryPosOff)
 
 	jit.EmitExtractPtr(asm, jit.X1, jit.X0)
-	asm.LDR(jit.X2, jit.X1, jit.TableOffSvals)
+	if useFixedRecord {
+		asm.LoadImm64(jit.X2, 0)
+		asm.STR(jit.X2, jit.X1, jit.FixedRecordOffMaterialized)
+		asm.ADDimm(jit.X2, jit.X1, jit.FixedRecordOffValues)
+	} else {
+		asm.LDR(jit.X2, jit.X1, jit.TableOffSvals)
+	}
 	for i, arg := range instr.Args {
 		valReg := ec.resolveValueNB(arg.ID, jit.X5)
 		if valReg != jit.X5 {

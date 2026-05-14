@@ -87,7 +87,11 @@ func prewarmNewTableCachesForFunction(fn *Function, caches []newTableCacheEntry)
 					continue
 				}
 				if ctor, ok := fixedTableCtorNForInstr(fn.Proto, instr); ok && cacheableSmallCtorN(ctor) {
-					prewarmFixedTableNCacheEntry(&caches[instr.ID], ctor, fixedTableCacheBatch)
+					if fixedRecordCtorNCacheableForProto(fn.Proto, ctor) {
+						prewarmFixedRecordNCacheEntry(&caches[instr.ID], ctor, fixedTableCacheBatch)
+					} else {
+						prewarmFixedTableNCacheEntry(&caches[instr.ID], ctor, fixedTableCacheBatch)
+					}
 				}
 			}
 		}
@@ -131,6 +135,27 @@ func prewarmFixedTableNCacheEntry(entry *newTableCacheEntry, ctor *runtime.Small
 		t := runtime.NewTableFromCtorNNonNil(ctor, seed)
 		entry.addRoot(t)
 		entry.Values[i] = runtime.FreshTableValue(t)
+	}
+	entry.Pos = 0
+}
+
+func prewarmFixedRecordNCacheEntry(entry *newTableCacheEntry, ctor *runtime.SmallTableCtorN, batch int) {
+	if entry == nil || ctor == nil || batch <= 1 || len(entry.Values) > 0 {
+		return
+	}
+	entry.Values = make([]runtime.Value, batch)
+	seed := make([]runtime.Value, len(ctor.Keys))
+	for i := range seed {
+		seed[i] = runtime.IntValue(0)
+	}
+	for i := range entry.Values {
+		if v, ok := runtime.NewFixedRecordValue(ctor, seed); ok {
+			entry.Values[i] = v
+		} else {
+			t := runtime.NewTableFromCtorNNonNil(ctor, seed)
+			entry.addRoot(t)
+			entry.Values[i] = runtime.FreshTableValue(t)
+		}
 	}
 	entry.Pos = 0
 }
@@ -254,6 +279,32 @@ func fixedTableCtorNCacheable(proto *vm.FuncProto, instr *Instr) bool {
 	return ok && cacheableSmallCtorN(ctor)
 }
 
+func fixedRecordCtorNCacheableForProto(proto *vm.FuncProto, ctor *runtime.SmallTableCtorN) bool {
+	if !cacheableFixedRecordCtorN(ctor) {
+		return false
+	}
+	if proto == nil || ctor.Shape == nil {
+		return true
+	}
+	return !protoUsesShapeForStringKeyAccess(proto, ctor.Shape.ID)
+}
+
+func protoUsesShapeForStringKeyAccess(proto *vm.FuncProto, shapeID uint32) bool {
+	if proto == nil || shapeID == 0 {
+		return false
+	}
+	for i := range proto.TableKeyFeedback {
+		fb := &proto.TableKeyFeedback[i]
+		if fb.Count == 0 || !fb.StringKeySeen {
+			continue
+		}
+		if fb.ShapeID == shapeID {
+			return true
+		}
+	}
+	return false
+}
+
 func cacheableSmallCtorN(ctor *runtime.SmallTableCtorN) bool {
 	return ctor != nil &&
 		ctor.Shape != nil &&
@@ -315,6 +366,22 @@ func (cf *CompiledFunction) allocateFixedTableNForExit(instrID int, ctor *runtim
 		return runtime.NewTableFromCtorN(ctor, vals)
 	}
 	return allocateFixedTableNWithCache(cf.NewTableCaches, instrID, ctor, vals)
+}
+
+func (cf *CompiledFunction) allocateFixedTableNValueForExit(instrID int, ctor *runtime.SmallTableCtorN, vals []runtime.Value) runtime.Value {
+	useFixedRecord := fixedRecordCtorNCacheableForProto(nil, ctor)
+	if cf != nil {
+		useFixedRecord = fixedRecordCtorNCacheableForProto(cf.Proto, ctor)
+	}
+	if cf == nil {
+		if useFixedRecord {
+			if v, ok := runtime.NewFixedRecordValue(ctor, vals); ok {
+				return v
+			}
+		}
+		return runtime.FreshTableValue(runtime.NewTableFromCtorN(ctor, vals))
+	}
+	return allocateFixedTableNValueWithCache(cf.NewTableCaches, instrID, ctor, vals, useFixedRecord)
 }
 
 func allocateNewTableWithCache(caches []newTableCacheEntry, instrID int, arrayHint, hashHint int, kind runtime.ArrayKind, denseMixed bool) *runtime.Table {
@@ -443,6 +510,18 @@ func allocateFixedTableNWithCache(caches []newTableCacheEntry, instrID int, ctor
 	return runtime.NewTableFromCtorN(ctor, vals)
 }
 
+func allocateFixedTableNValueWithCache(caches []newTableCacheEntry, instrID int, ctor *runtime.SmallTableCtorN, vals []runtime.Value, useFixedRecord bool) runtime.Value {
+	if useFixedRecord && fixedTableValuesAllNonNil(vals) {
+		if instrID >= 0 && instrID < len(caches) {
+			return allocateFixedRecordNFullWithCache(caches, instrID, ctor, vals)
+		}
+		if v, ok := runtime.NewFixedRecordValue(ctor, vals); ok {
+			return v
+		}
+	}
+	return runtime.FreshTableValue(allocateFixedTableNWithCache(caches, instrID, ctor, vals))
+}
+
 func fixedTableValuesAllNonNil(vals []runtime.Value) bool {
 	if len(vals) == 0 {
 		return false
@@ -483,6 +562,38 @@ func allocateFixedTableNFullWithCache(caches []newTableCacheEntry, instrID int, 
 	}
 	entry.Pos = 0
 	return tbl
+}
+
+func allocateFixedRecordNFullWithCache(caches []newTableCacheEntry, instrID int, ctor *runtime.SmallTableCtorN, vals []runtime.Value) runtime.Value {
+	v, ok := runtime.NewFixedRecordValue(ctor, vals)
+	if !ok {
+		return runtime.FreshTableValue(allocateFixedTableNWithCache(caches, instrID, ctor, vals))
+	}
+	entry := &caches[instrID]
+	if entry.Pos < int64(len(entry.Values)) {
+		return v
+	}
+	keep := fixedTableCacheRefillBatch - 1
+	if cap(entry.Values) < keep {
+		entry.Values = make([]runtime.Value, keep)
+	} else {
+		entry.Values = entry.Values[:keep]
+	}
+	seed := make([]runtime.Value, len(ctor.Keys))
+	for i := range seed {
+		seed[i] = runtime.IntValue(0)
+	}
+	for i := range entry.Values {
+		if cached, ok := runtime.NewFixedRecordValue(ctor, seed); ok {
+			entry.Values[i] = cached
+		} else {
+			t := runtime.NewTableFromCtorNNonNil(ctor, seed)
+			entry.addRoot(t)
+			entry.Values[i] = runtime.FreshTableValue(t)
+		}
+	}
+	entry.Pos = 0
+	return v
 }
 
 func (entry *newTableCacheEntry) addRoot(t *runtime.Table) {

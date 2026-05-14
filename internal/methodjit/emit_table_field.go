@@ -716,16 +716,68 @@ func (ec *emitContext) emitFieldSvals(instr *Instr) {
 		ec.emitDeopt(instr)
 		return
 	}
+	asm := ec.asm
 	deoptLabel := ec.uniqueLabel("field_svals_deopt")
 	doneLabel := ec.uniqueLabel("field_svals_done")
-	ec.emitPrepareFieldTablePtr(instr.Args[0].ID, shapeID, deoptLabel)
-	ec.asm.LDR(jit.X0, jit.X0, jit.TableOffSvals)
-	ec.storeRawFieldSvalsPtr(jit.X0, instr.ID)
-	ec.asm.B(doneLabel)
+	if fieldSvalsMaySeeFixedRecord(instr) {
+		tableLabel := ec.uniqueLabel("field_svals_table")
+		tablePtrLabel := ec.uniqueLabel("field_svals_table_ptr")
 
-	ec.asm.Label(deoptLabel)
+		tblReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+		if tblReg != jit.X0 {
+			asm.MOVreg(jit.X0, tblReg)
+		}
+		asm.LSRimm(jit.X1, jit.X0, 48)
+		asm.MOVimm16(jit.X2, jit.NB_TagPtrShr48)
+		asm.CMPreg(jit.X1, jit.X2)
+		asm.BCond(jit.CondNE, tableLabel)
+		asm.LSRimm(jit.X1, jit.X0, uint8(jit.NB_PtrSubShift))
+		asm.LoadImm64(jit.X2, 0xF)
+		asm.ANDreg(jit.X1, jit.X1, jit.X2)
+		asm.CMPimm(jit.X1, jit.NB_PtrSubFixedRecord)
+		asm.BCond(jit.CondNE, tableLabel)
+		jit.EmitExtractPtr(asm, jit.X3, jit.X0)
+		asm.CBZ(jit.X3, deoptLabel)
+		asm.LDR(jit.X0, jit.X3, jit.FixedRecordOffMaterialized)
+		asm.CBNZ(jit.X0, tablePtrLabel)
+		asm.LDRW(jit.X1, jit.X3, jit.FixedRecordOffShapeID)
+		asm.LoadImm64(jit.X2, int64(shapeID))
+		asm.CMPreg(jit.X1, jit.X2)
+		asm.BCond(jit.CondNE, deoptLabel)
+		asm.LDRB(jit.X1, jit.X3, jit.FixedRecordOffN)
+		asm.CBZ(jit.X1, deoptLabel)
+		asm.ADDimm(jit.X0, jit.X3, jit.FixedRecordOffValues)
+		ec.storeRawFieldSvalsPtr(jit.X0, instr.ID)
+		asm.B(doneLabel)
+
+		asm.Label(tableLabel)
+		ec.emitPrepareFieldTablePtr(instr.Args[0].ID, shapeID, deoptLabel)
+		asm.Label(tablePtrLabel)
+		asm.LDR(jit.X0, jit.X0, jit.TableOffSvals)
+		ec.storeRawFieldSvalsPtr(jit.X0, instr.ID)
+		asm.B(doneLabel)
+	} else {
+		ec.emitPrepareFieldTablePtr(instr.Args[0].ID, shapeID, deoptLabel)
+		asm.LDR(jit.X0, jit.X0, jit.TableOffSvals)
+		ec.storeRawFieldSvalsPtr(jit.X0, instr.ID)
+		asm.B(doneLabel)
+	}
+
+	asm.Label(deoptLabel)
 	ec.emitPreciseDeopt(instr)
-	ec.asm.Label(doneLabel)
+	asm.Label(doneLabel)
+}
+
+func fieldSvalsMaySeeFixedRecord(instr *Instr) bool {
+	if instr == nil || len(instr.Args) == 0 || instr.Args[0] == nil || instr.Args[0].Def == nil {
+		return false
+	}
+	switch instr.Args[0].Def.Op {
+	case OpNewFixedTable, OpFieldLoad, OpGetField:
+		return true
+	default:
+		return false
+	}
 }
 
 func (ec *emitContext) emitFieldLoad(instr *Instr) {
@@ -906,6 +958,38 @@ func (ec *emitContext) emitSetField(instr *Instr) {
 		return
 	}
 
+	doneLabel := ec.uniqueLabel("setfield_done")
+	notRecordLabel := ec.uniqueLabel("setfield_not_fixed_record")
+	tblReg := ec.resolveValueNB(tblValueID, jit.X0)
+	if tblReg != jit.X0 {
+		asm.MOVreg(jit.X0, tblReg)
+	}
+	asm.LSRimm(jit.X4, jit.X0, 48)
+	asm.MOVimm16(jit.X5, jit.NB_TagPtrShr48)
+	asm.CMPreg(jit.X4, jit.X5)
+	asm.BCond(jit.CondNE, notRecordLabel)
+	asm.LSRimm(jit.X4, jit.X0, uint8(jit.NB_PtrSubShift))
+	asm.LoadImm64(jit.X5, 0xF)
+	asm.ANDreg(jit.X4, jit.X4, jit.X5)
+	asm.CMPimm(jit.X4, jit.NB_PtrSubFixedRecord)
+	asm.BCond(jit.CondNE, notRecordLabel)
+	jit.EmitExtractPtr(asm, jit.X4, jit.X0)
+	asm.CBZ(jit.X4, deoptLabel)
+	asm.LDR(jit.X5, jit.X4, jit.FixedRecordOffMaterialized)
+	asm.CBNZ(jit.X5, deoptLabel)
+	asm.LDRW(jit.X5, jit.X4, jit.FixedRecordOffShapeID)
+	asm.LoadImm64(jit.X6, int64(shapeID))
+	asm.CMPreg(jit.X5, jit.X6)
+	asm.BCond(jit.CondNE, deoptLabel)
+	asm.LDRB(jit.X5, jit.X4, jit.FixedRecordOffN)
+	asm.LoadImm64(jit.X6, int64(fieldIdx))
+	asm.CMPreg(jit.X6, jit.X5)
+	asm.BCond(jit.CondGE, deoptLabel)
+	asm.ADDimm(jit.X1, jit.X4, jit.FixedRecordOffValues)
+	ec.emitPreparedFieldStore(valStore, fieldIdx)
+	asm.B(doneLabel)
+
+	asm.Label(notRecordLabel)
 	shapeWasVerified := ec.emitPrepareFieldTablePtr(tblValueID, shapeID, deoptLabel)
 	needsCleanGuard := !ec.stringLookupCleanGuarded[tblValueID]
 	if needsCleanGuard {
@@ -921,7 +1005,6 @@ func (ec *emitContext) emitSetField(instr *Instr) {
 	}
 
 	// Skip the deopt fallback.
-	doneLabel := ec.uniqueLabel("setfield_done")
 	asm.B(doneLabel)
 
 	// Deopt fallback: use table-exit.

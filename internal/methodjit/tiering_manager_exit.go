@@ -646,8 +646,7 @@ func (tm *TieringManager) executeTableExit(ctx *ExecContext, regs []runtime.Valu
 			}
 			if ok {
 				ctor := &proto.TableCtorsN[ctorIdx].Runtime
-				tbl := cf.allocateFixedTableNForExit(instrID, ctor, vals)
-				regs[absSlot] = runtime.FreshTableValue(tbl)
+				regs[absSlot] = cf.allocateFixedTableNValueForExit(instrID, ctor, vals)
 			}
 		}
 

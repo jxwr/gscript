@@ -380,8 +380,7 @@ func (cf *CompiledFunction) executeTableExit(ctx *ExecContext, regs []runtime.Va
 			}
 			if ok {
 				ctor := &cf.Proto.TableCtorsN[ctorIdx].Runtime
-				tbl := cf.allocateFixedTableNForExit(instrID, ctor, vals)
-				regs[resultSlot] = runtime.FreshTableValue(tbl)
+				regs[resultSlot] = cf.allocateFixedTableNValueForExit(instrID, ctor, vals)
 			}
 		}
 
