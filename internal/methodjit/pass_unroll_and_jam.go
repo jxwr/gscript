@@ -376,7 +376,6 @@ func unrollFloatReductionLoop(fn *Function, cand *floatReductionCandidate, facto
 	body.Instrs = append(body.Instrs, cloneTerminator(fn, body, OpJump, nil, header, nil, term))
 	cand.accPhi.Args[bodyPredIdx] = currentUpdate.Value()
 	cand.ivPhi.Args[bodyPredIdx] = currentStep
-	updateRecurrenceBackedges(bodyPredIdx, remap, cand.recurrences)
 
 	exitPreds := make([]*Block, 0, factor)
 	exitAccArgs := make([]*Value, 0, factor)
@@ -446,6 +445,7 @@ func unrollFloatReductionLoop(fn *Function, cand *floatReductionCandidate, facto
 	}
 	exit.Instrs = append([]*Instr{exitAcc}, exit.Instrs...)
 	replaceValueUsesInBlock(exit, cand.accPhi.ID, exitAcc.Value(), 1)
+	updateRecurrenceBackedges(bodyPredIdx, remap, cand.recurrences)
 	return nil
 }
 

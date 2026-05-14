@@ -163,6 +163,83 @@ func TestUnrollAndJam_FloatReductionWithCompanionRecurrence(t *testing.T) {
 	}
 }
 
+func TestUnrollAndJam_SqrtCompanionTailCarriesRecurrence(t *testing.T) {
+	src := `func f(n) {
+		sum := 0.0
+		x := 0.0
+		y := 0.0
+		for i := 1; i <= n; i++ {
+			dx := 1.0 * i - x
+			dy := 2.0 * i - y
+			sum = sum + math.sqrt(dx * dx + dy * dy)
+			x = (x + 0.1) * 0.999
+			y = (y + 0.2) * 0.999
+		}
+		return sum
+	}`
+
+	proto := compileFunction(t, src)
+	fn := BuildGraph(proto)
+	var err error
+	fn, err = TypeSpecializePass(fn)
+	if err != nil {
+		t.Fatalf("TypeSpecializePass: %v", err)
+	}
+	fn, _ = IntrinsicPass(fn)
+	fn, err = TypeSpecializePass(fn)
+	if err != nil {
+		t.Fatalf("TypeSpecializePass post-intrinsic: %v", err)
+	}
+	fn, err = FMAFusionPass(fn)
+	if err != nil {
+		t.Fatalf("FMAFusionPass: %v", err)
+	}
+	fn, err = ConstPropPass(fn)
+	if err != nil {
+		t.Fatalf("ConstPropPass: %v", err)
+	}
+	fn, err = DCEPass(fn)
+	if err != nil {
+		t.Fatalf("DCEPass: %v", err)
+	}
+
+	fn, err = UnrollAndJamPass(fn)
+	if err != nil {
+		t.Fatalf("UnrollAndJamPass: %v", err)
+	}
+	assertValidates(t, fn, "after sqrt companion UnrollAndJam")
+	ir := Print(fn)
+	if strings.Count(ir, "Sqrt") < 8 {
+		t.Fatalf("expected latency-wide unroll for sqrt recurrence loop, IR:\n%s", ir)
+	}
+
+	for _, n := range []int64{0, 1, 2, 3, 7, 8, 9, 15, 17} {
+		got, err := Interpret(fn, []runtime.Value{runtime.IntValue(n)})
+		if err != nil {
+			t.Fatalf("Interpret f(%d): %v\nIR:\n%s", n, err, ir)
+		}
+		if len(got) == 0 || !got[0].IsFloat() {
+			t.Fatalf("f(%d) result type got=%v", n, got)
+		}
+		want := sqrtCompanionTailExpected(n)
+		if math.Abs(got[0].Float()-want) > 1e-10 {
+			t.Fatalf("f(%d)=%0.17g want %0.17g\nIR:\n%s", n, got[0].Float(), want, ir)
+		}
+	}
+}
+
+func sqrtCompanionTailExpected(n int64) float64 {
+	sum, x, y := 0.0, 0.0, 0.0
+	for i := int64(1); i <= n; i++ {
+		dx := 1.0*float64(i) - x
+		dy := 2.0*float64(i) - y
+		sum += math.Sqrt(dx*dx + dy*dy)
+		x = (x + 0.1) * 0.999
+		y = (y + 0.2) * 0.999
+	}
+	return sum
+}
+
 func TestUnrollAndJam_UnrollsMultipleInlinedHelperLoops(t *testing.T) {
 	src := `func f(n, which) {
 		if which < 1 {
