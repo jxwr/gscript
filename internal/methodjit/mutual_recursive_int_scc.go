@@ -5,6 +5,7 @@ package methodjit
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
@@ -27,6 +28,7 @@ type mutualRecursiveIntSCCProtocol struct {
 	memoMu      sync.Mutex
 	memo        map[mutualRecursiveIntKey]int64
 	active      map[mutualRecursiveIntKey]bool
+	last        atomic.Value // *mutualRecursiveIntLast
 }
 
 type mutualRecursiveIntValue struct {
@@ -39,6 +41,11 @@ type mutualRecursiveIntKey struct {
 	fn    int
 	arity int
 	args  [4]int64
+}
+
+type mutualRecursiveIntLast struct {
+	key   mutualRecursiveIntKey
+	value int64
 }
 
 type mutualRecursiveIntEvaluator struct {
@@ -285,10 +292,19 @@ func (tm *TieringManager) executeMutualRecursiveIntSCCArgs(cf *CompiledFunction,
 		tm.disableTier2AfterRuntimeDeopt(proto, "tier2: mutual recursive int SCC global changed")
 		return 0, false, fmt.Errorf("tier2: mutual recursive int SCC global changed")
 	}
+	arity := proto.NumParams
+	key := mutualRecursiveIntKey{fn: protocol.entryIndex, arity: arity, args: args}
+	if last, _ := protocol.last.Load().(*mutualRecursiveIntLast); last != nil && last.key == key {
+		return last.value, true, nil
+	}
 	protocol.memoMu.Lock()
 	defer protocol.memoMu.Unlock()
+	if last, _ := protocol.last.Load().(*mutualRecursiveIntLast); last != nil && last.key == key {
+		return last.value, true, nil
+	}
 	if len(protocol.memo) >= maxMutualRecursiveIntSCCMemo {
 		protocol.memo = make(map[mutualRecursiveIntKey]int64)
+		protocol.last.Store((*mutualRecursiveIntLast)(nil))
 	}
 	if protocol.active == nil {
 		protocol.active = make(map[mutualRecursiveIntKey]bool)
@@ -301,6 +317,9 @@ func (tm *TieringManager) executeMutualRecursiveIntSCCArgs(cf *CompiledFunction,
 	result, ok := e.eval(protocol.entryIndex, args)
 	for key := range protocol.active {
 		delete(protocol.active, key)
+	}
+	if ok {
+		protocol.last.Store(&mutualRecursiveIntLast{key: key, value: result})
 	}
 	return result, ok, nil
 }
