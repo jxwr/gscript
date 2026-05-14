@@ -387,80 +387,85 @@ func inlineFeedbackFieldShapeCase(fn *Function, instr *Instr) (FieldPolyShapeCas
 }
 
 func prepareFieldShapeInlineCallee(calleeFn *Function, c FieldPolyShapeCase) *Function {
+	out, _ := prepareFieldShapeInlineCalleeWithReason(calleeFn, c)
+	return out
+}
+
+func prepareFieldShapeInlineCalleeWithReason(calleeFn *Function, c FieldPolyShapeCase) (*Function, string) {
 	if calleeFn == nil || c.ReceiverFact.ShapeID == 0 {
-		return calleeFn
+		return calleeFn, "missing receiver shape fact"
 	}
 	out, err := TypeSpecializePass(calleeFn)
 	if err != nil || out == nil {
-		return calleeFn
+		return calleeFn, "initial type specialization failed"
 	}
 	out, err = FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{
 		ArgFacts: map[int]FixedShapeTableFact{0: c.ReceiverFact},
 	})(out)
 	if err != nil || out == nil {
-		return calleeFn
+		return calleeFn, "fixed-shape fact propagation failed"
 	}
 	out, err = TypeSpecializePass(out)
 	if err != nil || out == nil {
-		return calleeFn
+		return calleeFn, "post-fact type specialization failed"
 	}
 	out, err = FieldLenFoldPass(out)
 	if err != nil || out == nil {
-		return calleeFn
+		return calleeFn, "field length folding failed"
 	}
 	out, err = SourceFeedbackRefreshPass(out)
 	if err != nil || out == nil {
-		return calleeFn
+		return calleeFn, "source feedback refresh failed"
 	}
 	out, err = TableArrayLowerPass(out)
 	if err != nil || out == nil {
-		return calleeFn
+		return calleeFn, "table-array lowering failed"
 	}
 	out, err = TableArrayLoadTypeSpecializePass(out)
 	if err != nil || out == nil {
-		return calleeFn
+		return calleeFn, "table-array load type specialization failed"
 	}
 	out, err = SourceFeedbackRefreshPass(out)
 	if err != nil || out == nil {
-		return calleeFn
+		return calleeFn, "post-load source feedback refresh failed"
 	}
 	out, err = TypeSpecializePass(out)
 	if err != nil || out == nil {
-		return calleeFn
+		return calleeFn, "post-load type specialization failed"
 	}
 	out, err = TableArrayStoreLowerPass(out)
 	if err != nil || out == nil {
-		return calleeFn
+		return calleeFn, "table-array store lowering failed"
 	}
 	out, err = TypeSpecializePass(out)
 	if err != nil || out == nil {
-		return calleeFn
+		return calleeFn, "post-store type specialization failed"
 	}
 	out, err = TableArrayNestedLoadPass(out)
 	if err != nil || out == nil {
-		return calleeFn
+		return calleeFn, "nested table-array load lowering failed"
 	}
 	out, err = TypeSpecializePass(out)
 	if err != nil || out == nil {
-		return calleeFn
+		return calleeFn, "post-nested-load type specialization failed"
 	}
 	out, err = FieldSvalsLowerPass(out)
 	if err != nil || out == nil {
-		return calleeFn
+		return calleeFn, "field-svals lowering failed"
 	}
 	out, err = TypeSpecializePass(out)
 	if err != nil || out == nil {
-		return calleeFn
+		return calleeFn, "post-field-svals type specialization failed"
 	}
 	out, err = ConstPropPass(out)
 	if err != nil || out == nil {
-		return calleeFn
+		return calleeFn, "const propagation failed"
 	}
 	out, err = DCEPass(out)
 	if err != nil || out == nil {
-		return calleeFn
+		return calleeFn, "dce failed"
 	}
-	return out
+	return out, ""
 }
 
 func applyInlineArgTypeFacts(calleeFn *Function, callArgs []*Value) *Function {
@@ -621,7 +626,11 @@ func fieldShapeInlineSplitCaseRejectReason(c FieldPolyShapeCase, callArgs []*Val
 		return "unpromotable"
 	}
 	calleeFn = applyInlineArgTypeFacts(calleeFn, callArgs)
-	calleeFn = prepareFieldShapeInlineCallee(calleeFn, c)
+	var prepReason string
+	calleeFn, prepReason = prepareFieldShapeInlineCalleeWithReason(calleeFn, c)
+	if prepReason != "" {
+		return "callee-prep:" + prepReason
+	}
 	if callerLoopBlock && computeLoopInfo(calleeFn).hasLoops() {
 		if reason := pureNumericInlineRejectReason(calleeFn); reason != "" {
 			return "callee-loop"
@@ -664,10 +673,10 @@ func fieldShapeLoopPreInlineUnsafeReason(calleeFn *Function) string {
 				// replaying the original call has not duplicated any callee
 				// mutation yet. Post-effect code stays stricter below.
 			} else if !fieldShapeSplitInlineInstrSafe(instr) {
-				return "loop-inline-exit-unsafe:" + instr.Op.String()
+				return "loop-inline-exit-unsafe:" + fieldShapeInlineInstrSummary(instr)
 			}
 			if seenSideEffect && !fieldShapePostEffectInlineInstrSafe(instr) {
-				return "loop-inline-post-effect-unsafe:" + instr.Op.String()
+				return "loop-inline-post-effect-unsafe:" + fieldShapeInlineInstrSummary(instr)
 			}
 			if fieldShapeInlineInstrHasSideEffect(instr) {
 				seenSideEffect = true
@@ -675,6 +684,24 @@ func fieldShapeLoopPreInlineUnsafeReason(calleeFn *Function) string {
 		}
 	}
 	return ""
+}
+
+func fieldShapeInlineInstrSummary(instr *Instr) string {
+	if instr == nil {
+		return "<nil>"
+	}
+	parts := make([]string, 0, len(instr.Args)+1)
+	parts = append(parts, instr.Op.String())
+	if instr.Type != TypeUnknown && instr.Type != TypeAny {
+		parts = append(parts, "type="+instr.Type.String())
+	}
+	for i, arg := range instr.Args {
+		if arg == nil || arg.Def == nil {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("arg%d=%s", i, arg.Def.Type.String()))
+	}
+	return strings.Join(parts, "/")
 }
 
 func fieldShapePreEffectInlineInstrSafe(instr *Instr) bool {
