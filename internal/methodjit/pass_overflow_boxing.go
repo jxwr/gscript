@@ -20,6 +20,21 @@ func OverflowBoxingPassWith(forceBoxIntIDs map[int]bool) PassFunc {
 	}
 }
 
+// LateModuloMultiplyOverflowBoxingPass repairs a narrow late-pipeline hazard:
+// a pass after the normal OverflowBoxing stage may re-specialize multiplicative
+// modulo recurrences such as x = (x*c + k) % m back into raw-int ops. The
+// intermediate multiply commonly exceeds the int48 payload range even though
+// the modulo bounds the loop-carried value. Keeping that SCC boxed matches VM
+// overflow promotion without forcing unrelated integer loops, such as Collatz
+// exact-division recurrences, onto boxed arithmetic.
+func LateModuloMultiplyOverflowBoxingPass(fn *Function) (*Function, error) {
+	force := collectModuloMultiplicativeAccumulatorDeps(fn)
+	if len(force) == 0 {
+		return fn, nil
+	}
+	return forceBoxIntArithmeticOnly(fn, force), nil
+}
+
 func overflowBoxingPass(fn *Function, forceBoxIntIDs map[int]bool) (*Function, error) {
 	if fn == nil {
 		return fn, nil
@@ -124,6 +139,245 @@ func isBoxableIntArithmetic(instr *Instr) bool {
 	switch instr.Op {
 	case OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt:
 		return true
+	default:
+		return false
+	}
+}
+
+func forceBoxIntArithmeticOnly(fn *Function, force map[int]bool) *Function {
+	if fn == nil || len(force) == 0 {
+		return fn
+	}
+	boxed := make(map[int]bool, len(force))
+	for id := range force {
+		boxed[id] = true
+	}
+	changed := true
+	for changed {
+		changed = false
+		for _, block := range fn.Blocks {
+			for _, instr := range block.Instrs {
+				if instr == nil || boxed[instr.ID] {
+					continue
+				}
+				switch instr.Op {
+				case OpPhi:
+					if anyArgBoxed(instr, boxed) {
+						boxed[instr.ID] = true
+						changed = true
+					}
+				case OpAddInt, OpSubInt, OpMulInt, OpModInt, OpNegInt:
+					if anyArgBoxed(instr, boxed) {
+						boxed[instr.ID] = true
+						changed = true
+					}
+				}
+			}
+		}
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if boxed[instr.ID] {
+				switch instr.Op {
+				case OpPhi:
+					instr.Type = TypeUnknown
+				case OpAddInt:
+					instr.Op = OpAdd
+					instr.Type = TypeUnknown
+				case OpSubInt:
+					instr.Op = OpSub
+					instr.Type = TypeUnknown
+				case OpMulInt:
+					instr.Op = OpMul
+					instr.Type = TypeUnknown
+				case OpModInt:
+					instr.Op = OpMod
+					instr.Type = TypeUnknown
+				case OpNegInt:
+					instr.Op = OpUnm
+					instr.Type = TypeUnknown
+				}
+			}
+			if anyArgBoxed(instr, boxed) {
+				switch instr.Op {
+				case OpEqInt:
+					instr.Op = OpEq
+				case OpLtInt:
+					instr.Op = OpLt
+				case OpLeInt:
+					instr.Op = OpLe
+				}
+			}
+		}
+	}
+	return fn
+}
+
+func collectModuloMultiplicativeAccumulatorDeps(fn *Function) map[int]bool {
+	keep := make(map[int]bool)
+	if fn == nil || len(fn.Blocks) == 0 {
+		return keep
+	}
+	li := computeLoopInfo(fn)
+	if !li.hasLoops() {
+		return keep
+	}
+	for _, header := range fn.Blocks {
+		if !li.loopHeaders[header.ID] {
+			continue
+		}
+		body := li.headerBlocks[header.ID]
+		for _, phi := range header.Instrs {
+			if phi.Op != OpPhi {
+				break
+			}
+			if !phi.Type.isIntegerLike() {
+				continue
+			}
+			updates := loopBackedgeDefs(phi, body)
+			if len(updates) == 0 {
+				continue
+			}
+			local := make(map[int]bool)
+			allModuloUpdates := true
+			for _, update := range updates {
+				if update != nil && update.ID == phi.ID {
+					continue
+				}
+				if update == nil || update.Op != OpModInt || !positiveConstModDivisor(update) ||
+					!multiplicativeModuloExprDependsOnPhi(update, phi.ID, local, make(map[int]bool)) {
+					allModuloUpdates = false
+					break
+				}
+			}
+			if !allModuloUpdates || len(local) == 0 {
+				continue
+			}
+			if !moduloMultiplicativeUpdateFeedsLocalArrayBuilder(fn, updates) {
+				continue
+			}
+			keep[phi.ID] = true
+			for id := range local {
+				keep[id] = true
+			}
+		}
+	}
+	return keep
+}
+
+func moduloMultiplicativeUpdateFeedsLocalArrayBuilder(fn *Function, updates []*Instr) bool {
+	if fn == nil || len(updates) == 0 {
+		return false
+	}
+	updateIDs := make(map[int]bool, len(updates))
+	for _, update := range updates {
+		if update != nil {
+			updateIDs[update.ID] = true
+		}
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpSetTable || len(instr.Args) < 3 || instr.Args[0] == nil || instr.Args[2] == nil {
+				continue
+			}
+			if instr.Args[0].Def == nil || instr.Args[0].Def.Op != OpNewTable {
+				continue
+			}
+			if localArrayBuilderValueDependsOnUpdate(instr.Args[2], updateIDs, make(map[int]bool)) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func localArrayBuilderValueDependsOnUpdate(v *Value, updateIDs map[int]bool, seen map[int]bool) bool {
+	if v == nil {
+		return false
+	}
+	if updateIDs[v.ID] {
+		return true
+	}
+	if v.Def == nil || seen[v.Def.ID] {
+		return false
+	}
+	seen[v.Def.ID] = true
+	switch v.Def.Op {
+	case OpAddInt, OpSubInt, OpNegInt, OpMulInt, OpModInt, OpAddFloat:
+		for _, arg := range v.Def.Args {
+			if localArrayBuilderValueDependsOnUpdate(arg, updateIDs, seen) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func multiplicativeModuloExprDependsOnPhi(instr *Instr, phiID int, keep map[int]bool, seen map[int]bool) bool {
+	if instr == nil {
+		return false
+	}
+	if instr.ID == phiID {
+		return false
+	}
+	if seen[instr.ID] {
+		return false
+	}
+	seen[instr.ID] = true
+	switch instr.Op {
+	case OpModInt:
+		if !positiveConstModDivisor(instr) || len(instr.Args) < 1 {
+			return false
+		}
+		if multiplicativeModuloValueDependsOnPhi(instr.Args[0], phiID, keep, seen) {
+			keep[instr.ID] = true
+			return true
+		}
+	case OpAddInt, OpSubInt:
+		if len(instr.Args) < 2 {
+			return false
+		}
+		left := multiplicativeModuloValueDependsOnPhi(instr.Args[0], phiID, keep, seen)
+		right := multiplicativeModuloValueDependsOnPhi(instr.Args[1], phiID, keep, seen)
+		if left || right {
+			keep[instr.ID] = true
+			return true
+		}
+	case OpNegInt:
+		if len(instr.Args) < 1 {
+			return false
+		}
+		if multiplicativeModuloValueDependsOnPhi(instr.Args[0], phiID, keep, seen) {
+			keep[instr.ID] = true
+			return true
+		}
+	case OpMulInt:
+		if len(instr.Args) < 2 {
+			return false
+		}
+		left := multiplicativeModuloValueDependsOnPhi(instr.Args[0], phiID, keep, seen)
+		right := multiplicativeModuloValueDependsOnPhi(instr.Args[1], phiID, keep, seen)
+		if left || right {
+			keep[instr.ID] = true
+			return true
+		}
+	}
+	return false
+}
+
+func multiplicativeModuloValueDependsOnPhi(v *Value, phiID int, keep map[int]bool, seen map[int]bool) bool {
+	if v == nil {
+		return false
+	}
+	if v.ID == phiID {
+		return true
+	}
+	if v.Def == nil {
+		return false
+	}
+	switch v.Def.Op {
+	case OpAddInt, OpSubInt, OpNegInt, OpMulInt, OpModInt:
+		return multiplicativeModuloExprDependsOnPhi(v.Def, phiID, keep, seen)
 	default:
 		return false
 	}

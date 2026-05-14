@@ -163,6 +163,7 @@ func TestTier2TableNativeLoweringModuleOrder(t *testing.T) {
 			"TableArrayLoadTypeSpecialize (post-FieldSvalsLower)",
 			"TableArrayStoreLower (post-FieldSvalsLower)",
 			"TypeSpecialize (post-FieldSvalsLower)",
+			"LateModuloMultiplyOverflowBoxing",
 			"ProfiledStringLenFold",
 			"RangeAnalysis (post-TableFieldLower)",
 			"DCE (post-TableArrayStoreLower)",
