@@ -93,6 +93,41 @@ func TestFloatStrengthReduction_ExposesFMA(t *testing.T) {
 	}
 }
 
+func TestFloatStrengthReduction_AffineScaleBecomesFMA(t *testing.T) {
+	fn := &Function{}
+	b := &Block{ID: 0}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	x := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeFloat, Aux: 0, Block: b}
+	offset := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Aux: int64(math.Float64bits(0.1)), Block: b}
+	scale := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Aux: int64(math.Float64bits(0.999)), Block: b}
+	add := &Instr{ID: fn.newValueID(), Op: OpAddFloat, Type: TypeFloat, Args: []*Value{x.Value(), offset.Value()}, Block: b}
+	mul := &Instr{ID: fn.newValueID(), Op: OpMulFloat, Type: TypeFloat, Args: []*Value{add.Value(), scale.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{mul.Value()}, Block: b}
+	b.Instrs = []*Instr{x, offset, scale, add, mul, ret}
+
+	if _, err := FloatStrengthReductionPass(fn); err != nil {
+		t.Fatalf("FloatStrengthReductionPass: %v", err)
+	}
+	if mul.Op != OpFMA {
+		t.Fatalf("affine scale was not lowered to FMA:\n%s", Print(fn))
+	}
+	if len(mul.Args) != 3 || mul.Args[0].ID != x.ID || mul.Args[1].ID != scale.ID {
+		t.Fatalf("fused affine FMA has wrong args: %#v", mul.Args)
+	}
+	bias := mul.Args[2].Def
+	if bias == nil || bias.Op != OpConstFloat {
+		t.Fatalf("expected fused bias const, got %#v", bias)
+	}
+	if got, want := math.Float64frombits(uint64(bias.Aux)), 0.1*0.999; got != want {
+		t.Fatalf("bias=%0.17g want %0.17g", got, want)
+	}
+	if add.Op != OpNop {
+		t.Fatalf("single-use affine add should be nopped after fusion, got %s", add.Op)
+	}
+}
+
 func TestFMAFusion_SubFloatMinusSingleUseMulBecomesFMSUB(t *testing.T) {
 	fn := &Function{}
 	b := &Block{ID: 0}
