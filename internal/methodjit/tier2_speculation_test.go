@@ -326,6 +326,46 @@ func TestTier2SpecializationProfilePrefersStableVMClosureGuard(t *testing.T) {
 	}
 }
 
+func TestTier2SpecializationProfileMarksClosureRecurrenceGuard(t *testing.T) {
+	proto := &vm.FuncProto{Name: "caller", Code: make([]uint32, 2)}
+	callee := &vm.FuncProto{
+		Name:      "step",
+		NumParams: 0,
+		MaxStack:  5,
+		Upvalues: []vm.UpvalDesc{
+			{Name: "value", InStack: true, Index: 2},
+			{Name: "delta", InStack: true, Index: 1},
+		},
+		Code: []uint32{
+			vm.EncodeABC(vm.OP_GETUPVAL, 1, 0, 0),
+			vm.EncodeABC(vm.OP_GETUPVAL, 2, 1, 0),
+			vm.EncodeABC(vm.OP_ADD, 0, 1, 2),
+			vm.EncodeABC(vm.OP_SETUPVAL, 0, 0, 0),
+			vm.EncodeABC(vm.OP_GETUPVAL, 0, 0, 0),
+			vm.EncodeABC(vm.OP_RETURN, 0, 2, 0),
+		},
+	}
+	cl := vm.NewClosure(callee)
+	proto.EnsureFeedback()
+	fb := &proto.CallSiteFeedback[1]
+	fb.Count = 3
+	fb.NArgs = 0
+	fb.ResultArity = 1
+	fb.CalleeVMProto = callee
+	fb.CalleeVMClosure = uintptr(unsafe.Pointer(cl))
+	fb.CalleeVMProtos[0] = callee
+	fb.CalleeVMProtoCount = 1
+
+	profile := BuildTier2SpecializationProfile(proto)
+	summary := profile.Summary()
+	if summary.GuardKinds[string(SpecGuardCallClosureRecurrence)] != 1 {
+		t.Fatalf("closure recurrence guard count mismatch: %+v", summary)
+	}
+	if summary.GuardKinds[string(SpecGuardCallVMClosure)] != 0 {
+		t.Fatalf("closure recurrence should suppress generic closure guard: %+v", summary)
+	}
+}
+
 func TestTier2RecompilePolicyKeepsCompiledCodeWithoutMaturedFeedback(t *testing.T) {
 	var policy Tier2RecompilePolicy
 	cf := &CompiledFunction{

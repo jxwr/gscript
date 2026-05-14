@@ -41,16 +41,17 @@ func snapshotTier2Feedback(proto *vm.FuncProto) Tier2FeedbackSnapshot {
 type SpecializationGuardKind string
 
 const (
-	SpecGuardResultType      SpecializationGuardKind = "result_type"
-	SpecGuardOperandType     SpecializationGuardKind = "operand_type"
-	SpecGuardTableKind       SpecializationGuardKind = "table_kind"
-	SpecGuardFieldShape      SpecializationGuardKind = "field_shape"
-	SpecGuardStringShapeKey  SpecializationGuardKind = "string_shape_key"
-	SpecGuardCallNative      SpecializationGuardKind = "call_native"
-	SpecGuardCallVMClosure   SpecializationGuardKind = "call_vm_closure"
-	SpecGuardCallVMProto     SpecializationGuardKind = "call_vm_proto"
-	SpecGuardCallPolymorphic SpecializationGuardKind = "call_poly_vm_proto"
-	SpecGuardCallResultRange SpecializationGuardKind = "call_result_range"
+	SpecGuardResultType            SpecializationGuardKind = "result_type"
+	SpecGuardOperandType           SpecializationGuardKind = "operand_type"
+	SpecGuardTableKind             SpecializationGuardKind = "table_kind"
+	SpecGuardFieldShape            SpecializationGuardKind = "field_shape"
+	SpecGuardStringShapeKey        SpecializationGuardKind = "string_shape_key"
+	SpecGuardCallNative            SpecializationGuardKind = "call_native"
+	SpecGuardCallClosureRecurrence SpecializationGuardKind = "call_closure_recurrence"
+	SpecGuardCallVMClosure         SpecializationGuardKind = "call_vm_closure"
+	SpecGuardCallVMProto           SpecializationGuardKind = "call_vm_proto"
+	SpecGuardCallPolymorphic       SpecializationGuardKind = "call_poly_vm_proto"
+	SpecGuardCallResultRange       SpecializationGuardKind = "call_result_range"
 )
 
 type SpecializationGuard struct {
@@ -66,15 +67,19 @@ type SpecializationGuard struct {
 	AccessKind uint8
 	Count      uint32
 
-	CalleeNativeKind uint8
-	CalleeNativeData uintptr
-	CalleeVMClosure  uintptr
-	CalleeVMProto    *vm.FuncProto
-	CalleeVMProtos   []*vm.FuncProto
-	NArgs            uint8
-	ResultArity      uint8
-	RangeMin         int64
-	RangeMax         int64
+	CalleeNativeKind  uint8
+	CalleeNativeData  uintptr
+	CalleeVMClosure   uintptr
+	CalleeVMProto     *vm.FuncProto
+	CalleeVMProtos    []*vm.FuncProto
+	ClosureValueUpval int
+	ClosureDeltaUpval int
+	ClosureDeltaInt   int64
+	ClosureDeltaKind  closureRecurrenceDeltaKind
+	NArgs             uint8
+	ResultArity       uint8
+	RangeMin          int64
+	RangeMax          int64
 }
 
 type Tier2SpecializationVersion struct {
@@ -264,6 +269,22 @@ func BuildTier2SpecializationProfile(proto *vm.FuncProto) Tier2SpecializationPro
 			continue
 		}
 		if closure, callee, ok := fb.StableCalleeVMClosure(); ok {
+			if rec, recOK := analyzeClosureRecurrence(callee); recOK {
+				profile.addGuard(SpecializationGuard{
+					Kind:              SpecGuardCallClosureRecurrence,
+					PC:                pc,
+					Count:             fb.Count,
+					CalleeVMClosure:   closure,
+					CalleeVMProto:     callee,
+					ClosureValueUpval: rec.ValueUpval,
+					ClosureDeltaUpval: rec.DeltaUpval,
+					ClosureDeltaInt:   rec.DeltaInt,
+					ClosureDeltaKind:  rec.DeltaKind,
+					NArgs:             fb.NArgs,
+					ResultArity:       fb.ResultArity,
+				})
+				continue
+			}
 			profile.addGuard(SpecializationGuard{
 				Kind:            SpecGuardCallVMClosure,
 				PC:              pc,
@@ -421,7 +442,7 @@ func specializationGuardOpName(kind SpecializationGuardKind) string {
 		return "GuardTableKind"
 	case SpecGuardStringShapeKey:
 		return "GuardConstString"
-	case SpecGuardCallNative, SpecGuardCallVMClosure, SpecGuardCallVMProto, SpecGuardCallPolymorphic:
+	case SpecGuardCallNative, SpecGuardCallClosureRecurrence, SpecGuardCallVMClosure, SpecGuardCallVMProto, SpecGuardCallPolymorphic:
 		return "GuardCalleeProto"
 	default:
 		return ""
