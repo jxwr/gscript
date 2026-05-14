@@ -105,6 +105,46 @@ func TestHandleCall_RecordsFeedbackAtCallPC(t *testing.T) {
 	}
 }
 
+func TestHandleCall_UsesCompiledProtocolExecutor(t *testing.T) {
+	proto := &vm.FuncProto{
+		Code: []uint32{
+			vm.EncodeABC(vm.OP_CALL, 0, 2, 2),
+			vm.EncodeABC(vm.OP_RETURN, 0, 2, 0),
+		},
+		MaxStack: 4,
+	}
+	proto.EnsureFeedback()
+
+	fn := runtime.FunctionValue(&runtime.GoFunction{Name: "sentinel"})
+	regs := []runtime.Value{fn, runtime.IntValue(41), runtime.NilValue()}
+	engine := &BaselineJITEngine{
+		callVM: vm.New(runtime.NewInterpreterGlobals()),
+		protocolCallExecutor: func(gotFn runtime.Value, gotRegs []runtime.Value, absSlot, nArgs, nRets int) (bool, error) {
+			if gotFn != fn || absSlot != 0 || nArgs != 1 || nRets != 1 {
+				t.Fatalf("executor args fn=%v abs=%d nArgs=%d nRets=%d", gotFn, absSlot, nArgs, nRets)
+			}
+			gotRegs[absSlot] = runtime.IntValue(42)
+			return true, nil
+		},
+	}
+	defer engine.callVM.Close()
+	ctx := &ExecContext{
+		BaselineA:  0,
+		BaselineB:  2,
+		BaselineC:  2,
+		BaselinePC: 1,
+	}
+	if err := engine.handleCall(ctx, regs, 0, proto); err != nil {
+		t.Fatalf("handleCall returned error: %v", err)
+	}
+	if !regs[0].IsInt() || regs[0].Int() != 42 {
+		t.Fatalf("protocol executor result=%v, want 42", regs[0])
+	}
+	if got := proto.CallSiteFeedback[0].Count; got != 1 {
+		t.Fatalf("call feedback count=%d, want 1", got)
+	}
+}
+
 // TestHandleGetTable_RecordsFeedback verifies that handleGetTable records
 // result type feedback into proto.Feedback so Tier 2 can specialize.
 func TestHandleGetTable_RecordsFeedback(t *testing.T) {

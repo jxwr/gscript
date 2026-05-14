@@ -426,6 +426,11 @@ func (e *BaselineJITEngine) handleCall(ctx *ExecContext, regs []runtime.Value, b
 			}
 		}
 	}
+	if rawB != 0 && rawC > 1 && e.protocolCallExecutor != nil {
+		if handled, err := e.protocolCallExecutor(fnVal, regs, absSlot, nArgs, rawC-1); handled {
+			return err
+		}
+	}
 
 	// Fast path: GScript closure with compiled proto. Avoids heap-allocating
 	// callArgs and bypasses CallValue → callValue → call dispatch.

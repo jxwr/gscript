@@ -88,6 +88,9 @@ type BaselineJITEngine struct {
 	// for on-the-fly compilation. Set by TieringManager so that uncompiled callees
 	// go through the tiering pipeline instead of being locked to Tier 1.
 	outerCompiler func(*vm.FuncProto) interface{}
+	// protocolCallExecutor: when set by TieringManager, handleCall can dispatch
+	// already-compiled whole-call protocols without building a VM callee frame.
+	protocolCallExecutor func(runtime.Value, []runtime.Value, int, int, int) (bool, error)
 	// osrHandler: when set, nested Tier 1 calls that hit the OSR back-edge
 	// counter are handled at the callee boundary instead of bubbling
 	// errOSRRequested to the caller as a generic JIT failure.
@@ -185,6 +188,10 @@ func (e *BaselineJITEngine) SetTierUpThreshold(n int) {
 // route to Tier 2) instead of being locked to Tier 1.
 func (e *BaselineJITEngine) SetOuterCompiler(fn func(*vm.FuncProto) interface{}) {
 	e.outerCompiler = fn
+}
+
+func (e *BaselineJITEngine) SetCompiledProtocolCallExecutor(fn func(runtime.Value, []runtime.Value, int, int, int) (bool, error)) {
+	e.protocolCallExecutor = fn
 }
 
 // SetOSRHandler sets a callback used when a nested Tier 1 callee requests OSR.

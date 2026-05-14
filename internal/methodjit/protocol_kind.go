@@ -125,6 +125,10 @@ func (tm *TieringManager) tryCompiledProtocolCallExit(fnVal runtime.Value, regs 
 	return true, nil
 }
 
+func (tm *TieringManager) TryExecuteCompiledProtocolCall(fnVal runtime.Value, regs []runtime.Value, absSlot, nArgs, nRets int) (bool, error) {
+	return tm.tryCompiledProtocolCallExit(fnVal, regs, absSlot, nArgs, nRets)
+}
+
 func (tm *TieringManager) executeCompiledProtocolCallExitResult(cf *CompiledFunction, proto *vm.FuncProto, regs []runtime.Value, absSlot, nArgs int) (runtime.Value, bool, error) {
 	switch cf.ProtocolKind() {
 	case compiledProtocolFixedRecursiveIntFold:

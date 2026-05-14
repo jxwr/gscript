@@ -28,6 +28,10 @@ type methodJITEngineWithResultBuffer interface {
 	ExecuteWithResultBuffer(compiled interface{}, regs []runtime.Value, base int, proto *FuncProto, retBuf []runtime.Value) ([]runtime.Value, error)
 }
 
+type methodJITEngineWithCompiledProtocolCall interface {
+	TryExecuteCompiledProtocolCall(fn runtime.Value, regs []runtime.Value, absSlot, nArgs, nRets int) (bool, error)
+}
+
 // MethodJITContinuation describes a suspended method-JIT frame. The concrete
 // compiled object remains owned by the engine; the VM only stores enough state
 // for a coroutine to re-enter the same function after coroutine.yield.
@@ -1750,6 +1754,18 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 						}
 						observeCallResultFixed(callerProto, callPC, vm.regs, base+a, c)
 						break
+					}
+				}
+				if b != 0 && c > 1 && vm.methodJIT != nil {
+					if exec, ok := vm.methodJIT.(methodJITEngineWithCompiledProtocolCall); ok {
+						handled, err := exec.TryExecuteCompiledProtocolCall(fnVal, vm.regs, base+a, nArgs, c-1)
+						if handled {
+							if err != nil {
+								return nil, wrapLineErr(frame, err)
+							}
+							observeCallResultFixed(callerProto, callPC, vm.regs, base+a, c)
+							break
+						}
 					}
 				}
 

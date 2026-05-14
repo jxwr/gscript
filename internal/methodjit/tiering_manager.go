@@ -130,6 +130,7 @@ func NewTieringManager() *TieringManager {
 	t1.SetOuterCompiler(func(proto *vm.FuncProto) interface{} {
 		return tm.TryCompile(proto)
 	})
+	t1.SetCompiledProtocolCallExecutor(tm.tryCompiledProtocolCallExit)
 	t1.SetOSRHandler(tm.handleOSR)
 	return tm
 }

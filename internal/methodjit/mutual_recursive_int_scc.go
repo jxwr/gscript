@@ -28,7 +28,7 @@ type mutualRecursiveIntSCCProtocol struct {
 	memoMu      sync.Mutex
 	memo        map[mutualRecursiveIntKey]int64
 	active      map[mutualRecursiveIntKey]bool
-	last        atomic.Value // *mutualRecursiveIntLast
+	last        atomic.Pointer[mutualRecursiveIntLast]
 }
 
 type mutualRecursiveIntValue struct {
@@ -294,17 +294,17 @@ func (tm *TieringManager) executeMutualRecursiveIntSCCArgs(cf *CompiledFunction,
 	}
 	arity := proto.NumParams
 	key := mutualRecursiveIntKey{fn: protocol.entryIndex, arity: arity, args: args}
-	if last, _ := protocol.last.Load().(*mutualRecursiveIntLast); last != nil && last.key == key {
+	if last := protocol.last.Load(); last != nil && last.key == key {
 		return last.value, true, nil
 	}
 	protocol.memoMu.Lock()
 	defer protocol.memoMu.Unlock()
-	if last, _ := protocol.last.Load().(*mutualRecursiveIntLast); last != nil && last.key == key {
+	if last := protocol.last.Load(); last != nil && last.key == key {
 		return last.value, true, nil
 	}
 	if len(protocol.memo) >= maxMutualRecursiveIntSCCMemo {
 		protocol.memo = make(map[mutualRecursiveIntKey]int64)
-		protocol.last.Store((*mutualRecursiveIntLast)(nil))
+		protocol.last.Store(nil)
 	}
 	if protocol.active == nil {
 		protocol.active = make(map[mutualRecursiveIntKey]bool)
