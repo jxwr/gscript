@@ -990,7 +990,7 @@ func (ec *emitContext) emitSetField(instr *Instr) {
 	asm.B(doneLabel)
 
 	asm.Label(notRecordLabel)
-	shapeWasVerified := ec.emitPrepareFieldTablePtr(tblValueID, shapeID, deoptLabel)
+	ec.emitPrepareFieldTablePtr(tblValueID, shapeID, deoptLabel)
 	needsCleanGuard := !ec.stringLookupCleanGuarded[tblValueID]
 	if needsCleanGuard {
 		ec.ensureNoStringLookupCacheGuardWithTablePtr(tblValueID, jit.X0, jit.X2, deoptLabel)
@@ -1000,9 +1000,6 @@ func (ec *emitContext) emitSetField(instr *Instr) {
 	asm.LDR(jit.X1, jit.X0, jit.TableOffSvals) // X1 = svals data pointer
 	ec.emitPreparedFieldStore(valStore, fieldIdx)
 	ec.rememberFieldSvalsCache(tblValueID, shapeID)
-	if shapeWasVerified && !needsCleanGuard {
-		return
-	}
 
 	// Skip the deopt fallback.
 	asm.B(doneLabel)
