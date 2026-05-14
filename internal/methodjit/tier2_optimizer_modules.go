@@ -97,7 +97,7 @@ func tier2OptimizerModules(ctx *Tier2OptimizerContext) []Tier2OptimizerModule {
 	modules = append(modules, tier2NumericModules()...)
 	modules = append(modules, tier2TableArrayNativeLoweringModules()...)
 	modules = append(modules, tier2MatrixNativeLoweringModules()...)
-	modules = append(modules, tier2TableFieldNativeLoweringModules()...)
+	modules = append(modules, tier2TableFieldNativeLoweringModules(ctxGlobals(ctx))...)
 	modules = append(modules, tier2FloatNumericModules()...)
 	modules = append(modules, tier2LoopKernelModules()...)
 	modules = append(modules, tier2LoopPostModules()...)

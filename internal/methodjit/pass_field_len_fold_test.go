@@ -91,6 +91,44 @@ func TestFieldLenFold_LowersProfiledPolyFieldLen(t *testing.T) {
 	}
 }
 
+func TestFieldLenFold_DoesNotLowerProfiledPolyLenForMutatedField(t *testing.T) {
+	proto := &vm.FuncProto{
+		Constants: []runtime.Value{
+			runtime.StringValue("kind"),
+			runtime.StringValue("longer"),
+		},
+	}
+	fn := &Function{Proto: proto}
+	b0 := &Block{ID: 0}
+	fn.Entry = b0
+	fn.Blocks = []*Block{b0}
+
+	tbl := &Instr{ID: 1, Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b0}
+	next := &Instr{ID: 2, Op: OpConstString, Type: TypeString, Aux: 1, Block: b0}
+	set := &Instr{ID: 3, Op: OpSetField, Args: []*Value{tbl.Value(), next.Value()}, Aux: 0, Block: b0}
+	get := &Instr{ID: 4, Op: OpGetField, Type: TypeString, Args: []*Value{tbl.Value()}, Aux: 0, Block: b0}
+	ln := &Instr{ID: 5, Op: OpLen, Type: TypeInt, Args: []*Value{get.Value()}, Block: b0}
+	b0.Instrs = []*Instr{tbl, next, set, get, ln, {Op: OpReturn, Args: []*Value{ln.Value()}, Block: b0}}
+	fn.FieldPolyShapeFacts = map[int][]FieldPolyShapeCase{
+		get.ID: {
+			{ShapeID: 101, FieldIdx: 0, Type: TypeString, ReceiverFact: FixedShapeTableFact{
+				ShapeID: 101, FieldLenRanges: map[string]intRange{"kind": pointRange(4)},
+			}},
+			{ShapeID: 102, FieldIdx: 0, Type: TypeString, ReceiverFact: FixedShapeTableFact{
+				ShapeID: 102, FieldLenRanges: map[string]intRange{"kind": pointRange(4)},
+			}},
+		},
+	}
+
+	out, err := FieldLenFoldPass(fn)
+	if err != nil {
+		t.Fatalf("FieldLenFoldPass: %v", err)
+	}
+	if ln.Op == OpFieldPolyLen || ln.Op == OpConstInt {
+		t.Fatalf("mutated field length should not use profiled exact length:\n%s", Print(out))
+	}
+}
+
 func TestFieldLenFold_FoldsProfiledExactLen(t *testing.T) {
 	fn := &Function{
 		Proto:             &vm.FuncProto{Name: "profiled_len"},

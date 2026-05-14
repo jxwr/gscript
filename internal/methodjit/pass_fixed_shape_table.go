@@ -151,7 +151,7 @@ func FixedShapeTableFactsPassWith(config FixedShapeTableFactsConfig) PassFunc {
 		arrayElementFacts := inferLocalArrayElementTableFacts(fn, facts)
 		seedLocalArrayElementTableFacts(fn, facts, arrayElementFacts)
 
-		if len(facts) == 0 {
+		if len(facts) == 0 && len(fn.FieldPolyShapeFacts) == 0 {
 			return fn, nil
 		}
 		fn.FixedShapeTables = facts
@@ -266,6 +266,7 @@ func seedGuardedPolyShapeArrayElementArgFacts(fn *Function, facts map[int]FixedS
 					fn.FieldPolyShapeFacts = make(map[int][]FieldPolyShapeCase)
 				}
 				fn.FieldPolyShapeFacts[instr.ID] = cases
+				recordFieldPolyShapeCatalog(fn, cases)
 				if typ != TypeUnknown && typ != TypeAny {
 					instr.Type = typ
 				}
@@ -273,6 +274,21 @@ func seedGuardedPolyShapeArrayElementArgFacts(fn *Function, facts map[int]FixedS
 					fmt.Sprintf("prefilled polymorphic field cache for %q with %d shapes", name, len(cases)))
 			}
 		}
+	}
+}
+
+func recordFieldPolyShapeCatalog(fn *Function, cases []FieldPolyShapeCase) {
+	if fn == nil || len(cases) == 0 {
+		return
+	}
+	if fn.FieldPolyShapeCatalog == nil {
+		fn.FieldPolyShapeCatalog = make(map[uint32]FixedShapeTableFact, len(cases))
+	}
+	for _, c := range cases {
+		if c.ShapeID == 0 || c.ReceiverFact.ShapeID != c.ShapeID {
+			continue
+		}
+		fn.FieldPolyShapeCatalog[c.ShapeID] = cloneFixedShapeTableFact(c.ReceiverFact)
 	}
 }
 
@@ -1677,7 +1693,7 @@ func annotateFixedShapeFieldLoad(fn *Function, block *Block, instr *Instr, facts
 	if svals == nil || svals.Op != OpFieldSvals || len(svals.Args) == 0 || svals.Args[0] == nil {
 		return true
 	}
-	fact, ok := facts[svals.Args[0].ID]
+	fact, ok := fixedShapeFactForFieldSvals(fn, facts, svals)
 	if !ok || fact.ShapeID == 0 || fact.ShapeID != uint32(svals.Aux) {
 		return true
 	}
@@ -1719,6 +1735,40 @@ func annotateFixedShapeFieldLoad(fn *Function, block *Block, instr *Instr, facts
 		}
 	}
 	return true
+}
+
+func fixedShapeFactForFieldSvals(fn *Function, facts map[int]FixedShapeTableFact, svals *Instr) (FixedShapeTableFact, bool) {
+	if svals == nil || len(svals.Args) == 0 || svals.Args[0] == nil || svals.Aux == 0 {
+		return FixedShapeTableFact{}, false
+	}
+	shapeID := uint32(svals.Aux)
+	if fact, ok := facts[svals.Args[0].ID]; ok && fact.ShapeID == shapeID {
+		return fact, true
+	}
+	if fn != nil && fn.FieldPolyShapeCatalog != nil {
+		if fact, ok := fn.FieldPolyShapeCatalog[shapeID]; ok && fact.ShapeID == shapeID {
+			return fact, true
+		}
+	}
+	if fn == nil || len(fn.FieldPolyShapeFacts) == 0 {
+		return FixedShapeTableFact{}, false
+	}
+	var found FixedShapeTableFact
+	for _, cases := range fn.FieldPolyShapeFacts {
+		for _, c := range cases {
+			if c.ShapeID != shapeID || c.ReceiverFact.ShapeID != shapeID {
+				continue
+			}
+			if found.ShapeID != 0 {
+				return FixedShapeTableFact{}, false
+			}
+			found = c.ReceiverFact
+		}
+	}
+	if found.ShapeID == 0 {
+		return FixedShapeTableFact{}, false
+	}
+	return found, true
 }
 
 func annotateFixedShapeSetFields(fn *Function, facts map[int]FixedShapeTableFact) {

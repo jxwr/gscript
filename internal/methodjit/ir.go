@@ -210,6 +210,13 @@ type Function struct {
 	// field index for that static field name.
 	FieldPolyShapeFacts map[int][]FieldPolyShapeCase
 
+	// FieldPolyShapeCatalog records the receiver facts behind polymorphic
+	// field caches keyed by shape ID. Unlike FieldPolyShapeFacts, it is not
+	// tied to a specific IR value ID, so later split/inline/lowering passes can
+	// recover nested table facts from an OpFieldSvals(shape) after the original
+	// field-cache instruction has been cloned or removed.
+	FieldPolyShapeCatalog map[uint32]FixedShapeTableFact
+
 	// FieldCallPolyLenFusions records same-block guarded field-call/field-len
 	// pairs keyed by OpFieldCallFloor instruction ID. When a field call's shape
 	// dispatch succeeds and the callee is proven not to mutate the later length

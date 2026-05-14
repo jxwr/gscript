@@ -101,18 +101,6 @@ func TestTier2EarlyCanonicalModuleOrder(t *testing.T) {
 
 func TestTier2InlineCallModuleOrder(t *testing.T) {
 	assertTier2ModuleOrder(t, tier2InlineCallModules(nil, 40), Tier2PhaseInlineCall, []string{
-		"Inline",
-		"SimplifyPhis (post-inline)",
-		"SourceFeedbackRefresh (post-inline)",
-		"Intrinsic (post-inline)",
-		"TypeSpecialize (post-inline)",
-		"FixedShapeTableFacts (post-inline)",
-	})
-}
-
-func TestTier2InlineCallModuleOrderExperimentalPreInlineFieldShapeSplit(t *testing.T) {
-	t.Setenv("GSCRIPT_FIELD_SHAPE_SPLIT_PREINLINE", "1")
-	assertTier2ModuleOrder(t, tier2InlineCallModules(nil, 40), Tier2PhaseInlineCall, []string{
 		"FieldShapeCallSplitPreInline",
 		"Inline",
 		"SimplifyPhis (post-inline)",
@@ -166,8 +154,19 @@ func TestTier2NumericModuleOrder(t *testing.T) {
 func TestTier2TableNativeLoweringModuleOrder(t *testing.T) {
 	assertTier2ModuleOrder(t, tier2TableArrayNativeLoweringModules(), Tier2PhaseTableArrayLower,
 		[]string{"TableArrayLower", "TableArrayLoadTypeSpecialize", "TableArrayNestedLoad"})
-	assertTier2ModuleOrder(t, tier2TableFieldNativeLoweringModules(), Tier2PhaseTableFieldLower,
-		[]string{"TableArrayStoreLower", "FieldSvalsLower", "ProfiledStringLenFold", "RangeAnalysis (post-TableFieldLower)", "DCE (post-TableArrayStoreLower)"})
+	assertTier2ModuleOrder(t, tier2TableFieldNativeLoweringModules(nil), Tier2PhaseTableFieldLower,
+		[]string{
+			"TableArrayStoreLower",
+			"FieldSvalsLower",
+			"FixedShapeTableFacts (post-FieldSvalsLower)",
+			"TableArrayLower (post-FieldSvalsLower)",
+			"TableArrayLoadTypeSpecialize (post-FieldSvalsLower)",
+			"TableArrayStoreLower (post-FieldSvalsLower)",
+			"TypeSpecialize (post-FieldSvalsLower)",
+			"ProfiledStringLenFold",
+			"RangeAnalysis (post-TableFieldLower)",
+			"DCE (post-TableArrayStoreLower)",
+		})
 	assertTier2ModuleOrder(t, tier2TableLoopKernelModules(), Tier2PhaseLoopKernel,
 		[]string{"BoolTableFillLoop", "TableArrayStoreLoopVersion", "TableIntArrayKernel", "BoolTableCountLoop"})
 	assertTier2ModuleOrder(t, tier2TableLoopPostLoadElimModules(), Tier2PhaseLoopKernel,

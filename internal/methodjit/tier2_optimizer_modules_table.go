@@ -47,10 +47,26 @@ func tier2TableArrayNativeLoweringModules() []Tier2OptimizerModule {
 	}
 }
 
-func tier2TableFieldNativeLoweringModules() []Tier2OptimizerModule {
+func tier2TableFieldNativeLoweringModules(globals map[string]*vm.FuncProto) []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
 		tier2PassModule("TableArrayStoreLower", Tier2PhaseTableFieldLower, TableArrayStoreLowerPass),
 		tier2PassModule("FieldSvalsLower", Tier2PhaseTableFieldLower, FieldSvalsLowerPass),
+		{
+			Name:  "FixedShapeTableFacts (post-FieldSvalsLower)",
+			Phase: Tier2PhaseTableFieldLower,
+			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
+				return FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{
+					Globals:               globals,
+					ArgFacts:              optsFixedShapeArgFacts(opts),
+					ArrayElementArgFacts:  optsFixedShapeArrayElementArgFacts(opts),
+					ArrayElementPolyFacts: optsFixedShapeArrayElementPolyFacts(opts),
+					EntryGuardedArgs:      optsFixedShapeEntryGuards(opts),
+				})(fn)
+			},
+		},
+		tier2PassModule("TableArrayLower (post-FieldSvalsLower)", Tier2PhaseTableFieldLower, TableArrayLowerPass),
+		tier2PassModule("TableArrayLoadTypeSpecialize (post-FieldSvalsLower)", Tier2PhaseTableFieldLower, TableArrayLoadTypeSpecializePass),
+		tier2PassModule("TableArrayStoreLower (post-FieldSvalsLower)", Tier2PhaseTableFieldLower, TableArrayStoreLowerPass),
 		tier2PassModule("TypeSpecialize (post-FieldSvalsLower)", Tier2PhaseTableFieldLower, TypeSpecializePass),
 		tier2PassModule("ProfiledStringLenFold", Tier2PhaseTableFieldLower, ProfiledStringLenFoldPass),
 		tier2PassModule("RangeAnalysis (post-TableFieldLower)", Tier2PhaseTableFieldLower, RangeAnalysisPass),

@@ -709,3 +709,46 @@ func TestFixedShapeTableFactsPass_FieldSvalsLoadCarriesNestedArrayFact(t *testin
 		t.Fatalf("nested array element fact should annotate gettable, aux2=%d type=%s\nIR:\n%s", item.Aux2, item.Type, Print(out))
 	}
 }
+
+func TestFixedShapeTableFactsPass_FieldSvalsUsesPolymorphicShapeCatalog(t *testing.T) {
+	shapeFields := []string{"lines"}
+	shapeID := runtime.GetShapeID(shapeFields)
+	fn := &Function{Proto: &vm.FuncProto{NumParams: 1}}
+	block := &Block{ID: 0}
+	recv := &Instr{ID: 1, Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: block}
+	svals := &Instr{ID: 2, Op: OpFieldSvals, Type: TypeInt, Args: []*Value{recv.Value()}, Aux: int64(shapeID), Block: block}
+	lines := &Instr{ID: 3, Op: OpFieldLoad, Type: TypeAny, Args: []*Value{svals.Value()}, Aux: 0, Block: block}
+	idx := &Instr{ID: 4, Op: OpConstInt, Type: TypeInt, Aux: 1, Block: block}
+	item := &Instr{ID: 5, Op: OpGetTable, Type: TypeAny, Args: []*Value{lines.Value(), idx.Value()}, Block: block}
+	block.Instrs = []*Instr{recv, svals, lines, idx, item}
+	fn.Entry = block
+	fn.Blocks = []*Block{block}
+	fn.FieldPolyShapeFacts = map[int][]FieldPolyShapeCase{
+		99: {
+			{
+				ShapeID: shapeID,
+				ReceiverFact: FixedShapeTableFact{
+					ShapeID:    shapeID,
+					FieldNames: append([]string(nil), shapeFields...),
+					FieldTableFacts: map[string]FixedShapeTableFact{
+						"lines": {
+							ArrayElementType: TypeInt,
+							Guarded:          true,
+						},
+					},
+					Guarded: true,
+				},
+			},
+		},
+	}
+	recordFieldPolyShapeCatalog(fn, fn.FieldPolyShapeFacts[99])
+
+	out, err := FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{})(fn)
+	if err != nil {
+		t.Fatalf("FixedShapeTableFactsPassWith: %v", err)
+	}
+	if lines.Type != TypeTable || item.Aux2 == 0 || item.Type != TypeInt {
+		t.Fatalf("polymorphic shape catalog should feed field-load nested array facts, lines=%s aux2=%d item=%s\nIR:\n%s",
+			lines.Type, item.Aux2, item.Type, Print(out))
+	}
+}
