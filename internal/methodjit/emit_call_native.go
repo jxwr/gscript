@@ -1559,6 +1559,7 @@ func (ec *emitContext) emitCallNativeFieldShapeTypedPeerIfEligible(instr *Instr)
 	argDesc := cases[0].desc
 	argDesc.ArgFacts = nil
 	allLeafCallees := fieldShapeTypedPeerCasesAllLeaf(cases)
+	restoreConstsOnSuccess := ec.fnUsesConstPool()
 
 	asm.SUBimm(jit.SP, jit.SP, rawPeerFrameSize)
 	if !allLeafCallees {
@@ -1648,7 +1649,7 @@ func (ec *emitContext) emitCallNativeFieldShapeTypedPeerIfEligible(instr *Instr)
 		asm.CBNZ(jit.X16, exitLabel)
 
 		if c.callee.LeafNoCall {
-			ec.emitRestoreTypedPeerLeafCallerState(calleeBaseOff)
+			ec.emitRestoreTypedPeerLeafCallerStateWithConsts(calleeBaseOff, restoreConstsOnSuccess)
 		} else {
 			ec.emitRestoreTypedPeerCallerState()
 		}
@@ -1747,6 +1748,7 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 	argDesc := cases[0].desc
 	argDesc.ArgFacts = nil
 	allLeafCallees := fieldShapeTypedPeerCasesAllLeaf(cases)
+	restoreConstsOnSuccess := ec.fnUsesConstPool()
 
 	asm.SUBimm(jit.SP, jit.SP, rawPeerFrameSize)
 	if !allLeafCallees {
@@ -1854,7 +1856,7 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 		asm.CBNZ(jit.X16, exitLabel)
 
 		if c.callee.LeafNoCall {
-			ec.emitRestoreTypedPeerLeafCallerState(calleeBaseOff)
+			ec.emitRestoreTypedPeerLeafCallerStateWithConsts(calleeBaseOff, restoreConstsOnSuccess)
 		} else {
 			ec.emitRestoreTypedPeerCallerState()
 		}
@@ -2076,7 +2078,7 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNativeSingleCase(instr *Inst
 	asm.CBNZ(jit.X16, exitLabel)
 
 	if c.callee.LeafNoCall {
-		ec.emitRestoreTypedPeerLeafCallerState(calleeBaseOff)
+		ec.emitRestoreTypedPeerLeafCallerStateWithConsts(calleeBaseOff, ec.fnUsesConstPool())
 	} else {
 		ec.emitRestoreTypedPeerCallerState()
 	}
@@ -2654,8 +2656,12 @@ func (ec *emitContext) emitRestoreTypedPeerCallerModeClosureOnly() {
 }
 
 func (ec *emitContext) emitRestoreTypedPeerLeafCallerState(calleeBaseOff int) {
+	ec.emitRestoreTypedPeerLeafCallerStateWithConsts(calleeBaseOff, true)
+}
+
+func (ec *emitContext) emitRestoreTypedPeerLeafCallerStateWithConsts(calleeBaseOff int, restoreConsts bool) {
 	asm := ec.asm
-	ec.emitRestoreRawPeerLeafCallerRegs(calleeBaseOff)
+	ec.emitRestoreRawPeerLeafCallerRegsWithConsts(calleeBaseOff, restoreConsts)
 	asm.LDR(jit.X8, jit.SP, rawPeerClosureOff)
 	asm.STR(mRegRegs, mRegCtx, execCtxOffRegs)
 	asm.STR(jit.X8, mRegCtx, execCtxOffBaselineClosurePtr)
@@ -2664,6 +2670,10 @@ func (ec *emitContext) emitRestoreTypedPeerLeafCallerState(calleeBaseOff int) {
 }
 
 func (ec *emitContext) emitRestoreRawPeerLeafCallerRegs(calleeBaseOff int) {
+	ec.emitRestoreRawPeerLeafCallerRegsWithConsts(calleeBaseOff, true)
+}
+
+func (ec *emitContext) emitRestoreRawPeerLeafCallerRegsWithConsts(calleeBaseOff int, restoreConsts bool) {
 	asm := ec.asm
 	if calleeBaseOff <= 4095 {
 		asm.SUBimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
@@ -2671,7 +2681,40 @@ func (ec *emitContext) emitRestoreRawPeerLeafCallerRegs(calleeBaseOff int) {
 		asm.LoadImm64(jit.X8, int64(calleeBaseOff))
 		asm.SUBreg(mRegRegs, mRegRegs, jit.X8)
 	}
-	asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants)
+	if restoreConsts {
+		asm.LDR(mRegConsts, mRegCtx, execCtxOffConstants)
+	}
+}
+
+func (ec *emitContext) fnUsesConstPool() bool {
+	if ec == nil || ec.fn == nil {
+		return true
+	}
+	for _, block := range ec.fn.Blocks {
+		if block == nil {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instrUsesConstPool(instr) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func instrUsesConstPool(instr *Instr) bool {
+	if instr == nil {
+		return false
+	}
+	switch instr.Op {
+	case OpConstString, OpStringConstLookup, OpStringFormatInt, OpStringFormatConst,
+		OpStringSplitPart, OpStringSplitSubstr, OpStringSplitSubstrNumber,
+		OpGuardConstString:
+		return true
+	default:
+		return false
+	}
 }
 
 func (ec *emitContext) emitMaterializeRawIntPeerCallFrame(funcSlot, nArgs int) {
