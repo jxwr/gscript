@@ -692,7 +692,7 @@ func assignLoopFloatInvariantFPRs(fn *Function, li *loopInfo, alloc *RegAllocati
 			if instr == nil || !needsFloatReg(instr) {
 				continue
 			}
-			if preheaderInvariantUsedOutsideLoop(fn, vid, bodyBlocks, preheaderID) {
+			if preheaderInvariantUsedOutsideLoop(fn, vid, bodyBlocks, preheaderID) && instr.Op != OpConstFloat {
 				continue
 			}
 			candidateSet[vid] = true
@@ -810,7 +810,7 @@ func collectLoopFloatInvariantCandidates(fn *Function, li *loopInfo, preheaders 
 					if defBlock != preheaderID && !safeExternalFPRInvariantDef(fn, defBlock, preheaderID, dom) {
 						continue
 					}
-					if preheaderInvariantUsedOutsideLoop(fn, arg.ID, body, preheaderID) {
+					if preheaderInvariantUsedOutsideLoop(fn, arg.ID, body, preheaderID) && def.Op != OpConstFloat {
 						continue
 					}
 					used[arg.ID] = true
