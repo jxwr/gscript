@@ -60,6 +60,7 @@ type VM struct {
 	globalArray        []runtime.Value          // indexed globals (fast path)
 	globalIndex        map[string]int           // name → index in globalArray
 	globalVer          uint32                   // bumped on structural changes (new globals added)
+	globalValueVer     uint64                   // bumped whenever indexed global values may have changed
 	globalOverrides    map[string]runtime.Value // per-VM global overrides for coroutine-local builtins
 	globalOverrideIdx  map[int]runtime.Value    // indexed mirror of globalOverrides for GETGLOBAL cache hits
 	globalOverrideFast int                      // single indexed override fast path (-1 = disabled)
@@ -280,18 +281,27 @@ func (vm *VM) GetGlobalByIndex(idx int) (runtime.Value, bool) {
 	return vm.globalArray[idx], true
 }
 
+func (vm *VM) GlobalValueVersionPtr() (*uint64, uint64, bool) {
+	if vm == nil || !vm.noGlobalLock || vm.globalOverrides != nil {
+		return nil, 0, false
+	}
+	return &vm.globalValueVer, vm.globalValueVer, true
+}
+
 // SetGlobal writes a global variable with proper locking.
 func (vm *VM) SetGlobal(name string, val runtime.Value) {
 	if vm.noGlobalLock {
 		if idx, ok := vm.globalIndex[name]; ok {
 			vm.globalArray[idx] = val
 			vm.globals[name] = val
+			vm.globalValueVer++
 		} else {
 			idx = len(vm.globalArray)
 			vm.globalArray = append(vm.globalArray, val)
 			vm.globalIndex[name] = idx
 			vm.globals[name] = val
 			vm.globalVer++
+			vm.globalValueVer++
 		}
 		return
 	}
@@ -299,12 +309,14 @@ func (vm *VM) SetGlobal(name string, val runtime.Value) {
 	if idx, ok := vm.globalIndex[name]; ok {
 		vm.globalArray[idx] = val
 		vm.globals[name] = val
+		vm.globalValueVer++
 	} else {
 		idx = len(vm.globalArray)
 		vm.globalArray = append(vm.globalArray, val)
 		vm.globalIndex[name] = idx
 		vm.globals[name] = val
 		vm.globalVer++
+		vm.globalValueVer++
 	}
 	vm.globalsMu.Unlock()
 }
@@ -571,6 +583,7 @@ func newChildVM(parent *VM, co *VMCoroutine) *VM {
 		globalArray:        parent.globalArray,
 		globalIndex:        parent.globalIndex,
 		globalVer:          parent.globalVer,
+		globalValueVer:     parent.globalValueVer,
 		globalOverrideFast: -1,
 		globalsMu:          parent.globalsMu,
 		noGlobalLock:       false, // shared globals, must lock
@@ -608,6 +621,7 @@ func newIsolatedChildVM(parent *VM) *VM {
 		globalArray:        ga,
 		globalIndex:        gi,
 		globalVer:          parent.globalVer,
+		globalValueVer:     parent.globalValueVer,
 		globalOverrideFast: -1,
 		globalsMu:          &sync.RWMutex{},
 		noGlobalLock:       true, // own copy, fully lock-free
@@ -938,6 +952,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 					vm.globalArray[idx] = val
 				}
 				vm.globals[name] = val
+				vm.globalValueVer++
 			} else {
 				// Multi-threaded: locked access, update both map and array
 				name := constants[bx].Str()
@@ -945,6 +960,7 @@ func (vm *VM) run() (retVals []runtime.Value, retErr error) {
 				vm.globals[name] = val
 				if idx, ok := vm.globalIndex[name]; ok {
 					vm.globalArray[idx] = val
+					vm.globalValueVer++
 				}
 				vm.globalsMu.Unlock()
 			}

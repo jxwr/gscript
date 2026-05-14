@@ -474,6 +474,12 @@ func (e *BaselineJITEngine) executeInnerAtPC(compiled interface{}, regs []runtim
 		ctx.BaselineGlobalGenPtr = 0
 		ctx.BaselineGlobalCachedGen = 0
 	}
+	if e.callVM != nil {
+		if verPtr, ver, ok := e.callVM.GlobalValueVersionPtr(); ok {
+			ctx.Tier2GlobalVerPtr = uintptr(unsafe.Pointer(verPtr))
+			ctx.Tier2GlobalVer = ver
+		}
+	}
 	if len(bf.CallCache) > 0 {
 		ctx.BaselineCallCache = uintptr(unsafe.Pointer(&bf.CallCache[0]))
 	} else {

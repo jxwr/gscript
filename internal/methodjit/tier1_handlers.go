@@ -850,6 +850,10 @@ func (e *BaselineJITEngine) handleSetGlobal(ctx *ExecContext, regs []runtime.Val
 	if absSlot < len(regs) {
 		e.callVM.SetGlobal(name, regs[absSlot])
 	}
+	if verPtr, ver, ok := e.callVM.GlobalValueVersionPtr(); ok {
+		ctx.Tier2GlobalVerPtr = uintptr(unsafe.Pointer(verPtr))
+		ctx.Tier2GlobalVer = ver
+	}
 	e.invalidateGlobalValueCaches(name)
 	return nil
 }

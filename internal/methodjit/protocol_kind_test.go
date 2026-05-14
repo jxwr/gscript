@@ -189,6 +189,15 @@ for rep := 1; rep <= REPS; rep++ {
 	if len(mainFn.ProtocolConstCallFolds) != 1 {
 		t.Fatalf("top-level ProtocolConstCallFolds len=%d, want 1\nIR:\n%s", len(mainFn.ProtocolConstCallFolds), Print(mainFn))
 	}
+	tier1Folds := baselineProtocolConstCallFolds(benchTop)
+	if len(tier1Folds) != 1 {
+		t.Fatalf("Tier1 protocol const folds len=%d, want 1", len(tier1Folds))
+	}
+	for pc, fact := range tier1Folds {
+		if pc < 0 || fact.CalleeProto != benchF || fact.Result != 16 || len(fact.GuardProtos) != 2 {
+			t.Fatalf("unexpected Tier1 fold at pc=%d: %#v", pc, fact)
+		}
+	}
 }
 
 func TestProtocolConstCallFoldFallbackAfterCalleeRebind(t *testing.T) {
