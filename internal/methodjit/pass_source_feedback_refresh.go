@@ -29,6 +29,8 @@ func SourceFeedbackRefreshPass(fn *Function) (*Function, error) {
 				sourceFeedbackRefreshGetTable(fn, block, instr)
 			case OpSetTable:
 				sourceFeedbackRefreshSetTable(fn, block, instr)
+			case OpAdd, OpSub, OpMul, OpDiv, OpMod, OpUnm, OpEq, OpLt, OpLe:
+				sourceFeedbackRefreshResultType(fn, block, instr)
 			}
 		}
 	}
@@ -58,6 +60,15 @@ func sourceFeedbackRefreshSetTable(fn *Function, block *Block, instr *Instr) {
 	instr.Aux2 = kind
 	functionRemarks(fn).Add("SourceFeedbackRefresh", "changed", block.ID, instr.ID, instr.Op,
 		fmt.Sprintf("restored source table store kind %d", kind))
+}
+
+func sourceFeedbackRefreshResultType(fn *Function, block *Block, instr *Instr) {
+	if typ, ok := sourceFeedbackResultType(instr.SourceProto, instr.SourcePC); ok &&
+		(instr.Type == TypeAny || instr.Type == TypeUnknown) {
+		instr.Type = typ
+		functionRemarks(fn).Add("SourceFeedbackRefresh", "changed", block.ID, instr.ID, instr.Op,
+			"restored source result type "+typ.String())
+	}
 }
 
 func sourceFeedbackTableKind(proto *vm.FuncProto, pc int) int64 {

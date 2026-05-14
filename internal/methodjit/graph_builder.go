@@ -466,6 +466,15 @@ func (b *graphBuilder) emitBlocks() {
 				case vm.OP_POW:
 					irOp = OpPow
 				}
+				if op == vm.OP_MOD {
+					leftType, leftOK, rightType, rightOK := b.speculation.OperandGuardTypes(pc)
+					if leftOK && rightOK && leftType == TypeInt && rightType == TypeInt {
+						g := b.emit(block, OpGuardType, leftType, []*Value{lhs}, int64(leftType), 0)
+						lhs = g.Value()
+						g = b.emit(block, OpGuardType, rightType, []*Value{rhs}, int64(rightType), 0)
+						rhs = g.Value()
+					}
+				}
 				instr := b.emit(block, irOp, TypeAny, []*Value{lhs, rhs}, 0, 0)
 				b.writeVariable(a, block, instr.Value())
 

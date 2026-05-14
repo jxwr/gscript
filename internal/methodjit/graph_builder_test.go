@@ -561,6 +561,41 @@ func f(t) {
 		}
 	})
 
+	t.Run("Mod_FBIntOperands_insert_guards", func(t *testing.T) {
+		proto := compile(t, `
+func f(a, b) {
+	return a % b
+}
+`)
+		pc := findPC(t, proto, vm.OP_MOD)
+		proto.EnsureFeedback()
+		proto.Feedback[pc] = vm.TypeFeedback{Left: vm.FBInt, Right: vm.FBInt, Result: vm.FBInt}
+
+		fn := BuildGraph(proto)
+		var mod *Instr
+		guards := 0
+		for _, blk := range fn.Blocks {
+			for _, instr := range blk.Instrs {
+				if instr.Op == OpGuardType && instr.Type == TypeInt {
+					guards++
+				}
+				if instr.Op == OpMod {
+					mod = instr
+				}
+			}
+		}
+		if mod == nil || len(mod.Args) != 2 {
+			t.Fatalf("expected generic OpMod with guarded operands before TypeSpec\nIR:\n%s", Print(fn))
+		}
+		if guards != 2 {
+			t.Fatalf("int operand guards=%d want 2\nIR:\n%s", guards, Print(fn))
+		}
+		if mod.Args[0].Def == nil || mod.Args[0].Def.Op != OpGuardType ||
+			mod.Args[1].Def == nil || mod.Args[1].Def.Op != OpGuardType {
+			t.Fatalf("OpMod operands were not fed by GuardType instructions\nIR:\n%s", Print(fn))
+		}
+	})
+
 	t.Run("GetTable_FBInt_inserts_guard", func(t *testing.T) {
 		proto := compile(t, `
 func f(t) {

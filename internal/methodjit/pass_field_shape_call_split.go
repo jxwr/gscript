@@ -356,17 +356,33 @@ func buildSingleBlockFieldShapeInlineCallee(c FieldPolyShapeCase) (*Function, st
 	if err != nil {
 		return nil, "post-load source feedback refresh failed"
 	}
+	calleeFn, err = TypeSpecializePass(calleeFn)
+	if err != nil {
+		return nil, "post-refresh type specialization failed"
+	}
 	calleeFn, err = TableArrayStoreLowerPass(calleeFn)
 	if err != nil {
 		return nil, "table-array store lowering failed"
+	}
+	calleeFn, err = TypeSpecializePass(calleeFn)
+	if err != nil {
+		return nil, "post-store type specialization failed"
 	}
 	calleeFn, err = TableArrayNestedLoadPass(calleeFn)
 	if err != nil {
 		return nil, "nested table-array load lowering failed"
 	}
+	calleeFn, err = TypeSpecializePass(calleeFn)
+	if err != nil {
+		return nil, "post-nested-load type specialization failed"
+	}
 	calleeFn, err = FieldSvalsLowerPass(calleeFn)
 	if err != nil {
 		return nil, "field-svals lowering failed"
+	}
+	calleeFn, err = TypeSpecializePass(calleeFn)
+	if err != nil {
+		return nil, "post-field-svals type specialization failed"
 	}
 	calleeFn, err = ConstPropPass(calleeFn)
 	if err != nil {

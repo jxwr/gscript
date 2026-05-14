@@ -255,6 +255,9 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 		// Build the callee's IR.
 		calleeFn := BuildGraph(calleeProto)
 		if hasFieldShapeCase {
+			if callArgs, ok := inlineCallArgumentValues(instr); ok {
+				calleeFn = applyInlineArgTypeFacts(calleeFn, callArgs)
+			}
 			calleeFn = prepareFieldShapeInlineCallee(calleeFn, fieldShapeCase)
 		}
 		if config.RequirePureNumeric {
@@ -421,7 +424,15 @@ func prepareFieldShapeInlineCallee(calleeFn *Function, c FieldPolyShapeCase) *Fu
 	if err != nil || out == nil {
 		return calleeFn
 	}
+	out, err = TypeSpecializePass(out)
+	if err != nil || out == nil {
+		return calleeFn
+	}
 	out, err = TableArrayStoreLowerPass(out)
+	if err != nil || out == nil {
+		return calleeFn
+	}
+	out, err = TypeSpecializePass(out)
 	if err != nil || out == nil {
 		return calleeFn
 	}
@@ -429,7 +440,15 @@ func prepareFieldShapeInlineCallee(calleeFn *Function, c FieldPolyShapeCase) *Fu
 	if err != nil || out == nil {
 		return calleeFn
 	}
+	out, err = TypeSpecializePass(out)
+	if err != nil || out == nil {
+		return calleeFn
+	}
 	out, err = FieldSvalsLowerPass(out)
+	if err != nil || out == nil {
+		return calleeFn
+	}
+	out, err = TypeSpecializePass(out)
 	if err != nil || out == nil {
 		return calleeFn
 	}
@@ -442,6 +461,46 @@ func prepareFieldShapeInlineCallee(calleeFn *Function, c FieldPolyShapeCase) *Fu
 		return calleeFn
 	}
 	return out
+}
+
+func applyInlineArgTypeFacts(calleeFn *Function, callArgs []*Value) *Function {
+	if calleeFn == nil || len(callArgs) == 0 {
+		return calleeFn
+	}
+	for _, block := range calleeFn.Blocks {
+		if block == nil {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpLoadSlot {
+				continue
+			}
+			slot := int(instr.Aux)
+			if slot < 0 || slot >= len(callArgs) {
+				continue
+			}
+			if typ, ok := inlineArgValueType(callArgs[slot]); ok &&
+				(instr.Type == TypeAny || instr.Type == TypeUnknown) {
+				instr.Type = typ
+			}
+		}
+	}
+	return calleeFn
+}
+
+func inlineArgValueType(v *Value) (Type, bool) {
+	if v == nil || v.Def == nil {
+		return TypeUnknown, false
+	}
+	if v.Def.Op == OpGuardType {
+		return Type(v.Def.Aux), true
+	}
+	switch v.Def.Type {
+	case TypeInt, TypeFloat, TypeString, TypeTable, TypeBool:
+		return v.Def.Type, true
+	default:
+		return TypeUnknown, false
+	}
 }
 
 func hasInlineFeedbackCallee(fn *Function) bool {
@@ -561,6 +620,7 @@ func fieldShapeInlineSplitCaseRejectReason(c FieldPolyShapeCase, callArgs []*Val
 	if calleeFn == nil || calleeFn.Unpromotable {
 		return "unpromotable"
 	}
+	calleeFn = applyInlineArgTypeFacts(calleeFn, callArgs)
 	calleeFn = prepareFieldShapeInlineCallee(calleeFn, c)
 	if callerLoopBlock && computeLoopInfo(calleeFn).hasLoops() {
 		if reason := pureNumericInlineRejectReason(calleeFn); reason != "" {
