@@ -515,16 +515,11 @@ func EmitIsTagged(asm *Assembler, valReg, scratch Reg) {
 // EmitCheckIsTableFull is a full table check: tag=ptr AND sub=table.
 // Branches to 'notTableLabel' if not a table. Uses scratch1 and scratch2.
 func EmitCheckIsTableFull(asm *Assembler, valReg, scratch1, scratch2 Reg, notTableLabel string) {
-	// Check top 16 bits == 0xFFFF (pointer tag)
-	asm.LSRimm(scratch1, valReg, 48)
-	asm.MOVimm16(scratch2, NB_TagPtrShr48) // 0xFFFF
-	asm.CMPreg(scratch1, scratch2)
-	asm.BCond(CondNE, notTableLabel)
-	// Check pointer sub-type (bits 44-47) == 0 (ptrSubTable)
+	// Check top 16 pointer-tag bits and the 4-bit pointer subtype together.
+	// Table pointers satisfy (value >> 44) == 0xFFFF0.
 	asm.LSRimm(scratch1, valReg, uint8(NB_PtrSubShift))
-	asm.LoadImm64(scratch2, 0xF)
-	asm.ANDreg(scratch1, scratch1, scratch2)
-	asm.CMPimm(scratch1, 0) // ptrSubTable = 0 (fits in 12 bits)
+	asm.LoadImm64(scratch2, 0xFFFF0)
+	asm.CMPreg(scratch1, scratch2)
 	asm.BCond(CondNE, notTableLabel)
 }
 
