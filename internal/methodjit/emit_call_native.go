@@ -30,6 +30,7 @@ package methodjit
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"unsafe"
 
 	"github.com/gscript/gscript/internal/jit"
@@ -1749,6 +1750,12 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 	allLeafCallees := fieldShapeTypedPeerCasesAllLeaf(cases)
 	restoreConstsOnSuccess := ec.fnUsesConstPool()
 	useClobberEntry := ec.shouldUseTypedPeerClobberEntry(liveGPRs, liveFPRs)
+	if remarks := functionRemarks(ec.fn); remarks != nil {
+		remarks.Add("TypedPeerABI", "changed", instr.Block.ID, instr.ID, instr.Op,
+			fmt.Sprintf("field-shape method floor cases=%d leaf=%t clobber_entry=%t live_gprs=%s live_fprs=%s",
+				len(cases), allLeafCallees, useClobberEntry,
+				ec.formatLiveCallRegs(liveGPRs), ec.formatLiveCallRegs(liveFPRs)))
+	}
 
 	asm.SUBimm(jit.SP, jit.SP, rawPeerFrameSize)
 	if !allLeafCallees {
@@ -2737,6 +2744,30 @@ func (ec *emitContext) shouldUseTypedPeerClobberEntry(liveGPRs, liveFPRs map[int
 		return false
 	}
 	return len(liveGPRs) <= 2
+}
+
+func (ec *emitContext) formatLiveCallRegs(live map[int]bool) string {
+	if len(live) == 0 {
+		return "[]"
+	}
+	ids := make([]int, 0, len(live))
+	for id := range live {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if pr, ok := ec.alloc.ValueRegs[id]; ok {
+			if pr.IsFloat {
+				parts = append(parts, fmt.Sprintf("v%d:D%d", id, pr.Reg))
+			} else {
+				parts = append(parts, fmt.Sprintf("v%d:X%d", id, pr.Reg))
+			}
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("v%d", id))
+	}
+	return "[" + strings.Join(parts, ",") + "]"
 }
 
 func (ec *emitContext) emitRestoreTypedPeerCallerModeClosureOnly() {
