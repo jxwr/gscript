@@ -68,6 +68,13 @@ type pureCSEKey struct {
 	narg int
 }
 
+type constCSEKey struct {
+	op   Op
+	typ  Type
+	aux  int64
+	aux2 int64
+}
+
 // guardKey identifies a specific type guard: the SSA value ID of the
 // guarded operand plus the guard type (stored in Aux).
 type guardKey struct {
@@ -104,6 +111,7 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 		matrixStrideAvail := make(map[int]int) // MatrixStride(arg_id) → SSA value ID
 		tableArrayFacts := newTableArrayFactSet()
 		pureAvail := make(map[pureCSEKey]int)
+		constAvail := make(map[constCSEKey]int)
 		// R93: store-to-load forwarding for dynamic-key table access.
 		// After SetTable(t, k, v), map (t.ID, k.ID) → v.ID so a
 		// subsequent GetTable(t, k) uses v directly.
@@ -111,6 +119,23 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 
 		for _, instr := range block.Instrs {
 			switch instr.Op {
+			case OpConstInt, OpConstFloat, OpConstBool, OpConstNil, OpConstString:
+				key := constCSEKey{op: instr.Op, typ: instr.Type, aux: instr.Aux, aux2: instr.Aux2}
+				if origID, ok := constAvail[key]; ok {
+					if origInstr := instrByID[origID]; origInstr != nil {
+						replaceAllUses(fn, instr.ID, origInstr)
+						instr.Op = OpNop
+						instr.Args = nil
+						instr.Aux = 0
+						instr.Aux2 = 0
+						instr.Type = TypeUnknown
+						functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, key.op,
+							"reused earlier same-block constant")
+					}
+				} else {
+					constAvail[key] = instr.ID
+				}
+
 			case OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt,
 				OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
 				OpNumToFloat, OpSqrt, OpFloor, OpFMA, OpFMSUB,

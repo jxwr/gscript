@@ -108,6 +108,49 @@ func TestLoadElimination_PureTypedNumericCSE(t *testing.T) {
 	}
 }
 
+func TestLoadElimination_ConstantsEnablePureTypedNumericCSE(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "const_cse_enables_numeric_cse"},
+		NumRegs: 1,
+	}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+
+	x := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 0, Block: b}
+	oneA := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: b}
+	add1 := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt,
+		Args: []*Value{x.Value(), oneA.Value()}, Block: b}
+	oneB := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: b}
+	add2 := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt,
+		Args: []*Value{x.Value(), oneB.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{add2.Value()}, Block: b}
+
+	b.Instrs = []*Instr{x, oneA, add1, oneB, add2, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	result, err := LoadEliminationPass(fn)
+	if err != nil {
+		t.Fatalf("LoadEliminationPass error: %v", err)
+	}
+	if add2.Args[1].ID != oneA.ID {
+		t.Fatalf("expected second add to reuse first const, got v%d want v%d", add2.Args[1].ID, oneA.ID)
+	}
+	if ret.Args[0].ID != add1.ID {
+		t.Fatalf("expected return to reuse first AddInt v%d, got v%d", add1.ID, ret.Args[0].ID)
+	}
+
+	result, err = DCEPass(result)
+	if err != nil {
+		t.Fatalf("DCEPass error: %v", err)
+	}
+	if got := countOp(result, OpConstInt); got != 1 {
+		t.Fatalf("expected one ConstInt after constant CSE + DCE, got %d\n%s", got, Print(result))
+	}
+	if got := countOp(result, OpAddInt); got != 1 {
+		t.Fatalf("expected one AddInt after constant-enabled pure CSE + DCE, got %d\n%s", got, Print(result))
+	}
+}
+
 func TestLoadElimination_RemovesRedundantNumToFloatOfFloat(t *testing.T) {
 	fn := &Function{
 		Proto:   &vm.FuncProto{Name: "redundant_num_to_float"},
