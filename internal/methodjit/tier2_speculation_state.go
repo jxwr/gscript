@@ -10,38 +10,39 @@ import (
 )
 
 type Tier2SpeculationState struct {
-	ProtoName               string                 `json:"proto_name"`
-	ProtoID                 string                 `json:"proto_id"`
-	Compiled                bool                   `json:"compiled"`
-	Failed                  bool                   `json:"failed"`
-	FailReason              string                 `json:"fail_reason,omitempty"`
-	VersionHash             string                 `json:"version_hash,omitempty"`
-	GuardCount              int                    `json:"guard_count,omitempty"`
-	ContinuationCount       int                    `json:"continuation_count,omitempty"`
-	AmbiguousContinuations  int                    `json:"ambiguous_continuations,omitempty"`
-	SwitchableContinuations int                    `json:"switchable_continuations,omitempty"`
-	ContinuationBlockers    map[string]int         `json:"continuation_blockers,omitempty"`
-	SuppressedCount         int                    `json:"suppressed_count,omitempty"`
-	SuppressedPCs           []int                  `json:"suppressed_pcs,omitempty"`
-	SuppressedKinds         map[string]int         `json:"suppressed_kinds,omitempty"`
-	GuardFailures           map[string]uint64      `json:"guard_failures,omitempty"`
-	ExitCount               uint64                 `json:"exit_count,omitempty"`
-	SuppressedGuardExits    uint64                 `json:"suppressed_guard_exits,omitempty"`
-	QueuedRecompileExits    uint64                 `json:"queued_recompile_exits,omitempty"`
-	RecompileScope          string                 `json:"recompile_scope,omitempty"`
-	RecompileBlocker        string                 `json:"recompile_blocker,omitempty"`
-	ExitKinds               map[string]uint64      `json:"exit_kinds,omitempty"`
-	TopExitName             string                 `json:"top_exit_name,omitempty"`
-	TopExitReason           string                 `json:"top_exit_reason,omitempty"`
-	TopExitPC               int                    `json:"top_exit_pc,omitempty"`
-	TopExitCount            uint64                 `json:"top_exit_count,omitempty"`
-	TopExitContinuation     bool                   `json:"top_exit_continuation,omitempty"`
-	TopExitSwitchable       bool                   `json:"top_exit_switchable,omitempty"`
-	TopExitSwitchBlocker    string                 `json:"top_exit_switch_blocker,omitempty"`
-	FeedbackReadiness       Tier2FeedbackReadiness `json:"feedback_readiness"`
-	NextAction              Tier2SpeculationAction `json:"next_action,omitempty"`
-	NextTarget              Tier2SpeculationTarget `json:"next_target,omitempty"`
-	NextPriority            int                    `json:"next_priority,omitempty"`
+	ProtoName               string                      `json:"proto_name"`
+	ProtoID                 string                      `json:"proto_id"`
+	Compiled                bool                        `json:"compiled"`
+	Failed                  bool                        `json:"failed"`
+	FailReason              string                      `json:"fail_reason,omitempty"`
+	VersionHash             string                      `json:"version_hash,omitempty"`
+	GuardCount              int                         `json:"guard_count,omitempty"`
+	ContinuationCount       int                         `json:"continuation_count,omitempty"`
+	AmbiguousContinuations  int                         `json:"ambiguous_continuations,omitempty"`
+	SwitchableContinuations int                         `json:"switchable_continuations,omitempty"`
+	ContinuationBlockers    map[string]int              `json:"continuation_blockers,omitempty"`
+	SuppressedCount         int                         `json:"suppressed_count,omitempty"`
+	SuppressedPCs           []int                       `json:"suppressed_pcs,omitempty"`
+	SuppressedKinds         map[string]int              `json:"suppressed_kinds,omitempty"`
+	GuardFailures           map[string]uint64           `json:"guard_failures,omitempty"`
+	ExitCount               uint64                      `json:"exit_count,omitempty"`
+	SuppressedGuardExits    uint64                      `json:"suppressed_guard_exits,omitempty"`
+	QueuedRecompileExits    uint64                      `json:"queued_recompile_exits,omitempty"`
+	RecompileScope          string                      `json:"recompile_scope,omitempty"`
+	RecompileBlocker        string                      `json:"recompile_blocker,omitempty"`
+	ExitKinds               map[string]uint64           `json:"exit_kinds,omitempty"`
+	TopExitName             string                      `json:"top_exit_name,omitempty"`
+	TopExitReason           string                      `json:"top_exit_reason,omitempty"`
+	TopExitPC               int                         `json:"top_exit_pc,omitempty"`
+	TopExitCount            uint64                      `json:"top_exit_count,omitempty"`
+	TopExitContinuation     bool                        `json:"top_exit_continuation,omitempty"`
+	TopExitSwitchable       bool                        `json:"top_exit_switchable,omitempty"`
+	TopExitSwitchBlocker    string                      `json:"top_exit_switch_blocker,omitempty"`
+	TopExitLiveTemps        []Tier2ContinuationLiveTemp `json:"top_exit_live_temps,omitempty"`
+	FeedbackReadiness       Tier2FeedbackReadiness      `json:"feedback_readiness"`
+	NextAction              Tier2SpeculationAction      `json:"next_action,omitempty"`
+	NextTarget              Tier2SpeculationTarget      `json:"next_target,omitempty"`
+	NextPriority            int                         `json:"next_priority,omitempty"`
 }
 
 type Tier2SpeculationWorkItem struct {
@@ -163,6 +164,9 @@ func (tm *TieringManager) Tier2SpeculationStateSnapshot() []Tier2SpeculationStat
 					state.TopExitContinuation = known
 					state.TopExitSwitchable = switchable
 					state.TopExitSwitchBlocker = reason
+					if cont, ok := tier2ContinuationForExit(cf, state.TopExitName, state.TopExitPC); ok {
+						state.TopExitLiveTemps = tier2ContinuationTempLiveSlots(cont)
+					}
 				}
 			}
 		}

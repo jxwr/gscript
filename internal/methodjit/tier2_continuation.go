@@ -29,6 +29,7 @@ type Tier2Continuation struct {
 	InstrID          int
 	Offset           int
 	Ambiguous        bool
+	VMRegLimit       int
 	LiveSlots        []exitResumeLiveSlot
 	Switchable       bool
 	NotSwitchableWhy string
@@ -62,14 +63,49 @@ func buildTier2Continuations(sites map[int]ExitSiteMeta, resumes []deferredResum
 			continue
 		}
 		out[key] = Tier2Continuation{
-			Key:       key,
-			InstrID:   dr.instrID,
-			Offset:    off,
-			LiveSlots: live.slots(dr.instrID, dr.numericPass),
+			Key:        key,
+			InstrID:    dr.instrID,
+			Offset:     off,
+			VMRegLimit: numRegs,
+			LiveSlots:  live.slots(dr.instrID, dr.numericPass),
 		}
 		cont = out[key]
 		cont.Switchable, cont.NotSwitchableWhy = classifyTier2ContinuationSwitchability(cont, numRegs)
 		out[key] = cont
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+type Tier2ContinuationLiveTemp struct {
+	Slot     int    `json:"slot"`
+	ValueID  int    `json:"value_id"`
+	Repr     string `json:"repr"`
+	DefOp    string `json:"def_op,omitempty"`
+	SourcePC int    `json:"source_pc,omitempty"`
+}
+
+func tier2ContinuationTempLiveSlots(cont Tier2Continuation) []Tier2ContinuationLiveTemp {
+	if cont.VMRegLimit <= 0 || len(cont.LiveSlots) == 0 {
+		return nil
+	}
+	out := make([]Tier2ContinuationLiveTemp, 0)
+	for _, live := range cont.LiveSlots {
+		if live.Slot < cont.VMRegLimit {
+			continue
+		}
+		temp := Tier2ContinuationLiveTemp{
+			Slot:     live.Slot,
+			ValueID:  live.ValueID,
+			Repr:     live.Repr.String(),
+			SourcePC: live.DefSourcePC,
+		}
+		if live.DefOp != OpNop {
+			temp.DefOp = live.DefOp.String()
+		}
+		out = append(out, temp)
 	}
 	if len(out) == 0 {
 		return nil
@@ -173,6 +209,23 @@ func tier2ContinuationSwitchabilityForExit(cf *CompiledFunction, exitName string
 		return true, false, reason
 	}
 	return false, false, ""
+}
+
+func tier2ContinuationForExit(cf *CompiledFunction, exitName string, pc int) (Tier2Continuation, bool) {
+	if cf == nil || pc < 0 {
+		return Tier2Continuation{}, false
+	}
+	kind, ok := tier2ContinuationKindForExitName(exitName)
+	if !ok {
+		return Tier2Continuation{}, false
+	}
+	for _, numeric := range []bool{false, true} {
+		cont, ok := cf.Continuations[Tier2ContinuationKey{PC: pc, Kind: kind, NumericPass: numeric}]
+		if ok {
+			return cont, true
+		}
+	}
+	return Tier2Continuation{}, false
 }
 
 func tier2ContinuationKindForExitName(exitName string) (Tier2ContinuationKind, bool) {

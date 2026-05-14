@@ -24,6 +24,8 @@ type exitResumeLiveSlot struct {
 	ValueID     int
 	Slot        int
 	Repr        valueRepr
+	DefOp       Op
+	DefSourcePC int
 	RawInt      bool
 	RawFloat    bool
 	RawTablePtr bool
@@ -166,10 +168,13 @@ func (ec *emitContext) exitResumeLiveSlots(gprLive, fprLive map[int]bool) []exit
 			continue
 		}
 		repr := ec.valueReprOf(valueID)
+		defOp, sourcePC := ec.liveSlotDef(valueID)
 		live = append(live, exitResumeLiveSlot{
 			ValueID:     valueID,
 			Slot:        slot,
 			Repr:        repr,
+			DefOp:       defOp,
+			DefSourcePC: sourcePC,
 			RawInt:      repr == valueReprRawInt,
 			RawTablePtr: repr == valueReprRawTablePtr,
 			RawDataPtr:  repr == valueReprRawDataPtr,
@@ -188,14 +193,32 @@ func (ec *emitContext) exitResumeLiveSlots(gprLive, fprLive map[int]bool) []exit
 		if !ok {
 			continue
 		}
+		defOp, sourcePC := ec.liveSlotDef(valueID)
 		live = append(live, exitResumeLiveSlot{
-			ValueID:  valueID,
-			Slot:     slot,
-			Repr:     valueReprRawFloat,
-			RawFloat: true,
+			ValueID:     valueID,
+			Slot:        slot,
+			Repr:        valueReprRawFloat,
+			DefOp:       defOp,
+			DefSourcePC: sourcePC,
+			RawFloat:    true,
 		})
 	}
 	return live
+}
+
+func (ec *emitContext) liveSlotDef(valueID int) (Op, int) {
+	if ec == nil || ec.irDefs == nil {
+		return OpNop, -1
+	}
+	def := ec.irDefs[valueID]
+	if def == nil {
+		return OpNop, -1
+	}
+	sourcePC := -1
+	if def.HasSource {
+		sourcePC = def.SourcePC
+	}
+	return def.Op, sourcePC
 }
 
 func (cf *CompiledFunction) exitResumeCheckSite(ctx *ExecContext) *exitResumeCheckSite {

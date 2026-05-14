@@ -242,6 +242,7 @@ func CompileWithOptions(fn *Function, alloc *RegAllocation, opts CompileOptions)
 	constInts := make(map[int]int64)
 	constBools := make(map[int]int64)
 	irTypes := make(map[int]Type)
+	irDefs := make(map[int]*Instr)
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
 			if instr.Op == OpConstInt {
@@ -251,6 +252,7 @@ func CompileWithOptions(fn *Function, alloc *RegAllocation, opts CompileOptions)
 				constBools[instr.ID] = instr.Aux
 			}
 			irTypes[instr.ID] = instr.Type
+			irDefs[instr.ID] = instr
 		}
 	}
 
@@ -317,6 +319,7 @@ func CompileWithOptions(fn *Function, alloc *RegAllocation, opts CompileOptions)
 		constInts:                  constInts,
 		constBools:                 constBools,
 		irTypes:                    irTypes,
+		irDefs:                     irDefs,
 		scratchFPRCache:            make(map[int]jit.FReg),
 		fusedCmps:                  fusedCmps,
 		tailCallInstrs:             computeTailCalls(fn),
@@ -914,6 +917,7 @@ type emitContext struct {
 	// Used by resolveRawFloat to detect NaN-boxed ints that need SCVTF
 	// conversion instead of FMOVtoFP.
 	irTypes map[int]Type
+	irDefs  map[int]*Instr
 
 	// nextGlobalCacheIndex is the next available cache slot index for
 	// OpGetGlobal native cache. Each GetGlobal instruction gets a unique
