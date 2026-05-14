@@ -441,6 +441,14 @@ func prepareFieldShapeInlineCalleeWithReason(calleeFn *Function, c FieldPolyShap
 	if err != nil || out == nil {
 		return calleeFn, "post-store type specialization failed"
 	}
+	out, err = LoadEliminationPass(out)
+	if err != nil || out == nil {
+		return calleeFn, "post-store load elimination failed"
+	}
+	out, err = TypeSpecializePass(out)
+	if err != nil || out == nil {
+		return calleeFn, "post-store-load-elim type specialization failed"
+	}
 	out, err = TableArrayNestedLoadPass(out)
 	if err != nil || out == nil {
 		return calleeFn, "nested table-array load lowering failed"
@@ -452,6 +460,24 @@ func prepareFieldShapeInlineCalleeWithReason(calleeFn *Function, c FieldPolyShap
 	out, err = FieldSvalsLowerPass(out)
 	if err != nil || out == nil {
 		return calleeFn, "field-svals lowering failed"
+	}
+	out, err = FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{
+		ArgFacts: map[int]FixedShapeTableFact{0: c.ReceiverFact},
+	})(out)
+	if err != nil || out == nil {
+		return calleeFn, "post-field-svals fixed-shape fact propagation failed"
+	}
+	out, err = TableArrayLowerPass(out)
+	if err != nil || out == nil {
+		return calleeFn, "post-field-svals table-array lowering failed"
+	}
+	out, err = TableArrayLoadTypeSpecializePass(out)
+	if err != nil || out == nil {
+		return calleeFn, "post-field-svals table-array load type specialization failed"
+	}
+	out, err = LoadEliminationPass(out)
+	if err != nil || out == nil {
+		return calleeFn, "post-field-svals load elimination failed"
 	}
 	out, err = TypeSpecializePass(out)
 	if err != nil || out == nil {
@@ -562,6 +588,9 @@ func fieldShapeInlineSplitEligibilitySummary(fn *Function, instr *Instr, config 
 			eligible++
 			continue
 		}
+		if detail := fieldShapeReceiverFactSummary(c.ReceiverFact); detail != "" {
+			reason = reason + "/" + detail
+		}
 		reasons[reason]++
 	}
 	parts := []string{fmt.Sprintf("eligible=%d/%d", eligible, len(cases))}
@@ -597,6 +626,25 @@ func fieldShapeInlineEffectSummary(cases []FieldPolyShapeCase) string {
 	}
 	sort.Strings(parts)
 	return "effects{" + strings.Join(parts, ";") + "}"
+}
+
+func fieldShapeReceiverFactSummary(fact FixedShapeTableFact) string {
+	if len(fact.FieldTableFacts) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(fact.FieldTableFacts))
+	for name, nested := range fact.FieldTableFacts {
+		part := name
+		if nested.ArrayElementType != TypeUnknown && nested.ArrayElementType != TypeAny {
+			part += "[]=" + nested.ArrayElementType.String()
+		}
+		if nested.ShapeID != 0 {
+			part += fmt.Sprintf("#%d", nested.ShapeID)
+		}
+		names = append(names, part)
+	}
+	sort.Strings(names)
+	return "receiver-nested{" + strings.Join(names, ",") + "}"
 }
 
 func fieldShapeInlineSplitCaseRejectReason(c FieldPolyShapeCase, callArgs []*Value, config InlineConfig, callerLoopBlock bool) string {

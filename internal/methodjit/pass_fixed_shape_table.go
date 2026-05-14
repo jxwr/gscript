@@ -1605,6 +1605,9 @@ func fixedShapeFactForFixedConstructor(fn *Function, instr *Instr) (FixedShapeTa
 func annotateFixedShapeGetFields(fn *Function, facts map[int]FixedShapeTableFact) {
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
+			if annotateFixedShapeFieldLoad(fn, block, instr, facts) {
+				continue
+			}
 			if instr.Op != OpGetField || len(instr.Args) == 0 || instr.Args[0] == nil {
 				if instr.Op == OpGuardType && len(instr.Args) > 0 && instr.Args[0] != nil && instr.Type == TypeTable {
 					if fact, ok := facts[instr.Args[0].ID]; ok {
@@ -1664,6 +1667,58 @@ func annotateFixedShapeGetFields(fn *Function, facts map[int]FixedShapeTableFact
 			}
 		}
 	}
+}
+
+func annotateFixedShapeFieldLoad(fn *Function, block *Block, instr *Instr, facts map[int]FixedShapeTableFact) bool {
+	if instr == nil || (instr.Op != OpFieldLoad && instr.Op != OpFieldLoadNumToFloat) || len(instr.Args) == 0 || instr.Args[0] == nil {
+		return false
+	}
+	svals := instr.Args[0].Def
+	if svals == nil || svals.Op != OpFieldSvals || len(svals.Args) == 0 || svals.Args[0] == nil {
+		return true
+	}
+	fact, ok := facts[svals.Args[0].ID]
+	if !ok || fact.ShapeID == 0 || fact.ShapeID != uint32(svals.Aux) {
+		return true
+	}
+	fieldIdx := int(instr.Aux)
+	if fieldIdx < 0 || fieldIdx >= len(fact.FieldNames) {
+		return true
+	}
+	name := fact.FieldNames[fieldIdx]
+	if typ, ok := fact.FieldTypes[name]; ok && typ != TypeUnknown && typ != TypeAny && instr.Op == OpFieldLoad {
+		instr.Type = typ
+	}
+	if r, ok := fact.FieldRanges[name]; ok && r.known {
+		if fn.ProfiledIntRanges == nil {
+			fn.ProfiledIntRanges = make(map[int]intRange)
+		}
+		fn.ProfiledIntRanges[instr.ID] = r
+		if instr.Op == OpFieldLoad && (instr.Type == TypeAny || instr.Type == TypeUnknown) {
+			instr.Type = TypeInt
+		}
+		functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
+			fmt.Sprintf("field-load %q carries guarded int range [%d,%d]", name, r.min, r.max))
+	}
+	if r, ok := fact.FieldLenRanges[name]; ok && r.known {
+		recordProfiledLenRange(fn, instr.ID, r)
+		functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
+			fmt.Sprintf("field-load %q carries guarded string-len range [%d,%d]", name, r.min, r.max))
+	}
+	if nested, ok := fact.FieldTableFacts[name]; ok && fixedShapeTableFactHasUsableTableFact(nested) && instr.Op == OpFieldLoad {
+		facts[instr.ID] = nested
+		if instr.Type == TypeAny || instr.Type == TypeUnknown {
+			instr.Type = TypeTable
+		}
+		if nested.ShapeID != 0 {
+			functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
+				fmt.Sprintf("field-load %q carries guarded nested fixed table shape %v", name, nested.FieldNames))
+		} else {
+			functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
+				fmt.Sprintf("field-load %q carries guarded nested array element type %s", name, nested.ArrayElementType))
+		}
+	}
+	return true
 }
 
 func annotateFixedShapeSetFields(fn *Function, facts map[int]FixedShapeTableFact) {

@@ -667,3 +667,45 @@ result := walk({}, 0)
 		t.Fatalf("expected two ranged field reads, got %d\nIR:\n%s", rangedFields, Print(out))
 	}
 }
+
+func TestFixedShapeTableFactsPass_FieldSvalsLoadCarriesNestedArrayFact(t *testing.T) {
+	shapeFields := []string{"lines"}
+	shapeID := runtime.GetShapeID(shapeFields)
+	fn := &Function{
+		Proto: &vm.FuncProto{NumParams: 1},
+	}
+	block := &Block{ID: 0}
+	arg := &Instr{ID: 1, Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: block}
+	svals := &Instr{ID: 2, Op: OpFieldSvals, Type: TypeInt, Args: []*Value{arg.Value()}, Aux: int64(shapeID), Block: block}
+	lines := &Instr{ID: 3, Op: OpFieldLoad, Type: TypeAny, Args: []*Value{svals.Value()}, Aux: 0, Block: block}
+	idx := &Instr{ID: 4, Op: OpConstInt, Type: TypeInt, Aux: 1, Block: block}
+	item := &Instr{ID: 5, Op: OpGetTable, Type: TypeAny, Args: []*Value{lines.Value(), idx.Value()}, Block: block}
+	block.Instrs = []*Instr{arg, svals, lines, idx, item}
+	fn.Entry = block
+	fn.Blocks = []*Block{block}
+
+	out, err := FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{
+		ArgFacts: map[int]FixedShapeTableFact{
+			0: {
+				ShapeID:    shapeID,
+				FieldNames: append([]string(nil), shapeFields...),
+				FieldTableFacts: map[string]FixedShapeTableFact{
+					"lines": {
+						ArrayElementType: TypeInt,
+						Guarded:          true,
+					},
+				},
+				Guarded: true,
+			},
+		},
+	})(fn)
+	if err != nil {
+		t.Fatalf("FixedShapeTableFactsPassWith: %v", err)
+	}
+	if lines.Type != TypeTable {
+		t.Fatalf("field load should carry nested table type, got %s\nIR:\n%s", lines.Type, Print(out))
+	}
+	if item.Aux2 == 0 || item.Type != TypeInt {
+		t.Fatalf("nested array element fact should annotate gettable, aux2=%d type=%s\nIR:\n%s", item.Aux2, item.Type, Print(out))
+	}
+}
