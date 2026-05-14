@@ -332,7 +332,12 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 		asm.B(callICDoneLabel)
 
 		asm.Label(callICHitLabel)
-		asm.LDR(jit.X1, jit.X3, callICOff+baselineCallCacheProtoOff)   // cached *FuncProto
+		asm.LDR(jit.X1, jit.X3, callICOff+baselineCallCacheProtoOff) // cached *FuncProto
+		if b == 1 && c == 2 {
+			// Exact closure IC hits can run structural accumulator closures without
+			// validating the unrelated direct-entry cache version.
+			emitBaselineAccumulatorClosureFastPathFromBoxedHit(asm, callerProto, slowLabel, doneLabel, a)
+		}
 		asm.LDR(jit.X2, jit.X3, callICOff+baselineCallCacheEntryOff)   // cached DirectEntryPtr
 		asm.LDR(jit.X4, jit.X3, callICOff+baselineCallCacheVersionOff) // cached DirectEntryVersion
 		asm.LDR(jit.X5, jit.X1, funcProtoOffDirectEntryVersion)
@@ -650,6 +655,14 @@ func emitBaselineNativeCall(asm *jit.Assembler, inst uint32, pc int, callerProto
 }
 
 func emitBaselineAccumulatorClosureFastPath(asm *jit.Assembler, callerProto *vm.FuncProto, slowLabel, doneLabel string, dstSlot int, fillCallIC bool, callICOff int) {
+	emitBaselineAccumulatorClosureFastPathMatchingProto(asm, callerProto, slowLabel, doneLabel, dstSlot, fillCallIC, callICOff, false)
+}
+
+func emitBaselineAccumulatorClosureFastPathFromBoxedHit(asm *jit.Assembler, callerProto *vm.FuncProto, slowLabel, doneLabel string, dstSlot int) {
+	emitBaselineAccumulatorClosureFastPathMatchingProto(asm, callerProto, slowLabel, doneLabel, dstSlot, false, 0, true)
+}
+
+func emitBaselineAccumulatorClosureFastPathMatchingProto(asm *jit.Assembler, callerProto *vm.FuncProto, slowLabel, doneLabel string, dstSlot int, fillCallIC bool, callICOff int, extractBoxedClosure bool) {
 	fastPaths := accumulatorClosureFastPathsForProto(callerProto)
 	if len(fastPaths) == 0 {
 		return
@@ -660,6 +673,9 @@ func emitBaselineAccumulatorClosureFastPath(asm *jit.Assembler, callerProto *vm.
 		asm.LoadImm64(jit.X3, int64(uintptr(unsafe.Pointer(fast.proto))))
 		asm.CMPreg(jit.X1, jit.X3)
 		asm.BCond(jit.CondNE, nextFastLabel)
+		if extractBoxedClosure {
+			jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		}
 		if fillCallIC {
 			asm.LDR(jit.X5, mRegCtx, execCtxOffBaselineCallCache)
 			asm.MOVimm16(jit.X7, 0)
