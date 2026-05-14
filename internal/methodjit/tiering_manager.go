@@ -272,6 +272,9 @@ func (tm *TieringManager) currentTier2SpeculationProfile(proto *vm.FuncProto) Ti
 	if tm == nil {
 		return BuildTier2SpecializationProfile(proto)
 	}
+	if tm.tier1 != nil {
+		mergeBaselineCallCacheFeedback(proto, tm.tier1.compiled[proto])
+	}
 	return NewTier2SpeculationPlanWithSuppressedGuardKinds(
 		proto,
 		tm.tier2SuppressedGuards(proto),

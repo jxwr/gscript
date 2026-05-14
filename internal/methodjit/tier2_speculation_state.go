@@ -111,6 +111,12 @@ func (tm *TieringManager) Tier2SpeculationStateSnapshot() []Tier2SpeculationStat
 	for _, proto := range tm.exitProfile.protos() {
 		protos[proto] = true
 	}
+	if tm.tier1 != nil {
+		for proto, bf := range tm.tier1.compiled {
+			protos[proto] = true
+			mergeBaselineCallCacheFeedback(proto, bf)
+		}
+	}
 	out := make([]Tier2SpeculationState, 0, len(protos))
 	for proto := range protos {
 		if proto == nil {

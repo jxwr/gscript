@@ -150,6 +150,86 @@ func mergeTier2CallCacheFeedback(proto *vm.FuncProto, cf *CompiledFunction) {
 	}
 }
 
+func mergeBaselineCallCacheFeedback(proto *vm.FuncProto, bf *BaselineFunc) {
+	if proto == nil || proto.CallSiteFeedback == nil || bf == nil || len(bf.CallCache) == 0 {
+		return
+	}
+	for pc, inst := range proto.Code {
+		if vm.DecodeOp(inst) != vm.OP_CALL {
+			continue
+		}
+		if pc < 0 || pc >= len(proto.CallSiteFeedback) {
+			continue
+		}
+		base := pc * baselineCallCacheStride
+		if base+baselineCallCacheStride > len(bf.CallCache) {
+			continue
+		}
+		protoWord := bf.CallCache[base+baselineCallCacheProtoOff/8]
+		boxed := bf.CallCache[base+baselineCallCacheBoxedOff/8]
+		if protoWord == 0 || boxed == 0 {
+			continue
+		}
+		nArgs := vm.DecodeB(inst) - 1
+		if nArgs < 0 {
+			continue
+		}
+		resultArity := vm.DecodeC(inst)
+		fb := &proto.CallSiteFeedback[pc]
+		if !mergeCallFeedbackArity(fb, nArgs, resultArity) {
+			continue
+		}
+		callee := (*vm.FuncProto)(unsafe.Pointer(uintptr(protoWord)))
+		if callee == nil {
+			continue
+		}
+		fn := runtime.Value(boxed)
+		closure := uintptr(fn.VMClosurePointer())
+		mergeCallFeedbackVMIdentity(fb, callee, closure)
+		fb.CalleeType.Observe(runtime.TypeFunction)
+		if fb.Count < wholeCallKernelMinStableObservations {
+			fb.Count = wholeCallKernelMinStableObservations
+		} else {
+			fb.Count++
+		}
+	}
+}
+
+func mergeCallFeedbackArity(fb *vm.CallSiteFeedback, nArgs, resultArity int) bool {
+	if fb == nil || nArgs < 0 {
+		return false
+	}
+	if fb.Count == 0 {
+		fb.NArgs = uint8(nArgs)
+		fb.ResultArity = uint8(resultArity)
+		return true
+	}
+	if int(fb.NArgs) != nArgs || fb.ResultArity != uint8(resultArity) {
+		fb.Flags |= vm.CallSiteArityPolymorphic
+		return false
+	}
+	return true
+}
+
+func mergeCallFeedbackVMIdentity(fb *vm.CallSiteFeedback, callee *vm.FuncProto, closure uintptr) {
+	if fb == nil || callee == nil {
+		return
+	}
+	if fb.CalleeVMProto == nil {
+		fb.CalleeVMProto = callee
+	} else if fb.CalleeVMProto != callee {
+		fb.Flags |= vm.CallSiteCalleePolymorphic
+	}
+	if closure != 0 {
+		if fb.CalleeVMClosure == 0 {
+			fb.CalleeVMClosure = closure
+		} else if fb.CalleeVMClosure != closure {
+			fb.Flags |= vm.CallSiteVMClosurePolymorphic
+		}
+	}
+	observeCallFeedbackVMProto(fb, callee)
+}
+
 func observeCallFeedbackVMProto(fb *vm.CallSiteFeedback, proto *vm.FuncProto) {
 	if fb == nil || proto == nil {
 		return

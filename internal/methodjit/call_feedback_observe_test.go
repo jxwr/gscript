@@ -136,3 +136,32 @@ func TestMergeTier2CallCacheFeedbackRecordsPolymorphicVMProtos(t *testing.T) {
 		t.Fatalf("polymorphic protos=%#v, want [%p %p]", protos, calleeA, calleeB)
 	}
 }
+
+func TestMergeBaselineCallCacheFeedbackRecordsStableVMClosure(t *testing.T) {
+	callee := &vm.FuncProto{Name: "callee", Code: []uint32{vm.EncodeABC(vm.OP_RETURN, 0, 1, 0)}}
+	caller := &vm.FuncProto{
+		Name:             "caller",
+		Code:             []uint32{vm.EncodeABC(vm.OP_CALL, 0, 1, 2)},
+		CallSiteFeedback: make([]vm.CallSiteFeedback, 1),
+	}
+	cl := vm.NewClosure(callee)
+	boxed := runtime.VMClosureFunctionValue(unsafe.Pointer(cl), cl)
+	bf := &BaselineFunc{CallCache: make([]uint64, baselineCallCacheStride)}
+	bf.CallCache[baselineCallCacheBoxedOff/8] = uint64(boxed)
+	bf.CallCache[baselineCallCacheProtoOff/8] = uint64(uintptr(unsafe.Pointer(callee)))
+
+	mergeBaselineCallCacheFeedback(caller, bf)
+
+	fb := caller.CallSiteFeedback[0]
+	if fb.Count < wholeCallKernelMinStableObservations {
+		t.Fatalf("feedback count=%d, want at least %d", fb.Count, wholeCallKernelMinStableObservations)
+	}
+	if fb.NArgs != 0 || fb.ResultArity != 2 {
+		t.Fatalf("arity feedback nArgs=%d result=%d", fb.NArgs, fb.ResultArity)
+	}
+	closure, gotCallee, ok := fb.StableCalleeVMClosure()
+	if !ok || gotCallee != callee || closure != uintptr(unsafe.Pointer(cl)) {
+		t.Fatalf("StableCalleeVMClosure=(%#x,%p,%v), want (%#x,%p,true)",
+			closure, gotCallee, ok, uintptr(unsafe.Pointer(cl)), callee)
+	}
+}
