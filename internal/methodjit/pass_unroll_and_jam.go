@@ -56,6 +56,11 @@ func UnrollAndJamPass(fn *Function) (*Function, error) {
 			if cand == nil {
 				continue
 			}
+			if floatReductionUpdateDependsOnMultipleRecurrences(cand) {
+				functionRemarks(fn).Add("UnrollAndJam", "missed", cand.header.ID, cand.updateInstr.ID, cand.updateInstr.Op,
+					"multi-recurrence state feeds reduction update; kept scalar to preserve loop-carried state")
+				continue
+			}
 			factor := 4
 			splitAccumulators := false
 			if len(cand.recurrences) != 0 {
@@ -204,6 +209,41 @@ func detectFloatReductionLoop(fn *Function, li *loopInfo, header *Block) *floatR
 		exitBlock:   header.Succs[1],
 		updateInstr: updateInstr,
 	}
+}
+
+func floatReductionUpdateDependsOnMultipleRecurrences(cand *floatReductionCandidate) bool {
+	if cand == nil || cand.updateInstr == nil || len(cand.recurrences) < 2 {
+		return false
+	}
+	recIDs := make(map[int]bool, len(cand.recurrences))
+	for _, rec := range cand.recurrences {
+		if rec != nil {
+			recIDs[rec.ID] = true
+		}
+	}
+	seenRec := make(map[int]bool, len(recIDs))
+	visited := make(map[int]bool)
+	var walk func(*Value)
+	walk = func(v *Value) {
+		if v == nil || visited[v.ID] {
+			return
+		}
+		visited[v.ID] = true
+		if recIDs[v.ID] {
+			seenRec[v.ID] = true
+			return
+		}
+		if v.Def == nil || v.Def.Block != cand.bodyBlock {
+			return
+		}
+		for _, arg := range v.Def.Args {
+			walk(arg)
+		}
+	}
+	for _, arg := range cand.updateInstr.Args {
+		walk(arg)
+	}
+	return len(seenRec) > 1
 }
 
 func findAccumUpdate(phi *Instr) *Instr {
