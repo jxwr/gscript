@@ -59,7 +59,9 @@ func UnrollAndJamPass(fn *Function) (*Function, error) {
 			factor := 4
 			splitAccumulators := false
 			if len(cand.recurrences) != 0 {
-				if !floatReductionBodyCanUseLatencyWideUnroll(cand.bodyBlock) {
+				if floatReductionBodyCanUseLatencyWideUnroll(cand.bodyBlock) {
+					factor = 8
+				} else {
 					factor = 2
 				}
 			} else if !floatReductionBodyCanUseWideUnroll(cand.bodyBlock) {
