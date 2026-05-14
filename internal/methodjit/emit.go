@@ -432,6 +432,10 @@ type CompiledFunction struct {
 	NumSpills int            // stack space needed for spill slots
 	numRegs   int            // total number of VM register slots (including temp slots)
 
+	// CompileDurationNanos records production Tier 2 compilation latency for
+	// timeline/debug attribution. It is intentionally diagnostic only.
+	CompileDurationNanos int64
+
 	// ResumeAddrs maps call instruction ID to the native code offset (bytes)
 	// of the resume label. Used to re-enter JIT code after a call-exit.
 	ResumeAddrs map[int]int

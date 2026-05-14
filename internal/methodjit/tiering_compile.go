@@ -5,11 +5,13 @@ package methodjit
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/gscript/gscript/internal/vm"
 )
 
 func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunction, retErr error) {
+	started := time.Now()
 	tm.tier2Attempts++
 	attempt := tm.tier2Attempts
 	tm.traceEvent("tier2_attempt", "tier2", proto, map[string]any{
@@ -32,11 +34,13 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 				fmt.Fprintf(os.Stderr, "tier2: panic during compilation of %q: %v\n", proto.Name, r)
 			}
 		}
+		durationNanos := int64(time.Since(started))
 		if retErr != nil {
 			tm.markTier2Failed(proto, retErr.Error())
 			tm.traceEvent("tier2_fail", "tier2", proto, map[string]any{
-				"attempt": attempt,
-				"reason":  retErr.Error(),
+				"attempt":                attempt,
+				"reason":                 retErr.Error(),
+				"compile_duration_nanos": durationNanos,
 			})
 			if trace != nil && !recordedWarmDump {
 				tm.recordWarmDumpCompile(proto, trace, cf, retErr)
@@ -45,9 +49,15 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 				fmt.Fprintf(os.Stderr, "tier2: compilation failed for %q: %v\n", proto.Name, retErr)
 			}
 		} else if os.Getenv("GSCRIPT_JIT_DEBUG") == "1" {
+			if cf != nil {
+				cf.CompileDurationNanos = durationNanos
+			}
 			tm.traceTier2Success(proto, cf, attempt)
 			fmt.Fprintf(os.Stderr, "tier2: compiled %q\n", proto.Name)
 		} else {
+			if cf != nil {
+				cf.CompileDurationNanos = durationNanos
+			}
 			tm.traceTier2Success(proto, cf, attempt)
 		}
 	}()
