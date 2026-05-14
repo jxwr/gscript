@@ -332,6 +332,9 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 	// the VM (runtimeCallCount == 1), so the normal `>= 2` threshold
 	// would never fire — special-case it.
 	if proto.Name == "<main>" && profile.HasLoop && profile.CallCount > 0 {
+		if mainProtoHasRecursiveChild(proto) {
+			return false
+		}
 		return true
 	}
 
@@ -482,4 +485,34 @@ func shouldStayTier1ForBoxedRawIntKernel(proto *vm.FuncProto, profile FuncProfil
 	}
 	ok, _ := qualifyForNumeric(proto)
 	return ok
+}
+
+func mainProtoHasRecursiveChild(proto *vm.FuncProto) bool {
+	if proto == nil || proto.Name != "<main>" || len(proto.Protos) == 0 {
+		return false
+	}
+	childNames := make(map[string]bool, len(proto.Protos))
+	for _, child := range proto.Protos {
+		if child != nil && child.Name != "" {
+			childNames[child.Name] = true
+		}
+	}
+	for _, child := range proto.Protos {
+		if child == nil {
+			continue
+		}
+		if staticallyCallsOnlySelf(child) {
+			return true
+		}
+		for _, inst := range child.Code {
+			if vm.DecodeOp(inst) != vm.OP_GETGLOBAL {
+				continue
+			}
+			name := protoConstString(child, vm.DecodeBx(inst))
+			if name != "" && name != child.Name && childNames[name] {
+				return true
+			}
+		}
+	}
+	return false
 }
