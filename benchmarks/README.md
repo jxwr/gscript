@@ -17,6 +17,7 @@ python3 benchmarks/timing_compare.py --all-groups --runs=5 --warmup=1 \
 
 # Hot-loop profile: temporary workload scaling for benchmarks whose default
 # problem size is too small and would otherwise be dominated by process startup.
+# Use this view before treating a sub-50ms LuaJIT gap as a throughput issue.
 python3 benchmarks/timing_compare.py --runs=5 --warmup=1 \
   --scale-profile=hot --sort=luajit-gap \
   --json /tmp/gscript_hot_timing.json \

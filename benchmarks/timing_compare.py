@@ -57,12 +57,16 @@ MODES = ["default", "vm", "no_filter"]
 TIME_SOURCES = ["auto", "script", "wall"]
 
 HOT_SCALE_PROFILE = [
+    "suite/mutual_recursion:REPS=1000000",
+    "suite/matmul_dense_unroll2:N=600",
     "suite/method_dispatch:N=50000000",
     "suite/spectral_norm:N=2000",
     "suite/table_array_access:REPS=1000",
     "suite/coroutine_bench:N1=1000000",
     "suite/coroutine_bench:N2=500000",
     "suite/coroutine_bench:N3=1000000",
+    "extended/actors_dispatch_mutation:N=15000",
+    "extended/actors_dispatch_mutation:TICKS=3000",
 ]
 
 TIME_RE = re.compile(r"^Time:\s*([0-9]+(?:\.[0-9]+)?)s\b", re.MULTILINE)
