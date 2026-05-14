@@ -340,6 +340,10 @@ func buildSingleBlockFieldShapeInlineCallee(c FieldPolyShapeCase) (*Function, st
 	if err != nil {
 		return nil, "post-fact type specialization failed"
 	}
+	calleeFn, err = SourceFeedbackRefreshPass(calleeFn)
+	if err != nil {
+		return nil, "source feedback refresh failed"
+	}
 	calleeFn, err = TableArrayLowerPass(calleeFn)
 	if err != nil {
 		return nil, "table-array lowering failed"
@@ -347,6 +351,14 @@ func buildSingleBlockFieldShapeInlineCallee(c FieldPolyShapeCase) (*Function, st
 	calleeFn, err = TableArrayLoadTypeSpecializePass(calleeFn)
 	if err != nil {
 		return nil, "table-array load type specialization failed"
+	}
+	calleeFn, err = SourceFeedbackRefreshPass(calleeFn)
+	if err != nil {
+		return nil, "post-load source feedback refresh failed"
+	}
+	calleeFn, err = TableArrayStoreLowerPass(calleeFn)
+	if err != nil {
+		return nil, "table-array store lowering failed"
 	}
 	calleeFn, err = TableArrayNestedLoadPass(calleeFn)
 	if err != nil {
@@ -416,6 +428,9 @@ func fieldShapeSplitInlineInstrSafe(instr *Instr) bool {
 		return fieldSvalsSetFieldPreservesShape(instr)
 	}
 	if instr.Op == OpBranch || instr.Op == OpJump || instr.Op == OpPhi {
+		return true
+	}
+	if instr.Op == OpFieldStore {
 		return true
 	}
 	if instr.Op == OpTableArrayHeader || instr.Op == OpTableArrayLen ||

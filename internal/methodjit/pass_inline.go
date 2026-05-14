@@ -405,11 +405,19 @@ func prepareFieldShapeInlineCallee(calleeFn *Function, c FieldPolyShapeCase) *Fu
 	if err != nil || out == nil {
 		return calleeFn
 	}
+	out, err = SourceFeedbackRefreshPass(out)
+	if err != nil || out == nil {
+		return calleeFn
+	}
 	out, err = TableArrayLowerPass(out)
 	if err != nil || out == nil {
 		return calleeFn
 	}
 	out, err = TableArrayLoadTypeSpecializePass(out)
+	if err != nil || out == nil {
+		return calleeFn
+	}
+	out, err = SourceFeedbackRefreshPass(out)
 	if err != nil || out == nil {
 		return calleeFn
 	}
@@ -580,6 +588,7 @@ func fieldShapeLoopPreInlineUnsafeReason(calleeFn *Function) string {
 	if calleeFn == nil {
 		return "callee-graph"
 	}
+	seenSideEffect := false
 	for _, block := range calleeFn.Blocks {
 		for _, instr := range block.Instrs {
 			if instr == nil {
@@ -590,12 +599,61 @@ func fieldShapeLoopPreInlineUnsafeReason(calleeFn *Function) string {
 				instr.Op == OpConstNil || instr.Op == OpConstString {
 				continue
 			}
-			if !fieldShapeSplitInlineInstrSafe(instr) {
+			if !seenSideEffect && fieldShapePreEffectInlineInstrSafe(instr) {
+				// Reads before the first callee side effect may exit safely:
+				// replaying the original call has not duplicated any callee
+				// mutation yet. Post-effect code stays stricter below.
+			} else if !fieldShapeSplitInlineInstrSafe(instr) {
 				return "loop-inline-exit-unsafe:" + instr.Op.String()
+			}
+			if seenSideEffect && !fieldShapePostEffectInlineInstrSafe(instr) {
+				return "loop-inline-post-effect-unsafe:" + instr.Op.String()
+			}
+			if fieldShapeInlineInstrHasSideEffect(instr) {
+				seenSideEffect = true
 			}
 		}
 	}
 	return ""
+}
+
+func fieldShapePreEffectInlineInstrSafe(instr *Instr) bool {
+	if instr == nil {
+		return false
+	}
+	switch instr.Op {
+	case OpGetField, OpGetFieldNumToFloat, OpGetTable, OpSetTable:
+		return true
+	case OpAdd, OpSub, OpMul, OpDiv, OpMod, OpUnm, OpLen, OpFloor, OpNumToFloat:
+		return true
+	default:
+		return fieldShapeSplitInlineInstrSafe(instr)
+	}
+}
+
+func fieldShapeInlineInstrHasSideEffect(instr *Instr) bool {
+	if instr == nil {
+		return false
+	}
+	switch instr.Op {
+	case OpFieldStore, OpTableArrayStore, OpSetField, OpSetTable:
+		return true
+	default:
+		return false
+	}
+}
+
+func fieldShapePostEffectInlineInstrSafe(instr *Instr) bool {
+	if instr == nil {
+		return false
+	}
+	switch instr.Op {
+	case OpSetField, OpGetField, OpGetFieldNumToFloat, OpSetTable, OpGetTable,
+		OpCall, OpCallFloor, OpFieldCallFloor, OpResume, OpYield, OpSelf:
+		return false
+	default:
+		return fieldShapeSplitInlineInstrSafe(instr)
+	}
 }
 
 // resolveCallee checks if an OpCall's function argument comes from an
