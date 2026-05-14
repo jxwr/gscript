@@ -46,21 +46,22 @@ type Tier2SpeculationState struct {
 }
 
 type Tier2SpeculationWorkItem struct {
-	Rank              int                    `json:"rank"`
-	ProtoName         string                 `json:"proto_name"`
-	ProtoID           string                 `json:"proto_id"`
-	Action            Tier2SpeculationAction `json:"action"`
-	Target            Tier2SpeculationTarget `json:"target,omitempty"`
-	Priority          int                    `json:"priority"`
-	Reason            string                 `json:"reason,omitempty"`
-	FeedbackReadiness Tier2FeedbackReadiness `json:"feedback_readiness"`
-	ExitCount         uint64                 `json:"exit_count,omitempty"`
-	TopExitName       string                 `json:"top_exit_name,omitempty"`
-	TopExitReason     string                 `json:"top_exit_reason,omitempty"`
-	TopExitPC         int                    `json:"top_exit_pc,omitempty"`
-	TopExitCount      uint64                 `json:"top_exit_count,omitempty"`
-	TopExitSwitchable bool                   `json:"top_exit_switchable,omitempty"`
-	TopSwitchBlocker  string                 `json:"top_exit_switch_blocker,omitempty"`
+	Rank              int                         `json:"rank"`
+	ProtoName         string                      `json:"proto_name"`
+	ProtoID           string                      `json:"proto_id"`
+	Action            Tier2SpeculationAction      `json:"action"`
+	Target            Tier2SpeculationTarget      `json:"target,omitempty"`
+	Priority          int                         `json:"priority"`
+	Reason            string                      `json:"reason,omitempty"`
+	FeedbackReadiness Tier2FeedbackReadiness      `json:"feedback_readiness"`
+	ExitCount         uint64                      `json:"exit_count,omitempty"`
+	TopExitName       string                      `json:"top_exit_name,omitempty"`
+	TopExitReason     string                      `json:"top_exit_reason,omitempty"`
+	TopExitPC         int                         `json:"top_exit_pc,omitempty"`
+	TopExitCount      uint64                      `json:"top_exit_count,omitempty"`
+	TopExitSwitchable bool                        `json:"top_exit_switchable,omitempty"`
+	TopSwitchBlocker  string                      `json:"top_exit_switch_blocker,omitempty"`
+	TopExitLiveTemps  []Tier2ContinuationLiveTemp `json:"top_exit_live_temps,omitempty"`
 }
 
 type Tier2SpeculationAction string
@@ -215,6 +216,7 @@ func (tm *TieringManager) Tier2SpeculationWorklistSnapshot() []Tier2SpeculationW
 			TopExitCount:      state.TopExitCount,
 			TopExitSwitchable: state.TopExitSwitchable,
 			TopSwitchBlocker:  state.TopExitSwitchBlocker,
+			TopExitLiveTemps:  state.TopExitLiveTemps,
 		})
 	}
 	sort.Slice(items, func(i, j int) bool {
