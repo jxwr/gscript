@@ -710,6 +710,50 @@ func TestFixedShapeTableFactsPass_FieldSvalsLoadCarriesNestedArrayFact(t *testin
 	}
 }
 
+func TestFixedShapeTableFactsPass_LoweredArrayLoadCarriesNestedArrayRange(t *testing.T) {
+	shapeFields := []string{"lines"}
+	shapeID := runtime.GetShapeID(shapeFields)
+	fn := &Function{Proto: &vm.FuncProto{NumParams: 1}}
+	block := &Block{ID: 0}
+	arg := &Instr{ID: 1, Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: block}
+	svals := &Instr{ID: 2, Op: OpFieldSvals, Type: TypeInt, Args: []*Value{arg.Value()}, Aux: int64(shapeID), Block: block}
+	lines := &Instr{ID: 3, Op: OpFieldLoad, Type: TypeTable, Args: []*Value{svals.Value()}, Aux: 0, Block: block}
+	header := &Instr{ID: 4, Op: OpTableArrayHeader, Type: TypeInt, Aux: int64(vm.FBKindInt), Args: []*Value{lines.Value()}, Block: block}
+	length := &Instr{ID: 5, Op: OpTableArrayLen, Type: TypeInt, Aux: int64(vm.FBKindInt), Args: []*Value{header.Value()}, Block: block}
+	data := &Instr{ID: 6, Op: OpTableArrayData, Type: TypeInt, Aux: int64(vm.FBKindInt), Args: []*Value{header.Value()}, Block: block}
+	idx := &Instr{ID: 7, Op: OpConstInt, Type: TypeInt, Aux: 1, Block: block}
+	item := &Instr{ID: 8, Op: OpTableArrayLoad, Type: TypeAny, Aux: int64(vm.FBKindMixed), Args: []*Value{data.Value(), length.Value(), idx.Value()}, Block: block}
+	block.Instrs = []*Instr{arg, svals, lines, header, length, data, idx, item}
+	fn.Entry = block
+	fn.Blocks = []*Block{block}
+
+	out, err := FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{
+		ArgFacts: map[int]FixedShapeTableFact{
+			0: {
+				ShapeID:    shapeID,
+				FieldNames: append([]string(nil), shapeFields...),
+				FieldTableFacts: map[string]FixedShapeTableFact{
+					"lines": {
+						ArrayElementType:  TypeInt,
+						ArrayElementRange: intRange{min: 1, max: 19, known: true},
+						Guarded:           true,
+					},
+				},
+				Guarded: true,
+			},
+		},
+	})(fn)
+	if err != nil {
+		t.Fatalf("FixedShapeTableFactsPassWith: %v", err)
+	}
+	if item.Aux != int64(vm.FBKindInt) || item.Type != TypeInt {
+		t.Fatalf("lowered array load should inherit int kind/type, aux=%d type=%s\nIR:\n%s", item.Aux, item.Type, Print(out))
+	}
+	if r, ok := out.ProfiledIntRanges[item.ID]; !ok || !r.known || r.min != 1 || r.max != 19 {
+		t.Fatalf("lowered array load missing profiled range, got %#v ok=%v\nIR:\n%s", r, ok, Print(out))
+	}
+}
+
 func TestFixedShapeTableFactsPass_FieldSvalsUsesPolymorphicShapeCatalog(t *testing.T) {
 	shapeFields := []string{"lines"}
 	shapeID := runtime.GetShapeID(shapeFields)

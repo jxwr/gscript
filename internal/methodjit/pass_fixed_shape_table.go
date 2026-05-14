@@ -1812,12 +1812,25 @@ func annotateFixedShapeArrayElementAccesses(fn *Function, facts map[int]FixedSha
 			if instr == nil || len(instr.Args) < 2 || instr.Args[0] == nil {
 				continue
 			}
-			fact, ok := facts[instr.Args[0].ID]
+			factValue := instr.Args[0]
+			keyArgIdx := 1
+			if instr.Op == OpTableArrayLoad {
+				if len(instr.Args) < 3 || instr.Args[2] == nil {
+					continue
+				}
+				tableValue, ok := loweredTableArrayLoadTableValue(instr)
+				if !ok {
+					continue
+				}
+				factValue = tableValue
+				keyArgIdx = 2
+			}
+			fact, ok := facts[factValue.ID]
 			if !ok {
 				continue
 			}
 			kind, ok := fixedShapeArrayElementFBKind(fact)
-			if !ok || !tableKeyProvenInt(instr.Args[1]) {
+			if !ok || !tableKeyProvenInt(instr.Args[keyArgIdx]) {
 				continue
 			}
 			switch instr.Op {
@@ -1836,6 +1849,21 @@ func annotateFixedShapeArrayElementAccesses(fn *Function, facts map[int]FixedSha
 				}
 				functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
 					fmt.Sprintf("table value carries guarded array element kind %d", kind))
+			case OpTableArrayLoad:
+				if instr.Aux == 0 || instr.Aux == int64(vm.FBKindMixed) {
+					instr.Aux = kind
+				}
+				if typ, ok := tableArrayKindElementType(kind); ok && (instr.Type == TypeAny || instr.Type == TypeUnknown) {
+					instr.Type = typ
+				}
+				if r := fact.ArrayElementRange; r.known {
+					if fn.ProfiledIntRanges == nil {
+						fn.ProfiledIntRanges = make(map[int]intRange)
+					}
+					fn.ProfiledIntRanges[instr.ID] = r
+				}
+				functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
+					fmt.Sprintf("lowered table value carries guarded array element kind %d", kind))
 			case OpSetTable:
 				if instr.Aux2 == 0 && fixedShapeSetTableValueMatchesArrayKind(instr, kind) {
 					instr.Aux2 = kind
@@ -1845,6 +1873,21 @@ func annotateFixedShapeArrayElementAccesses(fn *Function, facts map[int]FixedSha
 			}
 		}
 	}
+}
+
+func loweredTableArrayLoadTableValue(instr *Instr) (*Value, bool) {
+	if instr == nil || instr.Op != OpTableArrayLoad || len(instr.Args) < 1 || instr.Args[0] == nil {
+		return nil, false
+	}
+	data := instr.Args[0].Def
+	if data == nil || data.Op != OpTableArrayData || len(data.Args) < 1 || data.Args[0] == nil {
+		return nil, false
+	}
+	header := data.Args[0].Def
+	if header == nil || header.Op != OpTableArrayHeader || len(header.Args) < 1 || header.Args[0] == nil {
+		return nil, false
+	}
+	return header.Args[0], true
 }
 
 func fixedShapeArrayElementFBKind(fact FixedShapeTableFact) (int64, bool) {
