@@ -1750,10 +1750,11 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 	allLeafCallees := fieldShapeTypedPeerCasesAllLeaf(cases)
 	restoreConstsOnSuccess := ec.fnUsesConstPool()
 	useClobberEntry := ec.shouldUseTypedPeerClobberEntry(liveGPRs, liveFPRs)
+	maxCalleeStack := fieldShapeTypedPeerMaxStack(cases)
 	if remarks := functionRemarks(ec.fn); remarks != nil {
 		remarks.Add("TypedPeerABI", "changed", instr.Block.ID, instr.ID, instr.Op,
-			fmt.Sprintf("field-shape method floor cases=%d leaf=%t clobber_entry=%t live_gprs=%s live_fprs=%s",
-				len(cases), allLeafCallees, useClobberEntry,
+			fmt.Sprintf("field-shape method floor cases=%d leaf=%t max_stack=%d clobber_entry=%t live_gprs=%s live_fprs=%s",
+				len(cases), allLeafCallees, maxCalleeStack, useClobberEntry,
 				ec.formatLiveCallRegs(liveGPRs), ec.formatLiveCallRegs(liveFPRs)))
 	}
 
@@ -1777,6 +1778,7 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 	} else {
 		ec.emitTypedPeerArgsFromValuesInRegsAndSave(instr.Args, argDesc, callFallbackLabel)
 	}
+	ec.emitTypedPeerMaxStackCheck(calleeBaseOff, maxCalleeStack, fallbackLabel)
 	asm.LDRW(jit.X9, jit.X0, jit.TableOffShapeID)
 	for _, c := range cases {
 		nextLabel := ec.uniqueLabel("t2fieldmethod_next")
@@ -1839,18 +1841,6 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 			asm.CMPimm(jit.X8, maxNativeCallDepth)
 			asm.BCond(jit.CondGE, caseCallFallbackLabel)
 		}
-
-		asm.LoadImm64(jit.X8, int64(c.callee.MaxStack*jit.ValueSize))
-		if calleeBaseOff <= 4095 {
-			asm.ADDimm(jit.X8, jit.X8, uint16(calleeBaseOff))
-		} else {
-			asm.LoadImm64(jit.X12, int64(calleeBaseOff))
-			asm.ADDreg(jit.X8, jit.X8, jit.X12)
-		}
-		asm.ADDreg(jit.X8, jit.X8, mRegRegs)
-		asm.LDR(jit.X12, mRegCtx, execCtxOffRegsEnd)
-		asm.CMPreg(jit.X8, jit.X12)
-		asm.BCond(jit.CondHI, caseCallFallbackLabel)
 
 		if calleeBaseOff <= 4095 {
 			asm.ADDimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
@@ -2744,6 +2734,31 @@ func (ec *emitContext) shouldUseTypedPeerClobberEntry(liveGPRs, liveFPRs map[int
 		return false
 	}
 	return len(liveGPRs) <= 2
+}
+
+func fieldShapeTypedPeerMaxStack(cases []fieldShapeTypedPeerCallCase) int {
+	maxStack := 0
+	for _, c := range cases {
+		if c.callee != nil && c.callee.MaxStack > maxStack {
+			maxStack = c.callee.MaxStack
+		}
+	}
+	return maxStack
+}
+
+func (ec *emitContext) emitTypedPeerMaxStackCheck(calleeBaseOff, maxCalleeStack int, fallbackLabel string) {
+	asm := ec.asm
+	asm.LoadImm64(jit.X8, int64(maxCalleeStack*jit.ValueSize))
+	if calleeBaseOff <= 4095 {
+		asm.ADDimm(jit.X8, jit.X8, uint16(calleeBaseOff))
+	} else {
+		asm.LoadImm64(jit.X12, int64(calleeBaseOff))
+		asm.ADDreg(jit.X8, jit.X8, jit.X12)
+	}
+	asm.ADDreg(jit.X8, jit.X8, mRegRegs)
+	asm.LDR(jit.X12, mRegCtx, execCtxOffRegsEnd)
+	asm.CMPreg(jit.X8, jit.X12)
+	asm.BCond(jit.CondHI, fallbackLabel)
 }
 
 func (ec *emitContext) formatLiveCallRegs(live map[int]bool) string {
