@@ -313,7 +313,7 @@ func (ec *emitContext) emitConstPositiveModMagic(instr *Instr, dst jit.Reg) bool
 	}
 	signedLabel := ""
 	doneLabel := ""
-	if !ec.intModNoSignAdjust(instr.ID) {
+	if !ec.intModNoSignAdjust(instr.ID) && !ec.intNonNegative(instr.Args[0].ID) {
 		signedLabel = ec.uniqueLabel("mod_const_magic_signed")
 		doneLabel = ec.uniqueLabel("mod_const_magic_done")
 		ec.asm.TBNZ(jit.X0, 63, signedLabel)

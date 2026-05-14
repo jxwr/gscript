@@ -434,6 +434,66 @@ func TestEmit_ModIntConstPositiveMagic(t *testing.T) {
 	}
 }
 
+func TestEmit_ModIntConstPositiveMagicUsesNonNegativeFact(t *testing.T) {
+	src := `func f(n) {
+		if n < 0 { return -1 }
+		return n % 100000
+	}`
+	proto := compileFunction(t, src)
+	fn, _, err := RunTier2Pipeline(BuildGraph(proto), nil)
+	if err != nil {
+		t.Fatalf("RunTier2Pipeline: %v", err)
+	}
+
+	foundMod := false
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpModInt {
+				continue
+			}
+			foundMod = true
+			if len(instr.Args) > 0 && instr.Args[0] != nil {
+				if fn.IntNonNegative == nil {
+					fn.IntNonNegative = make(map[int]bool)
+				}
+				fn.IntNonNegative[instr.Args[0].ID] = true
+			}
+		}
+	}
+	if !foundMod {
+		t.Fatalf("expected ModInt in optimized IR:\n%s", Print(fn))
+	}
+
+	fn.IntModNoSignAdjust = nil
+	cf, err := Compile(fn, AllocateRegisters(fn))
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	defer cf.Code.Free()
+
+	for _, n := range []int64{-5, -1, 0, 1, 99999, 100000, 123456, MaxInt48 - 1} {
+		result, err := cf.Execute([]runtime.Value{runtime.IntValue(n)})
+		if err != nil {
+			t.Fatalf("Execute f(%d): %v", n, err)
+		}
+		vmResult := runVM(t, src, []runtime.Value{runtime.IntValue(n)})
+		if len(result) == 0 || len(vmResult) == 0 {
+			t.Fatalf("empty result: JIT=%v VM=%v", result, vmResult)
+		}
+		assertValuesEqual(t, fmt.Sprintf("f(%d)", n), result[0], vmResult[0])
+	}
+
+	code := make([]byte, cf.Code.Size())
+	copy(code, unsafeCodeSlice(cf))
+	asm := disasmARM64(code)
+	if !strings.Contains(asm, "UMULH") {
+		t.Fatalf("positive const modulo should emit reciprocal multiply:\n%s", asm)
+	}
+	if strings.Contains(asm, "SDIV") {
+		t.Fatalf("non-negative positive const modulo should not emit signed fallback:\n%s", asm)
+	}
+}
+
 func TestPositiveConstModMagic(t *testing.T) {
 	divisors := []int64{3, 5, 7, 9, 10, 11, 13, 251, 503, 1000, 2000, 1000000007}
 	inputs := []uint64{0, 1, 2, 3, 4, 5, 42, 999, 1000, 12345, uint64(MaxInt48 / 2), uint64(MaxInt48 - 1)}
