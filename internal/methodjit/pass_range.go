@@ -308,14 +308,14 @@ func RangeAnalysisPass(fn *Function) (*Function, error) {
 		return fn, nil
 	}
 
-	ranges := make(map[int]intRange)
+	intInstrs := rangeAnalysisIntInstrs(fn)
+	ranges := make(map[int]intRange, len(intInstrs)+len(fn.ProfiledIntRanges))
 	for id, r := range fn.ProfiledIntRanges {
 		if r.known {
 			ranges[id] = r
 		}
 	}
 	staticLens := collectStaticLenRanges(fn)
-	intInstrs := rangeAnalysisIntInstrs(fn)
 
 	// Phase A: seed loop counter ranges from FORLOOP/while-loop structure.
 	seedLoopRanges(fn, ranges)
@@ -348,7 +348,7 @@ func RangeAnalysisPass(fn *Function) (*Function, error) {
 	}
 
 	// Phase C: populate Int48Safe for int-arithmetic ops whose range fits.
-	safe := make(map[int]bool)
+	safe := make(map[int]bool, len(intInstrs))
 	for _, instr := range intInstrs {
 		switch instr.Op {
 		case OpAddInt, OpSubInt, OpMulInt, OpDivIntExact, OpNegInt:
@@ -729,13 +729,13 @@ func argRange(v *Value, ranges map[int]intRange) intRange {
 }
 
 func collectIntNonNegativeFacts(intInstrs []*Instr, ranges map[int]intRange) map[int]bool {
-	facts := make(map[int]bool)
+	facts := make(map[int]bool, len(intInstrs))
 	for _, instr := range intInstrs {
 		if r, ok := ranges[instr.ID]; ok && r.nonNegative() {
 			facts[instr.ID] = true
 		}
 	}
-	candidates := make(map[int]*Instr)
+	candidates := make(map[int]*Instr, len(intInstrs))
 	for _, instr := range intInstrs {
 		if instr == nil || facts[instr.ID] {
 			continue
