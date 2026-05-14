@@ -329,10 +329,10 @@ func RangeAnalysisPass(fn *Function) (*Function, error) {
 		changed := false
 		for _, block := range fn.Blocks {
 			for _, instr := range block.Instrs {
-				newR := computeRange(instr, ranges, staticLens, fn.ProfiledIntRanges, fn.ProfiledLenRanges)
 				if !instr.Type.isIntegerLike() {
 					continue
 				}
+				newR := computeRange(instr, ranges, staticLens, fn.ProfiledIntRanges, fn.ProfiledLenRanges)
 				if old, ok := ranges[instr.ID]; ok {
 					if !rangeEqual(old, newR) {
 						ranges[instr.ID] = newR
