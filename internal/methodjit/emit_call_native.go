@@ -1773,6 +1773,12 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 	asm.LDRW(jit.X9, jit.X0, jit.TableOffShapeID)
 	for _, c := range cases {
 		nextLabel := ec.uniqueLabel("t2fieldmethod_next")
+		caseCallFallbackLabel := callFallbackLabel
+		exactClosureFallbackLabel := ""
+		if c.exactClosure != 0 {
+			exactClosureFallbackLabel = ec.uniqueLabel("t2fieldmethod_exact_fallback")
+			caseCallFallbackLabel = exactClosureFallbackLabel
+		}
 		emitCMPWConst(asm, jit.X9, jit.X12, int64(c.shapeID))
 		asm.BCond(jit.CondNE, nextLabel)
 
@@ -1785,7 +1791,6 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 				asm.CMPreg(jit.X8, jit.X12)
 				asm.BCond(jit.CondNE, validateMethodLabel)
 			}
-			asm.LoadImm64(jit.X6, nbClosureTagBits|int64(c.exactClosure))
 			asm.LoadImm64(jit.X7, int64(c.exactClosure))
 			asm.STR(jit.X7, mRegCtx, execCtxOffBaselineClosurePtr)
 			asm.LoadImm64(jit.X7, int64(uintptr(unsafe.Pointer(c.callee))))
@@ -1820,12 +1825,12 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 		} else {
 			asm.LDR(jit.X16, jit.X7, funcProtoOffTier2TypedEntryPtr)
 		}
-		asm.CBZ(jit.X16, callFallbackLabel)
+		asm.CBZ(jit.X16, caseCallFallbackLabel)
 
 		if !c.callee.LeafNoCall {
 			asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
 			asm.CMPimm(jit.X8, maxNativeCallDepth)
-			asm.BCond(jit.CondGE, callFallbackLabel)
+			asm.BCond(jit.CondGE, caseCallFallbackLabel)
 		}
 
 		asm.LoadImm64(jit.X8, int64(c.callee.MaxStack*jit.ValueSize))
@@ -1838,7 +1843,7 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 		asm.ADDreg(jit.X8, jit.X8, mRegRegs)
 		asm.LDR(jit.X12, mRegCtx, execCtxOffRegsEnd)
 		asm.CMPreg(jit.X8, jit.X12)
-		asm.BCond(jit.CondHI, callFallbackLabel)
+		asm.BCond(jit.CondHI, caseCallFallbackLabel)
 
 		if calleeBaseOff <= 4095 {
 			asm.ADDimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
@@ -1890,10 +1895,15 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 			asm.FCVTZS(jit.X0, jit.D0)
 			ec.storeRawInt(jit.X0, instr.ID)
 		default:
-			asm.B(callFallbackLabel)
+			asm.B(caseCallFallbackLabel)
 		}
 		ec.emitFieldCallPolyLenFusionStores(instr.ID, uint32(c.shapeID))
 		asm.B(doneLabel)
+		if exactClosureFallbackLabel != "" {
+			asm.Label(exactClosureFallbackLabel)
+			asm.LoadImm64(jit.X6, nbClosureTagBits|int64(c.exactClosure))
+			asm.B(callFallbackLabel)
+		}
 		asm.Label(nextLabel)
 	}
 	postReprs := ec.snapshotValueReprs()
@@ -2091,14 +2101,20 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNativeSingleCase(instr *Inst
 		asm.BCond(jit.CondNE, callFallbackLabel)
 	}
 	asm.Label(validateMethodLabel + "_entry")
+	caseCallFallbackLabel := callFallbackLabel
+	exactClosureFallbackLabel := ""
+	if c.exactClosure != 0 {
+		exactClosureFallbackLabel = ec.uniqueLabel("t2fieldmethod_exact_fallback")
+		caseCallFallbackLabel = exactClosureFallbackLabel
+	}
 	asm.LDR(jit.X16, jit.X7, funcProtoOffTier2TypedEntryPtr)
-	asm.CBZ(jit.X16, callFallbackLabel)
-	ec.emitTypedPeerABICheck(jit.X7, c.desc, callFallbackLabel)
+	asm.CBZ(jit.X16, caseCallFallbackLabel)
+	ec.emitTypedPeerABICheck(jit.X7, c.desc, caseCallFallbackLabel)
 
 	if !c.callee.LeafNoCall {
 		asm.LDR(jit.X8, mRegCtx, execCtxOffNativeCallDepth)
 		asm.CMPimm(jit.X8, maxNativeCallDepth)
-		asm.BCond(jit.CondGE, callFallbackLabel)
+		asm.BCond(jit.CondGE, caseCallFallbackLabel)
 	}
 
 	asm.LoadImm64(jit.X8, int64(c.callee.MaxStack*jit.ValueSize))
@@ -2111,7 +2127,7 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNativeSingleCase(instr *Inst
 	asm.ADDreg(jit.X8, jit.X8, mRegRegs)
 	asm.LDR(jit.X12, mRegCtx, execCtxOffRegsEnd)
 	asm.CMPreg(jit.X8, jit.X12)
-	asm.BCond(jit.CondHI, callFallbackLabel)
+	asm.BCond(jit.CondHI, caseCallFallbackLabel)
 
 	if calleeBaseOff <= 4095 {
 		asm.ADDimm(mRegRegs, mRegRegs, uint16(calleeBaseOff))
@@ -2155,9 +2171,14 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNativeSingleCase(instr *Inst
 		asm.FCVTZS(jit.X0, jit.D0)
 		ec.storeRawInt(jit.X0, instr.ID)
 	default:
-		asm.B(callFallbackLabel)
+		asm.B(caseCallFallbackLabel)
 	}
 	asm.B(doneLabel)
+	if exactClosureFallbackLabel != "" {
+		asm.Label(exactClosureFallbackLabel)
+		asm.LoadImm64(jit.X6, nbClosureTagBits|int64(c.exactClosure))
+		asm.B(callFallbackLabel)
+	}
 
 	asm.Label(exitLabel)
 	ec.emitTier2CallCounter(instr, "field_call_floor", "exit")
