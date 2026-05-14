@@ -29,14 +29,10 @@ func fuseTableArraySwapsInBlock(fn *Function, block *Block, uses map[int]int) {
 		return
 	}
 	for i, loadA := range block.Instrs {
-		if !tableArraySwapLoadCandidate(loadA) || uses[loadA.ID] != 1 {
+		if !tableArraySwapLoadCandidate(loadA) {
 			continue
 		}
-		table, ok := tableArrayLoadTableValue(loadA)
-		if !ok || table == nil {
-			continue
-		}
-		loadBIdx, storeAIdx, storeBIdx := findTableArraySwapTail(block, i, loadA, table, uses)
+		loadBIdx, storeAIdx, storeBIdx, table := findTableArraySwapTail(fn, block, i, loadA, uses)
 		if loadBIdx < 0 {
 			continue
 		}
@@ -45,6 +41,7 @@ func fuseTableArraySwapsInBlock(fn *Function, block *Block, uses map[int]int) {
 		loadB.Op = OpTableArraySwap
 		loadB.Type = TypeUnknown
 		loadB.Args = []*Value{table, loadA.Args[0], loadA.Args[1], loadA.Args[2], loadB.Args[2]}
+		loadB.Aux = loadA.Aux
 		loadB.Aux2 = 0
 		loadB.copySourceFrom(loadA)
 
@@ -81,7 +78,7 @@ func tableArraySwapLoadCandidate(instr *Instr) bool {
 	}
 }
 
-func findTableArraySwapTail(block *Block, loadAIdx int, loadA *Instr, table *Value, uses map[int]int) (int, int, int) {
+func findTableArraySwapTail(fn *Function, block *Block, loadAIdx int, loadA *Instr, uses map[int]int) (int, int, int, *Value) {
 	loadBIdx := -1
 	var loadB *Instr
 	for j := loadAIdx + 1; j < len(block.Instrs); j++ {
@@ -95,42 +92,56 @@ func findTableArraySwapTail(block *Block, loadAIdx int, loadA *Instr, table *Val
 			break
 		}
 		if !tableArraySwapPureBetween(instr) {
-			return -1, -1, -1
+			return -1, -1, -1, nil
 		}
 	}
 	if loadB == nil {
-		return -1, -1, -1
+		return -1, -1, -1, nil
 	}
 
 	storeAIdx, storeBIdx := -1, -1
+	var table *Value
 	for j := loadBIdx + 1; j < len(block.Instrs); j++ {
 		instr := block.Instrs[j]
 		if instr == nil {
 			continue
 		}
-		if storeAIdx < 0 && tableArraySwapStoreMatches(instr, table, loadA, loadB, loadA.Args[2], loadB.ID) {
+		matchedStore := false
+		if storeAIdx < 0 && tableArraySwapStoreMatches(instr, loadA, loadA.Args[2], loadB.ID) {
+			if !tableArraySwapRecordTable(&table, instr.Args[0], instr.Aux) {
+				return -1, -1, -1, nil
+			}
 			storeAIdx = j
-			continue
+			matchedStore = true
 		}
-		if storeBIdx < 0 && tableArraySwapStoreMatches(instr, table, loadA, loadB, loadB.Args[2], loadA.ID) {
+		if storeBIdx < 0 && tableArraySwapStoreMatches(instr, loadA, loadB.Args[2], loadA.ID) {
+			if !tableArraySwapRecordTable(&table, instr.Args[0], instr.Aux) {
+				return -1, -1, -1, nil
+			}
 			storeBIdx = j
-			continue
+			matchedStore = true
 		}
 		if storeAIdx >= 0 && storeBIdx >= 0 {
 			break
 		}
+		if matchedStore {
+			continue
+		}
 		if !tableArraySwapPureBetween(instr) {
-			return -1, -1, -1
+			return -1, -1, -1, nil
 		}
 	}
-	if storeAIdx < 0 || storeBIdx < 0 {
-		return -1, -1, -1
+	if storeAIdx < 0 || storeBIdx < 0 || table == nil {
+		return -1, -1, -1, nil
 	}
-	return loadBIdx, storeAIdx, storeBIdx
+	if !tableArraySwapLoadUseOnlyStores(block, loadA.ID, loadB.ID, storeAIdx, storeBIdx) {
+		return -1, -1, -1, nil
+	}
+	return loadBIdx, storeAIdx, storeBIdx, table
 }
 
 func tableArraySwapSecondLoad(loadA, loadB *Instr, uses map[int]int) bool {
-	if !tableArraySwapLoadCandidate(loadB) || uses[loadB.ID] != 1 {
+	if !tableArraySwapLoadCandidate(loadB) {
 		return false
 	}
 	return loadA.Aux == loadB.Aux &&
@@ -142,18 +153,49 @@ func tableArraySwapSecondLoad(loadA, loadB *Instr, uses map[int]int) bool {
 		loadA.Args[1].ID == loadB.Args[1].ID
 }
 
-func tableArraySwapStoreMatches(store *Instr, table *Value, loadA, loadB *Instr, key *Value, valueID int) bool {
+func tableArraySwapStoreMatches(store *Instr, loadA *Instr, key *Value, valueID int) bool {
 	if store == nil || store.Op != OpTableArrayStore || len(store.Args) < 5 ||
-		table == nil || key == nil || loadA == nil || loadB == nil {
+		key == nil || loadA == nil {
 		return false
 	}
 	return store.Aux == loadA.Aux &&
 		store.Aux2 == 0 &&
-		tableArraySwapSameTable(store.Args[0], table, store.Aux) &&
 		store.Args[1] != nil && store.Args[1].ID == loadA.Args[0].ID &&
 		store.Args[2] != nil && store.Args[2].ID == loadA.Args[1].ID &&
 		store.Args[3] != nil && equivalentIntValue(store.Args[3], key, 4) &&
 		store.Args[4] != nil && store.Args[4].ID == valueID
+}
+
+func tableArraySwapRecordTable(current **Value, candidate *Value, kind int64) bool {
+	if candidate == nil {
+		return false
+	}
+	if *current == nil {
+		*current = candidate
+		return true
+	}
+	return tableArraySwapSameTable(candidate, *current, kind)
+}
+
+func tableArraySwapLoadUseOnlyStores(block *Block, loadAID, loadBID, storeAIdx, storeBIdx int) bool {
+	if block == nil {
+		return false
+	}
+	for i, instr := range block.Instrs {
+		if instr == nil {
+			continue
+		}
+		for _, arg := range instr.Args {
+			if arg == nil || (arg.ID != loadAID && arg.ID != loadBID) {
+				continue
+			}
+			if i == storeAIdx || i == storeBIdx {
+				continue
+			}
+			return false
+		}
+	}
+	return true
 }
 
 func tableArraySwapSameTable(storeTable, loadTable *Value, kind int64) bool {
@@ -163,8 +205,9 @@ func tableArraySwapSameTable(storeTable, loadTable *Value, kind int64) bool {
 	if storeTable.ID == loadTable.ID {
 		return true
 	}
-	unguarded := tableArrayStoreFactTable(storeTable, kind)
-	return unguarded != nil && unguarded.ID == loadTable.ID
+	storeBase := tableArrayStoreFactTable(storeTable, kind)
+	loadBase := tableArrayStoreFactTable(loadTable, kind)
+	return storeBase != nil && loadBase != nil && storeBase.ID == loadBase.ID
 }
 
 func tableArraySwapPureBetween(instr *Instr) bool {
@@ -179,6 +222,7 @@ func tableArraySwapPureBetween(instr *Instr) bool {
 	}
 	switch instr.Op {
 	case OpConstInt, OpConstFloat, OpConstBool, OpConstNil,
+		OpTableArrayHeader, OpTableArrayLen, OpTableArrayData,
 		OpAddInt, OpSubInt, OpMulInt, OpNegInt,
 		OpBoxInt, OpUnboxInt,
 		OpNop:

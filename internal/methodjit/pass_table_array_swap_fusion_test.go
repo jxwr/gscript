@@ -47,7 +47,8 @@ result := arr[1] * 10 + arr[2]
 		t.Fatal(err)
 	}
 	if !strings.Contains(art.IRAfter, "TableArraySwap") {
-		t.Fatalf("expected production pipeline to fuse table-array exchange:\n%s", art.IRAfter)
+		t.Fatalf("expected production pipeline to fuse table-array exchange:\nremarks:\n%s\nIR:\n%s",
+			formatOptimizationRemarks(art.OptimizationRemarks), art.IRAfter)
 	}
 }
 

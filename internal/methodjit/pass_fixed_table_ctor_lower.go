@@ -10,15 +10,9 @@ import (
 // constructors into one value-producing op after escape analysis has had a
 // chance to scalar-replace the expanded NewTable+SetField form.
 func FixedTableConstructorLoweringPass(fn *Function) (*Function, error) {
-	out, _, err := fixedTableConstructorLoweringPass(fn)
-	return out, err
-}
-
-func fixedTableConstructorLoweringPass(fn *Function) (*Function, bool, error) {
 	if fn == nil || fn.Proto == nil {
-		return fn, false, nil
+		return fn, nil
 	}
-	changed := false
 	if len(fn.FixedTableConstructors) > 0 {
 		for _, block := range fn.Blocks {
 			for i, instr := range block.Instrs {
@@ -31,17 +25,14 @@ func fixedTableConstructorLoweringPass(fn *Function) (*Function, bool, error) {
 				}
 				if lowerFixedTableConstructor2(fn, block, i, instr, fact) ||
 					lowerFixedTableConstructorN(fn, block, i, instr, fact) {
-					changed = true
 					functionRemarks(fn).Add("FixedTableConstructorLowering", "changed", block.ID, instr.ID, instr.Op,
 						fmt.Sprintf("lowered fixed table constructor fields=%v", fact.FieldNames))
 				}
 			}
 		}
 	}
-	if lowerMaterializedTableConstructors(fn) {
-		changed = true
-	}
-	return fn, changed, nil
+	lowerMaterializedTableConstructors(fn)
+	return fn, nil
 }
 
 func lowerFixedTableConstructor2(fn *Function, block *Block, idx int, alloc *Instr, fact FixedTableConstructorFact) bool {
@@ -157,11 +148,10 @@ type materializedCtorCandidate struct {
 	escapes    []materializedCtorUse
 }
 
-func lowerMaterializedTableConstructors(fn *Function) bool {
+func lowerMaterializedTableConstructors(fn *Function) {
 	if fn == nil || fn.Proto == nil {
-		return false
+		return
 	}
-	changed := false
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
 			if instr == nil || instr.Op != OpNewTable {
@@ -172,13 +162,11 @@ func lowerMaterializedTableConstructors(fn *Function) bool {
 				continue
 			}
 			if rewriteMaterializedCtor(fn, cand) {
-				changed = true
 				functionRemarks(fn).Add("FixedTableConstructorLowering", "changed", cand.allocBlock.ID, cand.alloc.ID, cand.alloc.Op,
 					fmt.Sprintf("lowered materialized table constructor fields=%v", materializedCtorFieldNames(cand)))
 			}
 		}
 	}
-	return changed
 }
 
 func findMaterializedCtorCandidate(fn *Function, alloc *Instr) (*materializedCtorCandidate, bool) {

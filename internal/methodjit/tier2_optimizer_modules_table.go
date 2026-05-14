@@ -23,27 +23,8 @@ func tier2TableObjectPreparationModules(globals map[string]*vm.FuncProto) []Tier
 		tier2PassModule("FieldLenFold", Tier2PhaseTableObjectPrep, FieldLenFoldPass),
 		tier2PassModule("StaticTableLenFold", Tier2PhaseTableObjectPrep, StaticTableLenFoldPass),
 		tier2PassModule("EscapeAnalysis", Tier2PhaseTableObjectPrep, EscapeAnalysisPass),
-		{
-			Name:  "FixedTableConstructorLowering",
-			Phase: Tier2PhaseTableObjectPrep,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				out, changed, err := fixedTableConstructorLoweringPass(fn)
-				if opts != nil {
-					opts.LastPassChanged = changed
-				}
-				return out, err
-			},
-		},
-		{
-			Name:  "TablePreallocHint (post-fixed-table-lowering)",
-			Phase: Tier2PhaseTableObjectPrep,
-			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
-				if opts != nil && !opts.LastPassChanged {
-					return fn, nil
-				}
-				return TablePreallocHintPass(fn)
-			},
-		},
+		tier2PassModule("FixedTableConstructorLowering", Tier2PhaseTableObjectPrep, FixedTableConstructorLoweringPass),
+		tier2PassModule("TablePreallocHint (post-fixed-table-lowering)", Tier2PhaseTableObjectPrep, TablePreallocHintPass),
 		{
 			Name:  "EscapeAnalysis (post-fixed-table-lowering)",
 			Phase: Tier2PhaseTableObjectPrep,

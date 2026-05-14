@@ -37,7 +37,7 @@ func TableIntArrayKernelPass(fn *Function) (*Function, error) {
 		if header == nil || !li.loopHeaders[header.ID] {
 			continue
 		}
-		if cand, ok := tableIntArrayReversePrefixCandidate(header, li.headerBlocks[header.ID]); ok {
+		if cand, reason, ok := tableIntArrayReversePrefixCandidate(header, li.headerBlocks[header.ID]); ok {
 			kernel := &Instr{
 				ID:    fn.newValueID(),
 				Op:    OpTableIntArrayReversePrefix,
@@ -49,6 +49,9 @@ func TableIntArrayKernelPass(fn *Function) (*Function, error) {
 			insertKernelBranch(cand.preheader, cand.exit, cand.header, kernel)
 			functionRemarks(fn).Add("TableIntArrayKernel", "changed", cand.preheader.ID, kernel.ID, kernel.Op,
 				"guarded prefix-reversal loop with scalar fallback")
+			continue
+		} else if reason != "" {
+			functionRemarks(fn).Add("TableIntArrayKernel", "missed", header.ID, 0, OpTableIntArrayReversePrefix, reason)
 		}
 		if cand, ok := tableIntArrayCopyPrefixCandidate(header, li.headerBlocks[header.ID]); ok {
 			kernel := &Instr{
@@ -62,6 +65,7 @@ func TableIntArrayKernelPass(fn *Function) (*Function, error) {
 			insertKernelBranch(cand.preheader, cand.exit, cand.header, kernel)
 			functionRemarks(fn).Add("TableIntArrayKernel", "changed", cand.preheader.ID, kernel.ID, kernel.Op,
 				"guarded prefix-copy loop with scalar fallback")
+			continue
 		}
 		if cand, reason, ok := tableArraySwapPairsCandidate(fn, header, li.headerBlocks[header.ID]); ok {
 			kernel := &Instr{
@@ -209,6 +213,9 @@ func tableArraySwapPairsCandidate(fn *Function, header *Block, bodySet map[int]b
 	preheader := tableArrayStoreLoopPreheader(header, bodySet)
 	if preheader == nil || blockTerminator(preheader) == nil || blockTerminator(preheader).Op != OpJump {
 		return cand, "loop has no single jump preheader", false
+	}
+	if loopBodyHasOp(bodySet, nil, OpTableArraySwap) {
+		panic("debug reverse candidate saw fused swap loop")
 	}
 	term := blockTerminator(header)
 	if term == nil || term.Op != OpBranch || len(term.Args) != 1 || len(header.Succs) != 2 {
@@ -412,45 +419,42 @@ func tableFromArrayDataValue(data *Value) *Value {
 	return header.Def.Args[0]
 }
 
-func tableIntArrayReversePrefixCandidate(header *Block, bodySet map[int]bool) (tableIntArrayReversePrefixLoop, bool) {
+func tableIntArrayReversePrefixCandidate(header *Block, bodySet map[int]bool) (tableIntArrayReversePrefixLoop, string, bool) {
 	var cand tableIntArrayReversePrefixLoop
 	if header == nil || bodySet == nil {
-		return cand, false
+		return cand, "", false
 	}
 	preheader := tableArrayStoreLoopPreheader(header, bodySet)
 	if preheader == nil || blockTerminator(preheader) == nil || blockTerminator(preheader).Op != OpJump {
-		return cand, false
+		return cand, "loop has no single jump preheader", false
 	}
 	term := blockTerminator(header)
 	if term == nil || term.Op != OpBranch || len(term.Args) != 1 || len(header.Succs) != 2 {
-		return cand, false
+		return cand, "loop header is not a two-way branch", false
 	}
 	cond := term.Args[0]
 	if cond == nil || cond.Def == nil || cond.Def.Op != OpLtInt || len(cond.Def.Args) != 2 {
-		return cand, false
+		return cand, "loop condition is not < integer bounds", false
 	}
-	loPhi := cond.Def.Args[0]
-	hiPhi := cond.Def.Args[1]
-	if !isHeaderPhi(loPhi, header) || !isHeaderPhi(hiPhi, header) {
-		return cand, false
+	phiA := cond.Def.Args[0]
+	phiB := cond.Def.Args[1]
+	if !isHeaderPhi(phiA, header) || !isHeaderPhi(phiB, header) {
+		return cand, "loop condition operands are not header phis", false
 	}
-	body, exit := header.Succs[0], header.Succs[1]
-	if body == nil || exit == nil || !bodySet[body.ID] || blockStartsWithPhi(exit) {
-		return cand, false
+	body, exit := branchLoopBodyExit(header, bodySet)
+	if body == nil || exit == nil || blockStartsWithPhi(exit) {
+		return cand, "could not identify loop body and exit successors", false
 	}
 	if len(body.Succs) != 1 || body.Succs[0] != header || blockTerminator(body) == nil || blockTerminator(body).Op != OpJump {
-		return cand, false
+		return cand, "loop body is not a single-block latch", false
 	}
-	loSeed := phiArgForPred(loPhi.Def, header, preheader)
-	hiSeed := phiArgForPred(hiPhi.Def, header, preheader)
-	loNext := phiArgForPred(loPhi.Def, header, body)
-	hiNext := phiArgForPred(hiPhi.Def, header, body)
-	if !isConstIntValue(loSeed, 1) || hiSeed == nil || !isAddOneOf(loNext, loPhi) || !isSubOneFrom(hiNext, hiPhi) {
-		return cand, false
+	loPhi, hiPhi, hiSeed, ok := reversePrefixLoopPhis(header, preheader, body, phiA, phiB)
+	if !ok {
+		return cand, "loop phi seeds/backedges do not match prefix reverse", false
 	}
 	match, ok := matchReversePrefixBody(body, loPhi, hiPhi)
 	if !ok {
-		return cand, false
+		return cand, "loop body is not prefix reverse swap", false
 	}
 	cand.header = header
 	cand.preheader = preheader
@@ -459,7 +463,7 @@ func tableIntArrayReversePrefixCandidate(header *Block, bodySet map[int]bool) (t
 	cand.table = match.table
 	cand.hiSeed = hiSeed
 	cand.source = match.source
-	return cand, true
+	return cand, "", true
 }
 
 type reversePrefixBodyMatch struct {
@@ -470,11 +474,23 @@ type reversePrefixBodyMatch struct {
 func matchReversePrefixBody(body *Block, loPhi, hiPhi *Value) (reversePrefixBodyMatch, bool) {
 	var match reversePrefixBodyMatch
 	var loLoad, hiLoad, loStore, hiStore *Instr
+	var fusedSwap *Instr
 	for _, instr := range body.Instrs {
 		if instr == nil {
 			continue
 		}
 		switch instr.Op {
+		case OpTableArraySwap:
+			if len(instr.Args) < 5 || instr.Aux != int64(vm.FBKindInt) {
+				return match, false
+			}
+			if !sameSSAValue(instr.Args[3], loPhi) || !sameSSAValue(instr.Args[4], hiPhi) {
+				return match, false
+			}
+			if fusedSwap != nil {
+				return match, false
+			}
+			fusedSwap = instr
 		case OpTableArrayLoad:
 			if len(instr.Args) != 3 || instr.Aux != int64(vm.FBKindInt) {
 				return match, false
@@ -504,11 +520,16 @@ func matchReversePrefixBody(body *Block, loPhi, hiPhi *Value) (reversePrefixBody
 			} else {
 				return match, false
 			}
-		case OpAddInt, OpSubInt, OpGuardTableKind, OpJump:
+		case OpAddInt, OpSubInt, OpGuardTableKind, OpJump, OpNop:
 			continue
 		default:
 			return match, false
 		}
+	}
+	if fusedSwap != nil {
+		match.table = fusedSwap.Args[0]
+		match.source = fusedSwap
+		return match, true
 	}
 	if loLoad == nil || hiLoad == nil || loStore == nil || hiStore == nil {
 		return match, false
@@ -527,6 +548,27 @@ func matchReversePrefixBody(body *Block, loPhi, hiPhi *Value) (reversePrefixBody
 	match.table = loStore.Args[0]
 	match.source = loStore
 	return match, true
+}
+
+func reversePrefixLoopPhis(header, preheader, body *Block, a, b *Value) (*Value, *Value, *Value, bool) {
+	if lo, hi, hiSeed, ok := reversePrefixLoopPhiOrder(header, preheader, body, a, b); ok {
+		return lo, hi, hiSeed, true
+	}
+	return reversePrefixLoopPhiOrder(header, preheader, body, b, a)
+}
+
+func reversePrefixLoopPhiOrder(header, preheader, body *Block, loPhi, hiPhi *Value) (*Value, *Value, *Value, bool) {
+	if loPhi == nil || hiPhi == nil || loPhi.Def == nil || hiPhi.Def == nil {
+		return nil, nil, nil, false
+	}
+	loSeed := phiArgForPred(loPhi.Def, header, preheader)
+	hiSeed := phiArgForPred(hiPhi.Def, header, preheader)
+	loNext := phiArgForPred(loPhi.Def, header, body)
+	hiNext := phiArgForPred(hiPhi.Def, header, body)
+	if !isConstIntValue(loSeed, 1) || hiSeed == nil || !isAddOneOf(loNext, loPhi) || !isSubOneFrom(hiNext, hiPhi) {
+		return nil, nil, nil, false
+	}
+	return loPhi, hiPhi, hiSeed, true
 }
 
 func isHeaderPhi(v *Value, header *Block) bool {
