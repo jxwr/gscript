@@ -60,6 +60,7 @@ func tier2LoopKernelModules() []Tier2OptimizerModule {
 func tier2LoopPostModules() []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
 		tier2PassModule("UnrollAndJam", Tier2PhaseLoopPost, UnrollAndJamPass),
+		tier2PassModule("MatrixRowPtrFactoring (post-UnrollAndJam)", Tier2PhaseLoopPost, MatrixRowPtrFactoringPass),
 		tier2PassModule("QuadraticStepStrengthReduction", Tier2PhaseLoopPost, QuadraticStepStrengthReductionPass),
 		tier2PassModule("RangeAnalysis (post-UnrollAndJam)", Tier2PhaseLoopPost, RangeAnalysisPass),
 		tier2PassModule("DCE (post-UnrollAndJam)", Tier2PhaseLoopPost, DCEPass),
