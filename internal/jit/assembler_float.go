@@ -163,6 +163,11 @@ func (a *Assembler) VFADD2D(rd, rn, rm FReg) {
 	a.emit(0x4E60D400 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd))
 }
 
+// VFSUB2D: Vd.2D = Vn.2D - Vm.2D.
+func (a *Assembler) VFSUB2D(rd, rn, rm FReg) {
+	a.emit(0x4EE0D400 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd))
+}
+
 // VFMUL2D: Vd.2D = Vn.2D * Vm.2D.
 func (a *Assembler) VFMUL2D(rd, rn, rm FReg) {
 	a.emit(0x6E60DC00 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd))
@@ -173,9 +178,44 @@ func (a *Assembler) VFMLA2D(rd, rn, rm FReg) {
 	a.emit(0x4E60CC00 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd))
 }
 
+// VFMLS2D: Vd.2D -= Vn.2D * Vm.2D.
+func (a *Assembler) VFMLS2D(rd, rn, rm FReg) {
+	a.emit(0x4EE0CC00 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd))
+}
+
 // VFSQRT2D: Vd.2D = sqrt(Vn.2D).
 func (a *Assembler) VFSQRT2D(rd, rn FReg) {
 	a.emit(0x6EE1F800 | uint32(rn)<<5 | uint32(rd))
+}
+
+// VSCVTF2D: Vd.2D = float64(Vn.2D signed int64 lanes).
+func (a *Assembler) VSCVTF2D(rd, rn FReg) {
+	a.emit(0x4E61D800 | uint32(rn)<<5 | uint32(rd))
+}
+
+// VUCVTF2D: Vd.2D = float64(Vn.2D unsigned int64 lanes).
+func (a *Assembler) VUCVTF2D(rd, rn FReg) {
+	a.emit(0x6E61D800 | uint32(rn)<<5 | uint32(rd))
+}
+
+// VADD2D: Vd.2D = Vn.2D + Vm.2D for integer 64-bit lanes.
+func (a *Assembler) VADD2D(rd, rn, rm FReg) {
+	a.emit(0x4EE08400 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd))
+}
+
+// VMOVI2DZero: Vd.2D = {0, 0}.
+func (a *Assembler) VMOVI2DZero(rd FReg) {
+	a.emit(0x6F00E400 | uint32(rd))
+}
+
+// VMOVDFromGPToLane1: Vd.D[1] = Xn.
+func (a *Assembler) VMOVDFromGPToLane1(rd FReg, rn Reg) {
+	a.emit(0x4E181C00 | uint32(rn)<<5 | uint32(rd))
+}
+
+// VMOVDToGPFromLane1: Xd = Vn.D[1].
+func (a *Assembler) VMOVDToGPFromLane1(rd Reg, rn FReg) {
+	a.emit(0x4E183C00 | uint32(rn)<<5 | uint32(rd))
 }
 
 // VFADDP2D: Vd.2D = pairwise_add(Vn.2D, Vm.2D).

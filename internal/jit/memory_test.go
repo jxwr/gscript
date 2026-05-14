@@ -234,3 +234,80 @@ func TestJITNEONVectorAddReduce2D(t *testing.T) {
 		t.Fatalf("expected 12.0, got %f", result)
 	}
 }
+
+func TestJITNEONIntToDoubleVectorSqrtReduce(t *testing.T) {
+	// func(ptr *[2]int64) float64 {
+	//     v0 = float64([ptr[0], ptr[1]])
+	//     v0 = sqrt(v0)
+	//     return v0[0] + v0[1]
+	// }
+	asm := NewAssembler()
+	asm.QLDR(D0, X0, 0)
+	asm.VSCVTF2D(D0, D0)
+	asm.VFSQRT2D(D0, D0)
+	asm.VFADDPScalar2D(D0, D0)
+	asm.FMOVtoGP(X0, D0)
+	asm.RET()
+
+	code, err := asm.Finalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	block, err := AllocExec(len(code))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer block.Free()
+	if err := block.WriteCode(code); err != nil {
+		t.Fatal(err)
+	}
+
+	var fn func(unsafe.Pointer) uint64
+	purego.RegisterFunc(&fn, uintptr(block.ptr))
+
+	args := [2]int64{9, 16}
+	resultBits := fn(unsafe.Pointer(&args[0]))
+	result := *(*float64)(unsafe.Pointer(&resultBits))
+	if result != 7.0 {
+		t.Fatalf("expected 7.0, got %f", result)
+	}
+}
+
+func TestJITNEONBuildVectorFromGPRs(t *testing.T) {
+	// func(a, b int64) float64 {
+	//     v0 = [a, b]
+	//     v0 = float64(v0)
+	//     return v0[0] + v0[1]
+	// }
+	asm := NewAssembler()
+	asm.VDUP2DFromGP(D0, X0)
+	asm.VMOVDFromGPToLane1(D0, X1)
+	asm.VSCVTF2D(D0, D0)
+	asm.VFADDPScalar2D(D0, D0)
+	asm.FMOVtoGP(X0, D0)
+	asm.RET()
+
+	code, err := asm.Finalize()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	block, err := AllocExec(len(code))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer block.Free()
+	if err := block.WriteCode(code); err != nil {
+		t.Fatal(err)
+	}
+
+	var fn func(int64, int64) uint64
+	purego.RegisterFunc(&fn, uintptr(block.ptr))
+
+	resultBits := fn(11, 31)
+	result := *(*float64)(unsafe.Pointer(&resultBits))
+	if result != 42.0 {
+		t.Fatalf("expected 42.0, got %f", result)
+	}
+}
