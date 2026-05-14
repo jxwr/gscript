@@ -14,7 +14,11 @@ const (
 	spectralAtv
 )
 
-const maxSpectralCoefficientFloats = 1 << 20
+// maxSpectralCoefficientFloats caps the combined A and A^T coefficient cache.
+// The spectral whole-call kernel is dominated by repeated coefficient division
+// when the cache is disabled; a 64 MiB budget keeps the hot benchmark sizes on
+// the precomputed matrix-vector path without allowing unbounded O(n^2) memory.
+const maxSpectralCoefficientFloats = 1 << 23
 
 type spectralKernelCache struct {
 	n  int

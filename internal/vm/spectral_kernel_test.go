@@ -137,6 +137,9 @@ func TestSpectralCoefficientCacheMatchesAAndBoundsLargeN(t *testing.T) {
 		}
 	}
 
+	if _, _, ok := cache.coefficients(2000); !ok {
+		t.Fatal("spectral coefficient cache should cover hot benchmark scale")
+	}
 	if _, _, ok := cache.coefficients(maxSpectralCoefficientFloats); ok {
 		t.Fatal("oversized spectral coefficient cache should fall back")
 	}
