@@ -514,9 +514,19 @@ func (tm *TieringManager) applyPromotionDecision(proto *vm.FuncProto, profile Fu
 		// cannot replay table mutations from single-loop drivers. No-filter
 		// may bypass the performance-only call-in-loop prefilter, but it must
 		// not bypass restart-safety: replayed side effects are correctness bugs.
+		osrGate := allowGate("OSR", "not considered")
+		if profile.HasLoop && profile.LoopDepth >= 1 && !decision.SuppressedRecursivePartition && !tm.tier2HasFailed(proto) {
+			if profile.LoopDepth < 2 {
+				osrGate = tm.osrRestartSafetyGate(proto, profile)
+			}
+			if osrGate.Allowed && !tm.envTier2NoFilter && tm.osrWouldHitCallInLoopGate(proto, profile) {
+				osrGate = blockGate("OSRCallLoop", "static loop call would hit Tier 2 call-boundary gate")
+			}
+		} else if profile.HasLoop {
+			osrGate = blockGate("OSREligibility", "loop is not eligible for OSR arming")
+		}
 		if profile.HasLoop && profile.LoopDepth >= 1 && !decision.SuppressedRecursivePartition && !tm.tier2HasFailed(proto) &&
-			(profile.LoopDepth >= 2 || tm.isOSRRestartSafe(proto, profile)) &&
-			(tm.envTier2NoFilter || !tm.osrWouldHitCallInLoopGate(proto, profile)) {
+			osrGate.Allowed {
 			tm.tier1.SetOSRCounter(proto, osrDefaultIterations)
 			tm.traceEvent("osr_armed", "tier1", proto, map[string]any{
 				"counter":    osrDefaultIterations,
@@ -526,6 +536,13 @@ func (tm *TieringManager) applyPromotionDecision(proto *vm.FuncProto, profile Fu
 				fmt.Fprintf(os.Stderr, "[R162] SetOSRCounter proto=%q loopDepth=%d\n",
 					proto.Name, profile.LoopDepth)
 			}
+		} else if profile.HasLoop {
+			tm.traceEvent("osr_not_armed", "tier1", proto, map[string]any{
+				"gate":       osrGate.Gate,
+				"reason":     osrGate.Reason,
+				"op":         osrGate.Op.String(),
+				"loop_depth": profile.LoopDepth,
+			})
 		}
 		return t1
 

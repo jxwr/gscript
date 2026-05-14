@@ -105,19 +105,23 @@ func canPromoteToTier2NoCalls(proto *vm.FuncProto) bool {
 // table update loops such as table_field_access.step still contain residual
 // GetTable/SetField/table exits after optimization and must not use restart OSR.
 func (tm *TieringManager) isOSRRestartSafe(proto *vm.FuncProto, profile FuncProfile) bool {
+	return tm.osrRestartSafetyGate(proto, profile).Allowed
+}
+
+func (tm *TieringManager) osrRestartSafetyGate(proto *vm.FuncProto, profile FuncProfile) GateResult {
 	if proto == nil || !profile.HasLoop {
-		return false
+		return blockGate("OSRRestartSafety", "function has no restartable loop")
 	}
 	if profile.HasClosure || profile.HasUpval || profile.HasVararg {
-		return false
+		return blockGate("OSRRestartSafety", "function contains closure/upvalue/vararg state")
 	}
 
 	fn := BuildGraph(proto)
 	if fn.Unpromotable {
-		return false
+		return blockGate("OSRRestartSafety", "graph is unpromotable")
 	}
 	if errs := Validate(fn); len(errs) > 0 {
-		return false
+		return blockGate("OSRRestartSafety", "initial graph validation failed")
 	}
 
 	inlineGlobals := tm.buildInlineGlobals()
@@ -135,15 +139,15 @@ func (tm *TieringManager) isOSRRestartSafe(proto *vm.FuncProto, profile FuncProf
 	}
 	fn, _, err := RunTier2Pipeline(fn, &Tier2PipelineOpts{InlineGlobals: inlineGlobals, InlineMaxSize: inlineMaxCalleeSize})
 	if err != nil {
-		return false
+		return blockGate("OSRRestartSafety", err.Error())
 	}
-	if _, ok := firstExitResumeInLoop(fn, loopCallGlobals); ok {
-		return false
+	if op, ok := firstExitResumeInLoop(fn, loopCallGlobals); ok {
+		return blockGateOp("OSRRestartSafety", "optimized loop still needs exit/resume", op)
 	}
 	if hasRestartVisibleSideEffect(fn) {
-		return false
+		return blockGate("OSRRestartSafety", "optimized body has restart-visible side effects")
 	}
-	return true
+	return allowGate("OSRRestartSafety", "restart OSR is safe")
 }
 
 func hasRestartVisibleSideEffect(fn *Function) bool {
