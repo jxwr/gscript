@@ -500,8 +500,13 @@ func mainProtoHasRecursiveChild(proto *vm.FuncProto) bool {
 		}
 	}
 	childRefs := make(map[string]map[string]bool, len(proto.Protos))
+	hasProtocolChild := false
 	for _, child := range proto.Protos {
 		if child == nil {
+			continue
+		}
+		if childHasWholeCallRecursiveProtocol(child) {
+			hasProtocolChild = true
 			continue
 		}
 		if staticallyCallsOnlySelf(child) {
@@ -521,6 +526,10 @@ func mainProtoHasRecursiveChild(proto *vm.FuncProto) bool {
 			childRefs[child.Name][name] = true
 		}
 	}
+	if hasProtocolChild {
+		trip, ok := mainMaxConstantForLoopTrip(proto)
+		return ok && trip < 10000
+	}
 	for from, refs := range childRefs {
 		for to := range refs {
 			if childRefs[to][from] || childReachableThroughSiblings(to, from, childRefs, children) {
@@ -529,6 +538,120 @@ func mainProtoHasRecursiveChild(proto *vm.FuncProto) bool {
 		}
 	}
 	return false
+}
+
+func childHasWholeCallRecursiveProtocol(child *vm.FuncProto) bool {
+	return qualifiesForFixedRecursiveIntFold(child) ||
+		qualifiesForFixedRecursiveNestedIntFold(child) ||
+		qualifiesForFixedRecursiveTableFold(child)
+}
+
+func mainMaxConstantForLoopTrip(proto *vm.FuncProto) (int64, bool) {
+	if proto == nil {
+		return 0, false
+	}
+	constGlobals := make(map[string]int64)
+	constRegs := make(map[int]int64)
+	maxTrip := int64(0)
+	found := false
+	for _, inst := range proto.Code {
+		op := vm.DecodeOp(inst)
+		switch op {
+		case vm.OP_LOADINT:
+			constRegs[vm.DecodeA(inst)] = int64(vm.DecodesBx(inst))
+		case vm.OP_LOADK:
+			a := vm.DecodeA(inst)
+			v, ok := protoConstInt(proto, vm.DecodeBx(inst))
+			if ok {
+				constRegs[a] = v
+			} else {
+				delete(constRegs, a)
+			}
+		case vm.OP_MOVE:
+			a, b := vm.DecodeA(inst), vm.DecodeB(inst)
+			if v, ok := constRegs[b]; ok {
+				constRegs[a] = v
+			} else {
+				delete(constRegs, a)
+			}
+		case vm.OP_GETGLOBAL:
+			a := vm.DecodeA(inst)
+			name := protoConstString(proto, vm.DecodeBx(inst))
+			if v, ok := constGlobals[name]; ok {
+				constRegs[a] = v
+			} else {
+				delete(constRegs, a)
+			}
+		case vm.OP_SETGLOBAL:
+			a := vm.DecodeA(inst)
+			name := protoConstString(proto, vm.DecodeBx(inst))
+			if name == "" {
+				continue
+			}
+			if v, ok := constRegs[a]; ok {
+				constGlobals[name] = v
+			} else {
+				delete(constGlobals, name)
+			}
+		case vm.OP_FORPREP:
+			a := vm.DecodeA(inst)
+			trip, ok := constantForLoopTrip(constRegs, a)
+			if ok {
+				found = true
+				if trip > maxTrip {
+					maxTrip = trip
+				}
+			}
+		default:
+			if writesRegister(op) {
+				delete(constRegs, vm.DecodeA(inst))
+			}
+		}
+	}
+	return maxTrip, found
+}
+
+func protoConstInt(proto *vm.FuncProto, idx int) (int64, bool) {
+	if proto == nil || idx < 0 || idx >= len(proto.Constants) {
+		return 0, false
+	}
+	v := proto.Constants[idx]
+	if !v.IsInt() {
+		return 0, false
+	}
+	return v.Int(), true
+}
+
+func constantForLoopTrip(regs map[int]int64, a int) (int64, bool) {
+	start, okStart := regs[a]
+	limit, okLimit := regs[a+1]
+	step, okStep := regs[a+2]
+	if !okStart || !okLimit || !okStep || step == 0 {
+		return 0, false
+	}
+	if step > 0 {
+		if start > limit {
+			return 0, true
+		}
+		return ((limit - start) / step) + 1, true
+	}
+	if start < limit {
+		return 0, true
+	}
+	return ((start - limit) / -step) + 1, true
+}
+
+func writesRegister(op vm.Opcode) bool {
+	switch op {
+	case vm.OP_LOADNIL, vm.OP_LOADBOOL, vm.OP_NEWTABLE,
+		vm.OP_NEWOBJECT2, vm.OP_NEWOBJECTN,
+		vm.OP_GETFIELD, vm.OP_GETTABLE, vm.OP_CALL, vm.OP_ADD, vm.OP_SUB,
+		vm.OP_MUL, vm.OP_DIV, vm.OP_MOD, vm.OP_UNM, vm.OP_LEN, vm.OP_CLOSURE,
+		vm.OP_VARARG, vm.OP_CONCAT, vm.OP_RESUME:
+		return true
+	default:
+		return false
+	}
 }
 
 func childReachableThroughSiblings(start, target string, refs map[string]map[string]bool, children map[string]*vm.FuncProto) bool {
