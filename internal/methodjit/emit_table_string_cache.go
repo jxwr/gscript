@@ -133,11 +133,45 @@ func (ec *emitContext) emitStoreDynamicStringTableLoad(instr *Instr, valReg jit.
 		asm.FMOVtoFP(jit.D0, valReg)
 		ec.storeRawFloat(jit.D0, instr.ID)
 	case TypeTable:
+		if ec.dynamicStringTableLoadAllowsNil(instr) {
+			checkTableLabel := ec.uniqueLabel("dyn_string_table_or_nil_check_table")
+			storeDoneLabel := ec.uniqueLabel("dyn_string_table_or_nil_store_done")
+			asm.LoadImm64(jit.X2, nb64(jit.NB_ValNil))
+			asm.CMPreg(valReg, jit.X2)
+			asm.BCond(jit.CondNE, checkTableLabel)
+			ec.storeResultNB(valReg, instr.ID)
+			asm.B(storeDoneLabel)
+			asm.Label(checkTableLabel)
+			jit.EmitCheckIsTableFull(asm, valReg, jit.X2, jit.X3, deoptLabel)
+			ec.storeResultNB(valReg, instr.ID)
+			asm.Label(storeDoneLabel)
+			return
+		}
 		jit.EmitCheckIsTableFull(asm, valReg, jit.X2, jit.X3, deoptLabel)
 		ec.storeResultNB(valReg, instr.ID)
 	default:
 		ec.storeResultNB(valReg, instr.ID)
 	}
+}
+
+func (ec *emitContext) dynamicStringTableLoadAllowsNil(instr *Instr) bool {
+	if ec == nil || ec.fn == nil || instr == nil || instr.Op != OpGetTable || instr.Type != TypeTable {
+		return false
+	}
+	for _, user := range instrUsers(ec.fn)[instr.ID] {
+		if user == nil || user.Op != OpEq || len(user.Args) < 2 {
+			continue
+		}
+		if (user.Args[0] != nil && user.Args[0].ID == instr.ID && isConstNilValue(user.Args[1])) ||
+			(user.Args[1] != nil && user.Args[1].ID == instr.ID && isConstNilValue(user.Args[0])) {
+			return true
+		}
+	}
+	return false
+}
+
+func isConstNilValue(v *Value) bool {
+	return v != nil && v.Def != nil && v.Def.Op == OpConstNil
 }
 
 func (ec *emitContext) shouldEmitDynamicStringKeyCache(instr *Instr) bool {
