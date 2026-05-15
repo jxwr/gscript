@@ -401,7 +401,21 @@ func TestShapeGuardDedup_MixedGetSet(t *testing.T) {
 // code within emitSetTableExit re-enters through the same code path.
 // This test is disabled until the exit-resume loop issue is resolved.
 func TestEmitTable_SetTableWithOptPasses(t *testing.T) {
-	t.Skip("known issue: SETTABLE with TypeSpecialize creates exit-resume loop")
+	src := `func f(n) {
+	keys := {"K1", "K2", "K3", "K4", "K5", "K6", "K7", "K8", "K9", "K10"}
+	t := {}
+	for i := 1; i <= n; i++ {
+		k := keys[i]
+		t[k] = i * 3
+	}
+	return t["K3"] + t["K7"]
+}`
+	vmResult := runVM(t, src, []runtime.Value{runtime.IntValue(10)})
+	jitResult := runJITFull(t, src, []runtime.Value{runtime.IntValue(10)})
+	if len(vmResult) == 0 || len(jitResult) == 0 {
+		t.Fatalf("missing results: vm=%v jit=%v", vmResult, jitResult)
+	}
+	assertValuesEqual(t, "dynamic string SetTable exit-resume", jitResult[0], vmResult[0])
 }
 
 // TestTableVerifiedDedup tests that multiple array accesses of the same table

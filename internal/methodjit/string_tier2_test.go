@@ -847,7 +847,6 @@ func lookup(n) {
 }
 
 func TestTier2_DynamicStringKeyCacheSetTable_NoLoopTableExit(t *testing.T) {
-	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
 
 	src := `
 func update(n) {
@@ -905,7 +904,6 @@ func update(n) {
 }
 
 func TestTier2_DynamicStringKeyCacheSetTableAppend_NoLoopTableExit(t *testing.T) {
-	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
 
 	src := `
 func build(n) {

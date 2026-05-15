@@ -2,7 +2,10 @@
 
 package methodjit
 
-import "github.com/gscript/gscript/internal/vm"
+import (
+	"github.com/gscript/gscript/internal/runtime"
+	"github.com/gscript/gscript/internal/vm"
+)
 
 func tier2GenericModIsNativeNumeric(instr *Instr) bool {
 	if instr == nil || instr.Op != OpMod || len(instr.Args) < 2 {
@@ -374,6 +377,9 @@ func tier2SetTableLoopCandidateIsSafe(fn *Function, instr *Instr) bool {
 	if isLocalTableRowSetTable(instr) {
 		return true
 	}
+	if isProfiledStringSetTableLoopCandidate(fn, instr) {
+		return true
+	}
 	// Aux2 carries monomorphic array-kind feedback from Tier 1. Only typed
 	// arrays get the Tier 2 append/write fast path; Mixed stores remain too
 	// broad because they can carry pointers and rely more on runtime table
@@ -402,6 +408,54 @@ func isLocalTableRowSetTable(instr *Instr) bool {
 		return false
 	}
 	return val != nil && val.Def != nil && val.Def.Type == TypeTable
+}
+
+func isProfiledStringSetTableLoopCandidate(fn *Function, instr *Instr) bool {
+	if fn == nil || fn.Proto == nil || instr == nil || instr.Op != OpSetTable || len(instr.Args) < 3 {
+		return false
+	}
+	if !instr.HasSource || instr.SourcePC < 0 || instr.SourcePC >= len(fn.Proto.Code) {
+		return false
+	}
+	key := instr.Args[1]
+	val := instr.Args[2]
+	if key == nil || key.Def == nil || key.Def.Type != TypeString {
+		return false
+	}
+	if val == nil || val.Def == nil || val.Def.Type == TypeNil {
+		return false
+	}
+	if instr.SourcePC >= len(fn.Proto.TableKeyFeedback) {
+		return false
+	}
+	fb := fn.Proto.TableKeyFeedback[instr.SourcePC]
+	if fb.Count == 0 || fb.KeyType != vm.FBString || fb.Flags&vm.TableAccessMetatableSeen != 0 {
+		return false
+	}
+	if fb.Flags&(vm.TableAccessAppendSeen|vm.TableAccessOverwriteSeen) == 0 || fb.Flags&vm.TableAccessSparseSeen != 0 {
+		return false
+	}
+	return profiledStringSetTableCacheReady(fn.Proto, instr.SourcePC)
+}
+
+func profiledStringSetTableCacheReady(proto *vm.FuncProto, pc int) bool {
+	if proto == nil || len(proto.TableStringKeyCache) == 0 || pc < 0 {
+		return false
+	}
+	slot := runtime.TableStringKeyCacheSlot(proto.TableStringKeyCache, pc)
+	for i := range slot {
+		entry := &slot[i]
+		if entry.ShapeID == 0 || entry.FieldIdx < 0 || entry.FieldIdx >= runtime.SmallFieldCap {
+			continue
+		}
+		if entry.AppendShapeID != 0 && entry.AppendShape != nil {
+			return true
+		}
+		if entry.KeyData != 0 && entry.KeyLen > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func hasStaticSelfRecursivePartitionSetTableLoop(proto *vm.FuncProto) bool {
