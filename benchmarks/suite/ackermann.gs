@@ -9,7 +9,7 @@ func ack(m, n) {
 }
 
 // Note: ack(3,n) requires deep recursion. ack(3,4)=125 fits in default stack.
-REPS := 500
+REPS := 50000
 t0 := time.now()
 result := 0
 for r := 1; r <= REPS; r++ {
