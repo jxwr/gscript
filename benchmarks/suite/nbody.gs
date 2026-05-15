@@ -5,9 +5,10 @@
 PI := 3.141592653589793
 SOLAR_MASS := 4 * PI * PI
 DAYS_PER_YEAR := 365.24
+N_BODIES := 5
 
 bodies := {
-    {name: "sun",     x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, mass: SOLAR_MASS},
+    {name: "sun",     x: 0.0, y: 0.0, z: 0.0, vx: 0.0, vy: 0.0, vz: 0.0, mass: SOLAR_MASS},
     {name: "jupiter", x: 4.84143144246472090, y: -1.16032004402742839, z: -0.10362204447112311,
      vx: 0.00166007664274403694 * DAYS_PER_YEAR, vy: 0.00769901118419740425 * DAYS_PER_YEAR,
      vz: -0.00006905169867435090 * DAYS_PER_YEAR, mass: 0.000954791938424326609 * SOLAR_MASS},
@@ -27,7 +28,7 @@ func offsetMomentum() {
     px := 0.0
     py := 0.0
     pz := 0.0
-    for i := 2; i <= #bodies; i++ {
+    for i := 2; i <= N_BODIES; i++ {
         b := bodies[i]
         px = px + b.vx * b.mass
         py = py + b.vy * b.mass
@@ -41,7 +42,7 @@ func offsetMomentum() {
 
 func energy() {
     e := 0.0
-    n := #bodies
+    n := N_BODIES
     for i := 1; i <= n; i++ {
         bi := bodies[i]
         e = e + 0.5 * bi.mass * (bi.vx * bi.vx + bi.vy * bi.vy + bi.vz * bi.vz)
@@ -58,7 +59,7 @@ func energy() {
 }
 
 func advance(dt) {
-    n := #bodies
+    n := N_BODIES
     for i := 1; i <= n; i++ {
         bi := bodies[i]
         for j := i + 1; j <= n; j++ {
@@ -89,10 +90,9 @@ N := 500000
 dt := 0.01
 
 offsetMomentum()
-e0 := energy()
 
 t0 := time.now()
-for i := 1; i <= N; i++ {
+for step := 1; step <= N; step++ {
     advance(dt)
 }
 elapsed := time.since(t0)
@@ -100,6 +100,5 @@ elapsed := time.since(t0)
 e1 := energy()
 
 print(string.format("nbody(%d steps)", N))
-print(string.format("Energy before: %.9f", e0))
 print(string.format("Energy after:  %.9f", e1))
 print(string.format("Time: %.3fs", elapsed))
