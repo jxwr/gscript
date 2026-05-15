@@ -75,6 +75,8 @@ type TieringManager struct {
 	tier2GuardSuppress map[*vm.FuncProto]map[int]map[string]bool
 	tier2GuardFailures map[*vm.FuncProto]map[int]map[string]uint64
 	tier2ForceBoxInt   map[*vm.FuncProto]map[int]bool
+	globalNumericFacts map[string]runtime.Value
+	globalArrayFacts   map[string]FixedShapeTableFact
 	perfStats          *tier2PerfStatsCollector
 	perfStatsEnabled   bool
 	callVM             *vm.VM
@@ -117,6 +119,8 @@ func NewTieringManager() *TieringManager {
 		specDependents:     make(map[*vm.FuncProto]map[*vm.FuncProto]bool),
 		tier2GuardSuppress: make(map[*vm.FuncProto]map[int]map[string]bool),
 		tier2GuardFailures: make(map[*vm.FuncProto]map[int]map[string]uint64),
+		globalNumericFacts: make(map[string]runtime.Value),
+		globalArrayFacts:   make(map[string]FixedShapeTableFact),
 		tier2Threshold:     tmDefaultTier2Threshold,
 		profileCache:       make(map[*vm.FuncProto]FuncProfile),
 		// R162: cache env vars once to keep hot paths free of syscalls.
@@ -137,6 +141,54 @@ func NewTieringManager() *TieringManager {
 
 func (tm *TieringManager) suppressTier2Guard(proto *vm.FuncProto, pc int) bool {
 	return tm.suppressTier2GuardKind(proto, pc, "*")
+}
+
+func (tm *TieringManager) stableGlobalNumericFacts() map[string]runtime.Value {
+	if tm == nil || len(tm.globalNumericFacts) == 0 {
+		return nil
+	}
+	out := make(map[string]runtime.Value, len(tm.globalNumericFacts))
+	for name, v := range tm.globalNumericFacts {
+		if name != "" && (v.IsInt() || v.IsFloat()) {
+			out[name] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (tm *TieringManager) learnGlobalNumericFacts(facts map[string]runtime.Value) {
+	if tm == nil || len(facts) == 0 {
+		return
+	}
+	if tm.globalNumericFacts == nil {
+		tm.globalNumericFacts = make(map[string]runtime.Value)
+	}
+	for name, v := range facts {
+		if name != "" && (v.IsInt() || v.IsFloat()) {
+			tm.globalNumericFacts[name] = v
+		}
+	}
+}
+
+func (tm *TieringManager) stableGlobalArrayElementFacts() map[string]FixedShapeTableFact {
+	if tm == nil || len(tm.globalArrayFacts) == 0 {
+		return nil
+	}
+	return cloneFixedShapeTableFactMap(tm.globalArrayFacts)
+}
+
+func (tm *TieringManager) learnGlobalArrayElementFacts(facts map[string]FixedShapeTableFact) {
+	if tm == nil || len(facts) == 0 {
+		return
+	}
+	if tm.globalArrayFacts == nil {
+		tm.globalArrayFacts = make(map[string]FixedShapeTableFact)
+	}
+	merged := mergeGlobalArrayElementFacts(tm.globalArrayFacts, facts)
+	tm.globalArrayFacts = cloneFixedShapeTableFactMap(merged)
 }
 
 func (tm *TieringManager) suppressTier2GuardKind(proto *vm.FuncProto, pc int, kind string) bool {

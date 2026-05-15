@@ -46,6 +46,16 @@ func (tm *TieringManager) buildNumericGlobalConstValues(proto *vm.FuncProto) map
 		}
 		values[constIdx] = v
 	}
+	for name, v := range tm.stableGlobalNumericFacts() {
+		if !v.IsInt() && !v.IsFloat() {
+			continue
+		}
+		for constIdx, c := range proto.Constants {
+			if c.IsString() && c.Str() == name {
+				values[constIdx] = v
+			}
+		}
+	}
 	return values
 }
 

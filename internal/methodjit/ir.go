@@ -152,6 +152,13 @@ type Function struct {
 	// the IR correctness oracle.
 	Globals map[string]*vm.FuncProto
 
+	// NumericGlobalValues and GlobalArrayElementFacts are stable cross-proto
+	// facts supplied by the Tier 2 manager for ABI analysis. They are hints:
+	// missing facts disable specialized entries, while emitted guards still
+	// protect any optimized path that consumes present facts.
+	NumericGlobalValues     map[string]runtime.Value
+	GlobalArrayElementFacts map[string]FixedShapeTableFact
+
 	// CallABIs records stable callsite ABI facts keyed by OpCall instruction
 	// ID. A descriptor is required before codegen may use a specialized
 	// cross-proto raw-int call path; OpCall.Type alone is not authoritative.

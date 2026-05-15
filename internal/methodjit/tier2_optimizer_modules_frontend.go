@@ -137,10 +137,12 @@ func tier2CallLoweringModules(protocolGlobals map[string]*vm.FuncProto) []Tier2O
 			Name:  "CallABI",
 			Phase: Tier2PhaseCallLower,
 			RunWithContext: func(fn *Function, opts *Tier2PipelineOpts, ctx *Tier2OptimizerContext) (*Function, error) {
+				globalArrayFacts := mergeGlobalArrayElementFacts(fn.GlobalArrayElementFacts, collectStableGlobalArrayElementFacts(fn))
+				fn.GlobalArrayElementFacts = cloneFixedShapeTableFactMap(globalArrayFacts)
 				return AnnotateCallABIsPass(CallABIAnnotationConfig{
 					Globals:                 ctxGlobals(ctx),
-					NumericGlobalValues:     optsNumericGlobalValuesByName(fn, opts),
-					GlobalArrayElementFacts: collectStableGlobalArrayElementFacts(fn),
+					NumericGlobalValues:     fn.NumericGlobalValues,
+					GlobalArrayElementFacts: globalArrayFacts,
 				})(fn)
 			},
 		},

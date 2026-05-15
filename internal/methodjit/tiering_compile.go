@@ -214,6 +214,7 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 			FixedShapeArgFacts:              mergeFixedShapeTableFacts(profiledArgFacts, staticArgFacts),
 			FixedShapeArrayElementArgFacts:  mergeFixedShapeTableFacts(profiledArrayElementFacts, staticArrayElementFacts),
 			FixedShapeArrayElementPolyFacts: profiledArrayElementPolyFacts,
+			GlobalArrayElementFacts:         tm.stableGlobalArrayElementFacts(),
 			FixedShapeEntryGuards:           true,
 			ForceBoxIntIDs:                  tm.forcedBoxTier2IntValues(proto),
 			Remarks:                         remarks,
@@ -236,6 +237,8 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 		if trace != nil && len(optimizerTimings) > 0 {
 			trace.PipelineStages = append(trace.PipelineStages, optimizerTimings...)
 		}
+		tm.learnGlobalNumericFacts(fn.NumericGlobalValues)
+		tm.learnGlobalArrayElementFacts(fn.GlobalArrayElementFacts)
 		return nil
 	})
 

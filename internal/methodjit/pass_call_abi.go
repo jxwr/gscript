@@ -269,6 +269,15 @@ func callABITypedPeerDescriptorFor(fn *Function, instr *Instr, callee *vm.FuncPr
 		}
 		return CallABIDescriptor{}, false, "callee typed-peer ABI rejected: " + abi.RejectWhy
 	}
+	if typedPeerABIUsesOnlyGlobalTableFacts(abi) {
+		wantSig := typedABISignature(abi)
+		if callee.Tier2TypedEntryPtr == 0 {
+			return CallABIDescriptor{}, false, "typed-peer global-table callee has no published typed entry"
+		}
+		if callee.Tier2TypedEntryABI != wantSig {
+			return CallABIDescriptor{}, false, fmt.Sprintf("typed-peer global-table ABI signature mismatch got=%#x want=%#x", callee.Tier2TypedEntryABI, wantSig)
+		}
+	}
 	wantRets := 1
 	switch abi.Return {
 	case SpecializedABIReturnRawInt, SpecializedABIReturnRawFloat, SpecializedABIReturnRawTablePtr:
@@ -313,6 +322,18 @@ func callABITypedPeerDescriptorFor(fn *Function, instr *Instr, callee *vm.FuncPr
 		ReturnRep: abi.Return,
 		ArgFacts:  cloneCallABIArgFacts(argFacts),
 	}, true, ""
+}
+
+func typedPeerABIUsesOnlyGlobalTableFacts(abi TypedSelfABI) bool {
+	if !abi.Eligible {
+		return false
+	}
+	for _, rep := range abi.Params {
+		if rep == SpecializedABIParamRawTablePtr {
+			return false
+		}
+	}
+	return true
 }
 
 func callABIRefineTypedPeerParamsFromFeedback(fn *Function, instr *Instr, params []SpecializedABIParamRep) []SpecializedABIParamRep {
@@ -436,6 +457,30 @@ func collectStableGlobalArrayElementFacts(fn *Function) map[string]FixedShapeTab
 		if st.seen && !st.conflict && fixedShapeTableFactHasUsableTableFact(st.fact) {
 			out[name] = st.fact
 		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func mergeGlobalArrayElementFacts(preferred, fallback map[string]FixedShapeTableFact) map[string]FixedShapeTableFact {
+	if len(preferred) == 0 {
+		return cloneFixedShapeTableFactMap(fallback)
+	}
+	out := cloneFixedShapeTableFactMap(preferred)
+	for name, fact := range fallback {
+		if fact.ShapeID == 0 || len(fact.FieldNames) == 0 {
+			continue
+		}
+		if existing, ok := out[name]; ok {
+			if merged, ok := mergeSameShapeFacts(existing, fact); ok {
+				merged.Guarded = existing.Guarded || fact.Guarded
+				out[name] = merged
+			}
+			continue
+		}
+		out[name] = cloneFixedShapeTableFact(fact)
 	}
 	if len(out) == 0 {
 		return nil

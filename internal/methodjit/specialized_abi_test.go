@@ -284,6 +284,43 @@ func TestAnalyzeTypedPeerABIWithArgFacts_RawFloatReturn(t *testing.T) {
 	}
 }
 
+func TestAnalyzeTypedPeerABIWithGlobalFacts_IgnoresCompiledMaxStackGrowth(t *testing.T) {
+	proto := &vm.FuncProto{
+		Name:      "advance_like",
+		NumParams: 1,
+		MaxStack:  maxTrackedSlots + 60,
+		Constants: []runtime.Value{
+			runtime.StringValue("bodies"),
+			runtime.StringValue("mass"),
+		},
+		Code: []uint32{
+			vm.EncodeABx(vm.OP_GETGLOBAL, 1, 0),
+			vm.EncodeAsBx(vm.OP_LOADINT, 2, 1),
+			vm.EncodeABC(vm.OP_GETTABLE, 3, 1, 2),
+			vm.EncodeABC(vm.OP_GETFIELD, 4, 3, 1),
+			vm.EncodeABC(vm.OP_DIV, 5, 0, 4),
+			vm.EncodeABC(vm.OP_RETURN, 0, 1, 0),
+		},
+	}
+	bodyFact := FixedShapeTableFact{
+		ShapeID:    77,
+		FieldNames: []string{"mass"},
+		FieldTypes: map[string]Type{"mass": TypeFloat},
+		Guarded:    true,
+	}
+	abi := AnalyzeTypedPeerABIWithFactsAndGlobals(proto, nil, nil, nil,
+		map[string]FixedShapeTableFact{"bodies": bodyFact})
+	if !abi.Eligible {
+		t.Fatalf("typed-peer ABI rejected after MaxStack growth: %s", abi.RejectWhy)
+	}
+	if abi.Return != SpecializedABIReturnNone {
+		t.Fatalf("return=%s want none; abi=%+v", specializedABIReturnName(abi.Return), abi)
+	}
+	if len(abi.Params) != 1 || abi.Params[0] != SpecializedABIParamRawInt {
+		t.Fatalf("params=%v want [raw-int]; abi=%+v", abi.Params, abi)
+	}
+}
+
 func TestAnalyzeTypedSelfABI_QuicksortZeroResult(t *testing.T) {
 	top := compileTop(t, `func quicksort(arr, lo, hi) {
 	if lo >= hi { return }

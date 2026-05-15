@@ -373,7 +373,7 @@ func analyzeTypedABIWithFactsAndGlobals(proto *vm.FuncProto, requireSelfCall boo
 	if len(proto.Protos) != 0 {
 		return typedSelfABIReject("nested protos")
 	}
-	if proto.NumParams > maxTrackedSlots || proto.MaxStack > maxTrackedSlots {
+	if proto.NumParams > maxTrackedSlots || specializedABIUsesSlotAtOrAbove(proto, maxTrackedSlots) {
 		return typedSelfABIReject("too many slots")
 	}
 	if raw := AnalyzeRawIntSelfABI(proto); raw.Eligible && raw.Return == SpecializedABIReturnRawInt {
@@ -446,6 +446,7 @@ func analyzeTypedABIWithFactsAndGlobals(proto *vm.FuncProto, requireSelfCall boo
 				setSpecializedSlot(slots, a, rep)
 			} else if fact, ok := typedSelfGlobalArrayElementFact(proto, vm.DecodeBx(inst), globalArrayElementFacts); ok {
 				setSpecializedSlot(slots, a, specializedSlotRawTable)
+				usesTableABI = true
 				if tableFacts == nil {
 					tableFacts = make(map[int]FixedShapeTableFact)
 				}
@@ -794,6 +795,9 @@ func AnalyzeTypedPeerABIWithFactsAndGlobals(proto *vm.FuncProto, argFacts map[in
 			return abi
 		}
 	}
+	if len(globalArrayElementFacts) > 0 {
+		return abi
+	}
 	return typedSelfABIReject("no table parameter")
 }
 
@@ -910,6 +914,88 @@ func typedSelfABIReject(reason string) TypedSelfABI {
 		Return:    SpecializedABIReturnBoxed,
 		RejectWhy: reason,
 	}
+}
+
+func specializedABIUsesSlotAtOrAbove(proto *vm.FuncProto, limit int) bool {
+	if proto == nil || limit <= 0 {
+		return true
+	}
+	if proto.MaxStack > 0 && proto.MaxStack <= limit {
+		return false
+	}
+	uses := func(slot int) bool {
+		return slot >= limit
+	}
+	usesRange := func(start, count int) bool {
+		return count > 0 && start+count-1 >= limit
+	}
+	for _, inst := range proto.Code {
+		op := vm.DecodeOp(inst)
+		a := vm.DecodeA(inst)
+		b := vm.DecodeB(inst)
+		c := vm.DecodeC(inst)
+		bReg := b < vm.RKBit
+		cReg := c < vm.RKBit
+		switch op {
+		case vm.OP_LOADNIL:
+			if usesRange(a, b+1) {
+				return true
+			}
+		case vm.OP_CALL:
+			if uses(a) || (b > 0 && usesRange(a+1, b-1)) || (c > 1 && usesRange(a, c-1)) || (b == 0 || c == 0) {
+				return true
+			}
+		case vm.OP_RETURN:
+			if b == 0 || usesRange(a, b-1) {
+				return true
+			}
+		case vm.OP_FORPREP, vm.OP_FORLOOP:
+			if usesRange(a, 4) {
+				return true
+			}
+		case vm.OP_MOVE:
+			if uses(a) || uses(b) {
+				return true
+			}
+		case vm.OP_GETTABLE:
+			if uses(a) || uses(b) || (cReg && uses(c)) {
+				return true
+			}
+		case vm.OP_SETTABLE:
+			if uses(a) || (bReg && uses(b)) || (cReg && uses(c)) {
+				return true
+			}
+		case vm.OP_GETFIELD, vm.OP_SELF:
+			if uses(a) || uses(b) {
+				return true
+			}
+		case vm.OP_SETFIELD:
+			if uses(a) || (cReg && uses(c)) {
+				return true
+			}
+		case vm.OP_ADD, vm.OP_SUB, vm.OP_MUL, vm.OP_DIV, vm.OP_MOD, vm.OP_POW,
+			vm.OP_EQ, vm.OP_LT, vm.OP_LE:
+			if uses(a) || (bReg && uses(b)) || (cReg && uses(c)) {
+				return true
+			}
+		case vm.OP_UNM, vm.OP_NOT, vm.OP_LEN, vm.OP_TESTSET:
+			if uses(a) || uses(b) {
+				return true
+			}
+		case vm.OP_LOADK, vm.OP_LOADINT, vm.OP_LOADBOOL, vm.OP_GETGLOBAL,
+			vm.OP_CLOSURE, vm.OP_GETUPVAL, vm.OP_VARARG, vm.OP_NEWTABLE,
+			vm.OP_NEWOBJECT2, vm.OP_NEWOBJECTN, vm.OP_TFORCALL:
+			if uses(a) {
+				return true
+			}
+		case vm.OP_SETGLOBAL, vm.OP_SETUPVAL, vm.OP_TEST, vm.OP_SETLIST,
+			vm.OP_APPEND, vm.OP_SEND:
+			if uses(a) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func inferTypedSelfABIParams(proto *vm.FuncProto) ([]SpecializedABIParamRep, string) {

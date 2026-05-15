@@ -331,18 +331,19 @@ func lineDiff(a, b []string) string {
 // Tier2PipelineOpts configures the production Tier 2 optimization pipeline.
 // A nil *Tier2PipelineOpts uses defaults (MaxSize 40, no globals).
 type Tier2PipelineOpts struct {
-	InlineGlobals                   map[string]*vm.FuncProto      // global function protos for inlining
-	ProtocolGlobals                 map[string]*vm.FuncProto      // stable globals available for guarded protocol folds
-	GlobalConstValues               map[int]runtime.Value         // const-pool global name index -> observed numeric value
-	InlineMaxSize                   int                           // max callee bytecode count; 0 → 40
-	FixedShapeArgFacts              map[int]FixedShapeTableFact   // guarded fixed-shape facts for callee params
-	FixedShapeArrayElementArgFacts  map[int]FixedShapeTableFact   // guarded fixed-shape facts for callee param array elements
-	FixedShapeArrayElementPolyFacts map[int][]FixedShapeTableFact // guarded polymorphic facts for callee param array elements
-	FixedShapeEntryGuards           bool                          // emit callee-entry shape guards for FixedShapeArgFacts
-	ForceBoxIntIDs                  map[int]bool                  // IR value IDs forced out of raw-int after overflow feedback
-	Remarks                         *OptimizationRemarks          // optional structured optimization diagnostics
-	OptimizerTimings                *[]PipelineStageTiming        // optional per-module compile diagnostics
-	LastPassChanged                 bool                          // scratch flag for adjacent optimizer modules
+	InlineGlobals                   map[string]*vm.FuncProto       // global function protos for inlining
+	ProtocolGlobals                 map[string]*vm.FuncProto       // stable globals available for guarded protocol folds
+	GlobalConstValues               map[int]runtime.Value          // const-pool global name index -> observed numeric value
+	InlineMaxSize                   int                            // max callee bytecode count; 0 → 40
+	FixedShapeArgFacts              map[int]FixedShapeTableFact    // guarded fixed-shape facts for callee params
+	FixedShapeArrayElementArgFacts  map[int]FixedShapeTableFact    // guarded fixed-shape facts for callee param array elements
+	FixedShapeArrayElementPolyFacts map[int][]FixedShapeTableFact  // guarded polymorphic facts for callee param array elements
+	GlobalArrayElementFacts         map[string]FixedShapeTableFact // guarded global table array-element facts learned by other protos
+	FixedShapeEntryGuards           bool                           // emit callee-entry shape guards for FixedShapeArgFacts
+	ForceBoxIntIDs                  map[int]bool                   // IR value IDs forced out of raw-int after overflow feedback
+	Remarks                         *OptimizationRemarks           // optional structured optimization diagnostics
+	OptimizerTimings                *[]PipelineStageTiming         // optional per-module compile diagnostics
+	LastPassChanged                 bool                           // scratch flag for adjacent optimizer modules
 }
 
 // RunTier2Pipeline runs the full production Tier 2 optimization pipeline:
@@ -368,6 +369,8 @@ func RunTier2Pipeline(fn *Function, opts *Tier2PipelineOpts) (*Function, []strin
 	var globals map[string]*vm.FuncProto
 	if opts != nil {
 		globals = callABIMergeGlobals(opts.InlineGlobals, opts.ProtocolGlobals)
+		fn.NumericGlobalValues = optsNumericGlobalValuesByName(fn, opts)
+		fn.GlobalArrayElementFacts = cloneFixedShapeTableFactMap(opts.GlobalArrayElementFacts)
 		if opts.InlineMaxSize > 0 {
 			maxSize = opts.InlineMaxSize
 		}
