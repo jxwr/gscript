@@ -843,10 +843,7 @@ func (ec *emitContext) emitFieldStore(instr *Instr) {
 		valStore.gpr = jit.X3
 	}
 	svals := ec.resolveRawFieldSvalsPtr(instr.Args[0].ID, jit.X1)
-	if svals != jit.X1 {
-		ec.asm.MOVreg(jit.X1, svals)
-	}
-	ec.emitPreparedFieldStore(valStore, fieldIdx)
+	ec.emitPreparedFieldStoreAt(valStore, svals, fieldIdx)
 }
 
 func (ec *emitContext) emitStoreTypedFieldLoad(instr *Instr, valReg jit.Reg, typeDeoptLabel string) {
@@ -1127,11 +1124,15 @@ func (ec *emitContext) prepareFieldStoreValue(valueID int) fieldStoreValue {
 }
 
 func (ec *emitContext) emitPreparedFieldStore(val fieldStoreValue, fieldIdx int) {
+	ec.emitPreparedFieldStoreAt(val, jit.X1, fieldIdx)
+}
+
+func (ec *emitContext) emitPreparedFieldStoreAt(val fieldStoreValue, base jit.Reg, fieldIdx int) {
 	if val.isFPR {
-		ec.asm.FSTRd(val.fpr, jit.X1, fieldIdx*jit.ValueSize)
+		ec.asm.FSTRd(val.fpr, base, fieldIdx*jit.ValueSize)
 		return
 	}
-	ec.asm.STR(val.gpr, jit.X1, fieldIdx*jit.ValueSize)
+	ec.asm.STR(val.gpr, base, fieldIdx*jit.ValueSize)
 }
 
 func (ec *emitContext) emitBumpTableStringLookupVersion(tableReg, tmp jit.Reg) {
