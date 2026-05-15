@@ -43,7 +43,7 @@ local function matmul(a, b, n)
     return c
 end
 
-local N = 300
+local N = 600
 local t0 = os.clock()
 local a = matgen(N)
 local b = matgen(N)

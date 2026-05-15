@@ -64,8 +64,8 @@ func run_world(actors, n, ticks) {
     return checksum
 }
 
-N := 5000
-TICKS := 1000
+N := 15000
+TICKS := 3000
 
 t0 := time.now()
 actors := build_actors(N)

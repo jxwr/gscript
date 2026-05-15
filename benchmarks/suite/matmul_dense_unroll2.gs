@@ -34,7 +34,7 @@ func matmul(a, b, n) {
     return c
 }
 
-N := 300
+N := 600
 t0 := time.now()
 a := matgen(N)
 b := matgen(N)

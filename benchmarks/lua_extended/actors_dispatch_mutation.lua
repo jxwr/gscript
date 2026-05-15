@@ -63,8 +63,8 @@ local function run_world(actors, n, ticks)
     return checksum
 end
 
-local N = 5000
-local TICKS = 1000
+local N = 15000
+local TICKS = 3000
 
 local t0 = os.clock()
 local actors = build_actors(N)

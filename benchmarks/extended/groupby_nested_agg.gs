@@ -57,7 +57,7 @@ func aggregate(n, passes) {
     return checksum
 }
 
-N := 200000
+N := 1200000
 PASSES := 20
 
 t0 := time.now()

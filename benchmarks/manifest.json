@@ -108,7 +108,7 @@
       "gscript_path": "benchmarks/suite/matmul.gs",
       "lua_path": "benchmarks/lua/matmul.lua",
       "params": {
-        "N": 300
+        "N": 600
       },
       "recommended_scale": {
         "hot": {}
@@ -565,8 +565,8 @@
       "gscript_path": "benchmarks/extended/actors_dispatch_mutation.gs",
       "lua_path": "benchmarks/lua_extended/actors_dispatch_mutation.lua",
       "params": {
-        "N": 5000,
-        "TICKS": 200
+        "N": 15000,
+        "TICKS": 3000
       },
       "recommended_scale": {
         "hot": {}
@@ -586,8 +586,8 @@
       "gscript_path": "benchmarks/extended/groupby_nested_agg.gs",
       "lua_path": "benchmarks/lua_extended/groupby_nested_agg.lua",
       "params": {
-        "N": 60000,
-        "PASSES": 8
+        "N": 1200000,
+        "PASSES": 20
       },
       "recommended_scale": {
         "hot": {}

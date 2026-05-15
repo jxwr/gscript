@@ -57,7 +57,7 @@ local function aggregate(n, passes)
     return checksum
 end
 
-local N = 200000
+local N = 1200000
 local PASSES = 20
 
 local t0 = os.clock()
