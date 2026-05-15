@@ -219,9 +219,25 @@ func enableSinglePredRawIntCarry(fn *Function) bool {
 			if (instr.Op == OpCall || instr.Op == OpCallFloor || instr.Op == OpFieldCallFloor) && instr.Type == TypeInt {
 				return true
 			}
+			if isMatrixNativeOp(instr.Op) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func isMatrixNativeOp(op Op) bool {
+	switch op {
+	case OpMatrixDense, OpMatrixGetF, OpMatrixSetF,
+		OpMatrixFlat, OpMatrixStride,
+		OpMatrixLoadFAt, OpMatrixStoreFAt,
+		OpMatrixRowPtr, OpMatrixLoadFRow, OpMatrixStoreFRow,
+		OpMatrixLoadFRowConst, OpMatrixStoreFRowConst:
+		return true
+	default:
+		return false
+	}
 }
 
 func computeValueDefs(fn *Function) map[int]*Instr {
