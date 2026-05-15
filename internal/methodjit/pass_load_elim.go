@@ -139,7 +139,8 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 			case OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt,
 				OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
 				OpNumToFloat, OpSqrt, OpFloor, OpFMA, OpFMSUB,
-				OpEqInt, OpLtInt, OpLeInt, OpModZeroInt, OpLtFloat, OpLeFloat, OpEqString:
+				OpEqInt, OpLtInt, OpLeInt, OpModZeroInt, OpLtFloat, OpLeFloat, OpEqString,
+				OpTableShapeID:
 				if instr.Op == OpNumToFloat && redundantNumToFloatArg(instr) {
 					replaceAllUses(fn, instr.ID, instr.Args[0].Def)
 					instr.Op = OpNop

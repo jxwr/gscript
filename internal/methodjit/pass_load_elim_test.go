@@ -108,6 +108,40 @@ func TestLoadElimination_PureTypedNumericCSE(t *testing.T) {
 	}
 }
 
+func TestLoadElimination_TableShapeIDCSE(t *testing.T) {
+	fn := &Function{
+		Proto:   &vm.FuncProto{Name: "table_shape_id_cse"},
+		NumRegs: 1,
+	}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	shape1 := &Instr{ID: fn.newValueID(), Op: OpTableShapeID, Type: TypeInt, Args: []*Value{tbl.Value()}, Block: b}
+	shape2 := &Instr{ID: fn.newValueID(), Op: OpTableShapeID, Type: TypeInt, Args: []*Value{tbl.Value()}, Block: b}
+	eq := &Instr{ID: fn.newValueID(), Op: OpEqInt, Type: TypeBool, Args: []*Value{shape2.Value(), shape1.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{eq.Value()}, Block: b}
+
+	b.Instrs = []*Instr{tbl, shape1, shape2, eq, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	result, err := LoadEliminationPass(fn)
+	if err != nil {
+		t.Fatalf("LoadEliminationPass error: %v", err)
+	}
+	if eq.Args[0].ID != shape1.ID {
+		t.Fatalf("expected EqInt to reuse first TableShapeID v%d, got v%d\n%s", shape1.ID, eq.Args[0].ID, Print(result))
+	}
+
+	result, err = DCEPass(result)
+	if err != nil {
+		t.Fatalf("DCEPass error: %v", err)
+	}
+	if got := countOp(result, OpTableShapeID); got != 1 {
+		t.Fatalf("expected one TableShapeID after CSE + DCE, got %d\n%s", got, Print(result))
+	}
+}
+
 func TestLoadElimination_ConstantsEnablePureTypedNumericCSE(t *testing.T) {
 	fn := &Function{
 		Proto:   &vm.FuncProto{Name: "const_cse_enables_numeric_cse"},
