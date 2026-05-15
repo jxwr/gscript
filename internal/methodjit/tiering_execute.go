@@ -506,12 +506,20 @@ func (tm *TieringManager) guardDeoptRefreshAction(proto *vm.FuncProto, cf *Compi
 		return Tier2DeoptAction{}, false
 	}
 	meta, ok := cf.ExitSites[int(ctx.DeoptInstrID)]
-	if !ok || meta.PC < 0 || !tier2GuardOpCanRefresh(meta.Op) {
+	if !ok || !tier2GuardOpCanRefresh(meta.Op) {
 		return Tier2DeoptAction{}, false
 	}
-	failCount := tm.recordTier2GuardFailure(proto, meta.PC, meta.Op)
+	failPC := meta.PC
+	if failPC < 0 {
+		failPC = tier2GlobalGuardSuppressPC
+	}
+	failCount := tm.recordTier2GuardFailure(proto, failPC, meta.Op)
 	decision := Tier2GuardDeoptPolicy{}.Decide(meta, failCount)
-	if decision.SuppressPC {
+	if meta.PC < 0 {
+		decision.SuppressPC = false
+		decision.SuppressGlobal = true
+	}
+	if decision.SuppressPC && meta.PC >= 0 {
 		tm.suppressTier2GuardKind(proto, meta.PC, meta.Op)
 	}
 	if decision.SuppressGlobal {
@@ -523,7 +531,7 @@ func (tm *TieringManager) guardDeoptRefreshAction(proto *vm.FuncProto, cf *Compi
 		PreciseResume:  int(ctx.ExitResumePC) > 0,
 		ResumePC:       int(ctx.ExitResumePC),
 		CurrentProfile: tm.currentTier2SpeculationProfile(proto),
-		GuardRelaxedPC: meta.PC,
+		GuardRelaxedPC: failPC,
 		GuardRelaxedOp: meta.Op,
 		GuardFailCount: failCount,
 	}, true

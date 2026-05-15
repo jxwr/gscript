@@ -1,6 +1,10 @@
 package methodjit
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/gscript/gscript/internal/vm"
+)
 
 func TestLoopBoundRangeGuard_EnablesParamBoundSpectralArithmetic(t *testing.T) {
 	fn := buildForLoopBoundRangeGuardTest(t, `
@@ -92,6 +96,28 @@ func f(n) {
 	}
 	if !found {
 		t.Fatalf("single-loop bound param should receive GuardIntRange\nIR:\n%s", Print(out))
+	}
+}
+
+func TestLoopBoundRangeGuard_SkipsObservedTooWideParam(t *testing.T) {
+	fn := buildForLoopBoundRangeGuardTest(t, `
+func f(n) {
+    total := 0
+    for i := 0; i < n; i++ {
+        for j := 0; j < n; j++ {
+            total = total + i + j
+        }
+    }
+    return total
+}
+`)
+	fn.Proto.ArgIntRangeFeedback = []vm.IntRangeFeedback{{Count: 1, Min: nestedLoopParamRangeMax + 1, Max: nestedLoopParamRangeMax + 1}}
+	out, err := LoopBoundRangeGuardPass(fn)
+	if err != nil {
+		t.Fatalf("LoopBoundRangeGuardPass: %v", err)
+	}
+	if countOps(out)[OpGuardIntRange] != 0 {
+		t.Fatalf("wide observed argument should skip loop-bound range guard\nIR:\n%s", Print(out))
 	}
 }
 

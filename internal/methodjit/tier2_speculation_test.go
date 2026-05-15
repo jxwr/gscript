@@ -688,6 +688,36 @@ func TestTieringManagerIntRangeGuardDeoptSuppressesPCAndRefreshes(t *testing.T) 
 	}
 }
 
+func TestTieringManagerSyntheticGuardDeoptSuppressesKindGlobally(t *testing.T) {
+	tm := NewTieringManager()
+	proto := &vm.FuncProto{Name: "synthetic_int_range_guard_refresh", Code: make([]uint32, 4)}
+	cf := &CompiledFunction{
+		ExitSites: map[int]ExitSiteMeta{
+			31: {PC: -1, Op: "GuardIntRange", Reason: "GuardIntRange(0..1048576)"},
+		},
+	}
+	ctx := &ExecContext{DeoptInstrID: 31, ExitResumePC: 5}
+
+	action, ok := tm.guardDeoptRefreshAction(proto, cf, ctx)
+	if !ok {
+		t.Fatal("synthetic int-range guard deopt should produce refresh action")
+	}
+	if action.Kind != Tier2DeoptRefreshAndFallback || action.GuardRelaxedOp != "GuardIntRange" {
+		t.Fatalf("action=%+v want refresh GuardIntRange", action)
+	}
+	if action.GuardRelaxedPC != tier2GlobalGuardSuppressPC {
+		t.Fatalf("GuardRelaxedPC=%d want global sentinel", action.GuardRelaxedPC)
+	}
+	kinds := tm.tier2SuppressedGuardKinds(proto)
+	if kinds[tier2GlobalGuardSuppressPC]["GuardIntRange"] != true {
+		t.Fatalf("synthetic int-range guard was not globally suppressed: %#v", kinds)
+	}
+	plan := NewTier2SpeculationPlanWithSuppressedGuardKinds(proto, tm.tier2SuppressedGuards(proto), kinds)
+	if !plan.GuardKindSuppressed(99, "GuardIntRange") {
+		t.Fatalf("global int-range guard suppression not visible to speculation plan: %#v", kinds)
+	}
+}
+
 func TestTier2RecompilePolicyIgnoresTinyTypeOnlyGrowth(t *testing.T) {
 	var policy Tier2RecompilePolicy
 	cf := &CompiledFunction{

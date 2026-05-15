@@ -497,12 +497,21 @@ func fieldShapeCalleeABISummary(fn *Function, instr *Instr) string {
 }
 
 func specGuardKindSuppressed(fn *Function, pc int, kind string) bool {
-	if fn == nil || pc < 0 {
+	if fn == nil {
 		return false
 	}
 	if fn.SuppressedSpecGuardKinds != nil {
+		if global := fn.SuppressedSpecGuardKinds[tier2GlobalGuardSuppressPC]; len(global) > 0 && (global[kind] || global["*"]) {
+			return true
+		}
+		if pc < 0 {
+			return false
+		}
 		kinds := fn.SuppressedSpecGuardKinds[pc]
 		return kinds[kind] || kinds["*"]
+	}
+	if pc < 0 {
+		return false
 	}
 	return fn.SuppressedSpecGuardPCs != nil && fn.SuppressedSpecGuardPCs[pc]
 }

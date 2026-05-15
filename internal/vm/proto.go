@@ -48,6 +48,7 @@ type FuncProto struct {
 	ArgShapeFeedback             ArgArrayElementShapeFeedbackVector // lazily-initialized per-parameter direct table shape feedback
 	ArgArrayElementShapeFeedback ArgArrayElementShapeFeedbackVector // lazily-initialized per-parameter array element shape feedback
 	ArgDenseMatrixStrideFeedback DenseMatrixStrideFeedbackVector    // lazily-initialized per-parameter DenseMatrix stride feedback
+	ArgIntRangeFeedback          []IntRangeFeedback                 // lazily-initialized per-parameter integer range feedback
 	CompiledCodePtr              uintptr                            // pointer to baseline JIT compiled code (set after CompileBaseline)
 	DirectEntryPtr               uintptr                            // pointer to direct entry point for native BLR calls
 	Tier2DirectEntryPtr          uintptr                            // pointer to Tier 2 direct entry for Method JIT call IC refresh
@@ -112,11 +113,15 @@ func (p *FuncProto) ObserveArgShapes(args []runtime.Value) {
 	if p.ArgDenseMatrixStrideFeedback == nil {
 		p.ArgDenseMatrixStrideFeedback = make(DenseMatrixStrideFeedbackVector, p.NumParams)
 	}
+	if p.ArgIntRangeFeedback == nil {
+		p.ArgIntRangeFeedback = make([]IntRangeFeedback, p.NumParams)
+	}
 	n := p.NumParams
 	if len(args) < n {
 		n = len(args)
 	}
 	for i := 0; i < n; i++ {
+		p.ArgIntRangeFeedback[i].Observe(args[i])
 		if args[i].IsTable() {
 			p.ArgShapeFeedback[i].ObserveTableValue(args[i].Table())
 		}

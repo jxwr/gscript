@@ -444,6 +444,8 @@ func specializationGuardOpName(kind SpecializationGuardKind) string {
 		return "GuardConstString"
 	case SpecGuardCallNative, SpecGuardCallClosureRecurrence, SpecGuardCallVMClosure, SpecGuardCallVMProto, SpecGuardCallPolymorphic:
 		return "GuardCalleeProto"
+	case SpecGuardCallResultRange:
+		return "GuardIntRange"
 	default:
 		return ""
 	}
