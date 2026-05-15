@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
 
@@ -148,6 +149,9 @@ const (
 	specializedSlotSelfCallRawTable
 	specializedSlotSelfFunc
 	specializedSlotOtherFunc
+	specializedSlotStdMathTable
+	specializedSlotMathSqrtFunc
+	specializedSlotMathFloorFunc
 )
 
 // AnalyzeSpecializedABI recognizes generic raw-int ABI candidates. It is
@@ -350,6 +354,10 @@ func analyzeTypedABIWithArgFacts(proto *vm.FuncProto, requireSelfCall bool, argF
 }
 
 func analyzeTypedABIWithFacts(proto *vm.FuncProto, requireSelfCall bool, argFacts map[int]FixedShapeTableFact, arrayElementArgFacts map[int]FixedShapeTableFact) TypedSelfABI {
+	return analyzeTypedABIWithFactsAndGlobals(proto, requireSelfCall, argFacts, arrayElementArgFacts, nil, nil)
+}
+
+func analyzeTypedABIWithFactsAndGlobals(proto *vm.FuncProto, requireSelfCall bool, argFacts map[int]FixedShapeTableFact, arrayElementArgFacts map[int]FixedShapeTableFact, numericGlobals map[string]runtime.Value, globalArrayElementFacts map[string]FixedShapeTableFact) TypedSelfABI {
 	if proto == nil {
 		return typedSelfABIReject("nil proto")
 	}
@@ -396,7 +404,13 @@ func analyzeTypedABIWithFacts(proto *vm.FuncProto, requireSelfCall bool, argFact
 		if pc > 0 && branchTargets[pc] {
 			typedSelfResetSlots(slots, params)
 			tableFacts = typedSelfInitialTableFacts(params, argFacts)
-			typedSelfApplyBranchFacts(slots, typedSelfBranchFacts(proto, params, pc))
+			typedSelfApplyBranchFacts(slots, typedSelfBranchFactsWithFactsAndGlobals(proto, params, pc, numericGlobals, globalArrayElementFacts))
+			for slot, fact := range typedSelfForLoopBranchTableFactsWithFactsAndGlobals(proto, params, pc, numericGlobals, globalArrayElementFacts) {
+				if tableFacts == nil {
+					tableFacts = make(map[int]FixedShapeTableFact)
+				}
+				tableFacts[slot] = fact
+			}
 		}
 
 		op := vm.DecodeOp(inst)
@@ -428,6 +442,16 @@ func analyzeTypedABIWithFacts(proto *vm.FuncProto, requireSelfCall bool, argFact
 		case vm.OP_GETGLOBAL:
 			if specializedABIConstString(proto, vm.DecodeBx(inst)) == proto.Name {
 				setSpecializedSlot(slots, a, specializedSlotSelfFunc)
+			} else if rep, ok := typedSelfNumericGlobalRep(proto, vm.DecodeBx(inst), numericGlobals); ok {
+				setSpecializedSlot(slots, a, rep)
+			} else if fact, ok := typedSelfGlobalArrayElementFact(proto, vm.DecodeBx(inst), globalArrayElementFacts); ok {
+				setSpecializedSlot(slots, a, specializedSlotRawTable)
+				if tableFacts == nil {
+					tableFacts = make(map[int]FixedShapeTableFact)
+				}
+				tableFacts[a] = fact
+			} else if specializedABIConstString(proto, vm.DecodeBx(inst)) == "math" {
+				setSpecializedSlot(slots, a, specializedSlotStdMathTable)
 			} else {
 				setSpecializedSlot(slots, a, specializedSlotOtherFunc)
 			}
@@ -440,10 +464,46 @@ func analyzeTypedABIWithFacts(proto *vm.FuncProto, requireSelfCall bool, argFact
 			usesTableABI = true
 		case vm.OP_GETFIELD:
 			if !typedSelfSlotIsTable(getSpecializedSlot(slots, b)) {
-				return typedSelfABIReject("non-table field receiver")
+				return typedSelfABIReject(fmt.Sprintf("non-table field receiver at pc %d", pc))
 			}
 			name := typedSelfConstFieldName(proto, c)
-			if typ, ok := typedSelfParamFieldTypeWithFacts(proto, b, c, tableFacts); ok && typ == TypeTable {
+			if getSpecializedSlot(slots, b) == specializedSlotStdMathTable && name == "sqrt" {
+				setSpecializedSlot(slots, a, specializedSlotMathSqrtFunc)
+				delete(tableFacts, a)
+			} else if getSpecializedSlot(slots, b) == specializedSlotStdMathTable && name == "floor" {
+				setSpecializedSlot(slots, a, specializedSlotMathFloorFunc)
+				delete(tableFacts, a)
+			} else if fact, ok := tableFacts[b]; ok {
+				typ, hasTyp := typedSelfFieldTypeFromFact(fact, name)
+				if nested, ok := typedSelfNestedTableFactFromFact(fact, name); ok {
+					setSpecializedSlot(slots, a, specializedSlotRawTable)
+					if tableFacts == nil {
+						tableFacts = make(map[int]FixedShapeTableFact)
+					}
+					tableFacts[a] = nested
+				} else if hasTyp && typ == TypeInt {
+					setSpecializedSlot(slots, a, specializedSlotRawInt)
+					delete(tableFacts, a)
+				} else if hasTyp && typ == TypeFloat {
+					setSpecializedSlot(slots, a, specializedSlotRawFloat)
+					delete(tableFacts, a)
+				} else if hasTyp && typ == TypeString {
+					setSpecializedSlot(slots, a, specializedSlotRawString)
+					delete(tableFacts, a)
+				} else if typedSelfFeedbackResultIsTable(proto, pc) {
+					setSpecializedSlot(slots, a, specializedSlotRawTable)
+					delete(tableFacts, a)
+				} else if typedSelfFeedbackResultIsInt(proto, pc) {
+					setSpecializedSlot(slots, a, specializedSlotRawInt)
+					delete(tableFacts, a)
+				} else if typedSelfFeedbackResultIsFloat(proto, pc) {
+					setSpecializedSlot(slots, a, specializedSlotRawFloat)
+					delete(tableFacts, a)
+				} else {
+					setSpecializedSlot(slots, a, specializedSlotUnknown)
+					delete(tableFacts, a)
+				}
+			} else if typ, ok := typedSelfParamFieldTypeWithFacts(proto, b, c, tableFacts); ok && typ == TypeTable {
 				setSpecializedSlot(slots, a, specializedSlotRawTable)
 				typedSelfSetNestedTableFact(tableFacts, a, tableFacts[b], name)
 			} else if ok && typ == TypeInt {
@@ -489,12 +549,23 @@ func analyzeTypedABIWithFacts(proto *vm.FuncProto, requireSelfCall bool, argFact
 					}
 					tableFacts[a] = fact
 				}
-			} else if fact, ok := tableFacts[b]; ok && fact.ArrayElementType == TypeInt {
-				setSpecializedSlot(slots, a, specializedSlotRawInt)
-				delete(tableFacts, a)
-			} else if fact, ok := tableFacts[b]; ok && fact.ArrayElementType == TypeFloat {
-				setSpecializedSlot(slots, a, specializedSlotRawFloat)
-				delete(tableFacts, a)
+			} else if fact, ok := tableFacts[b]; ok {
+				if fact.ArrayElementType == TypeInt {
+					setSpecializedSlot(slots, a, specializedSlotRawInt)
+					delete(tableFacts, a)
+				} else if fact.ArrayElementType == TypeFloat {
+					setSpecializedSlot(slots, a, specializedSlotRawFloat)
+					delete(tableFacts, a)
+				} else if fixedShapeTableFactHasUsableTableFact(fact) {
+					setSpecializedSlot(slots, a, specializedSlotRawTable)
+					if tableFacts == nil {
+						tableFacts = make(map[int]FixedShapeTableFact)
+					}
+					tableFacts[a] = fact
+				} else {
+					setSpecializedSlot(slots, a, specializedSlotUnknown)
+					delete(tableFacts, a)
+				}
 			} else if typedSelfFeedbackResultIsTable(proto, pc) {
 				setSpecializedSlot(slots, a, specializedSlotRawTable)
 				delete(tableFacts, a)
@@ -523,7 +594,9 @@ func analyzeTypedABIWithFacts(proto *vm.FuncProto, requireSelfCall bool, argFact
 			left, lok := typedSelfRKNumericRep(slots, proto, b)
 			right, rok := typedSelfRKNumericRep(slots, proto, c)
 			if !lok || !rok {
-				return typedSelfABIReject(fmt.Sprintf("non-numeric arithmetic operand at pc %d", pc))
+				return typedSelfABIReject(fmt.Sprintf("non-numeric arithmetic operand at pc %d left=%s right=%s", pc,
+					specializedSlotRepName(getSpecializedSlot(slots, b)),
+					specializedSlotRepName(getSpecializedSlot(slots, c))))
 			}
 			if op == vm.OP_DIV ||
 				left == specializedSlotRawFloat || left == specializedSlotSelfCallRawFloat ||
@@ -552,6 +625,22 @@ func analyzeTypedABIWithFacts(proto *vm.FuncProto, requireSelfCall bool, argFact
 				return typedSelfABIReject("unsupported length result")
 			}
 		case vm.OP_CALL:
+			if typedSelfSlotIsMathUnaryFunc(getSpecializedSlot(slots, a)) {
+				if b != 2 || c != 2 {
+					return typedSelfABIReject("dynamic intrinsic call arity")
+				}
+				argRep := getSpecializedSlot(slots, a+1)
+				if !typedSelfSlotIsNumeric(argRep) {
+					return typedSelfABIReject("non-numeric intrinsic argument")
+				}
+				if getSpecializedSlot(slots, a) == specializedSlotMathFloorFunc {
+					setSpecializedSlot(slots, a, specializedSlotRawInt)
+				} else {
+					setSpecializedSlot(slots, a, specializedSlotRawFloat)
+				}
+				delete(tableFacts, a)
+				continue
+			}
 			if getSpecializedSlot(slots, a) != specializedSlotSelfFunc {
 				return typedSelfABIReject("non-self call")
 			}
@@ -614,8 +703,8 @@ func analyzeTypedABIWithFacts(proto *vm.FuncProto, requireSelfCall bool, argFact
 			}
 			setSpecializedSlot(slots, a, specializedSlotRawInt)
 		case vm.OP_FORLOOP:
-			if typedSelfForLoopControlProvenInt(proto, params, pc, a) {
-				typedSelfApplyStableForLoopFacts(proto, params, pc, a, slots)
+			if typedSelfForLoopControlProvenIntWithFactsAndGlobals(proto, params, pc, a, numericGlobals, globalArrayElementFacts) {
+				typedSelfApplyStableForLoopFactsWithFactsAndGlobals(proto, params, pc, a, slots, numericGlobals, globalArrayElementFacts)
 			}
 			if !typedSelfSlotIsInt(getSpecializedSlot(slots, a)) ||
 				!typedSelfSlotIsInt(getSpecializedSlot(slots, a+1)) ||
@@ -684,6 +773,19 @@ func AnalyzeTypedPeerABIWithArgFacts(proto *vm.FuncProto, argFacts map[int]Fixed
 
 func AnalyzeTypedPeerABIWithFacts(proto *vm.FuncProto, argFacts map[int]FixedShapeTableFact, arrayElementArgFacts map[int]FixedShapeTableFact) TypedSelfABI {
 	abi := analyzeTypedABIWithFacts(proto, false, argFacts, arrayElementArgFacts)
+	if !abi.Eligible {
+		return abi
+	}
+	for _, rep := range abi.Params {
+		if rep == SpecializedABIParamRawTablePtr {
+			return abi
+		}
+	}
+	return typedSelfABIReject("no table parameter")
+}
+
+func AnalyzeTypedPeerABIWithFactsAndGlobals(proto *vm.FuncProto, argFacts map[int]FixedShapeTableFact, arrayElementArgFacts map[int]FixedShapeTableFact, numericGlobals map[string]runtime.Value, globalArrayElementFacts map[string]FixedShapeTableFact) TypedSelfABI {
+	abi := analyzeTypedABIWithFactsAndGlobals(proto, false, argFacts, arrayElementArgFacts, numericGlobals, globalArrayElementFacts)
 	if !abi.Eligible {
 		return abi
 	}
@@ -1046,11 +1148,73 @@ func typedSelfSetNestedTableFact(tableFacts map[int]FixedShapeTableFact, dst int
 	if tableFacts == nil || name == "" {
 		return
 	}
-	if nested, ok := receiver.FieldTableFacts[name]; ok {
+	if nested, ok := typedSelfNestedTableFactFromFact(receiver, name); ok {
 		tableFacts[dst] = nested
 		return
 	}
 	delete(tableFacts, dst)
+}
+
+func typedSelfNestedTableFactFromFact(fact FixedShapeTableFact, name string) (FixedShapeTableFact, bool) {
+	if name == "" || len(fact.FieldTableFacts) == 0 {
+		return FixedShapeTableFact{}, false
+	}
+	nested, ok := fact.FieldTableFacts[name]
+	if !ok || !fixedShapeTableFactHasUsableTableFact(nested) {
+		return FixedShapeTableFact{}, false
+	}
+	return cloneFixedShapeTableFact(nested), true
+}
+
+func typedSelfFieldTypeFromFact(fact FixedShapeTableFact, name string) (Type, bool) {
+	if name == "" {
+		return TypeUnknown, false
+	}
+	if nested, ok := typedSelfNestedTableFactFromFact(fact, name); ok && fixedShapeTableFactHasUsableTableFact(nested) {
+		return TypeTable, true
+	}
+	if fact.FieldTypes != nil {
+		if typ, ok := fact.FieldTypes[name]; ok && typ != TypeUnknown && typ != TypeAny {
+			return typ, true
+		}
+	}
+	if fact.FieldRanges != nil {
+		if _, ok := fact.FieldRanges[name]; ok {
+			return TypeInt, true
+		}
+	}
+	if fact.FieldLenRanges != nil {
+		if _, ok := fact.FieldLenRanges[name]; ok {
+			return TypeString, true
+		}
+	}
+	if fact.ShapeID != 0 {
+		if idx, ok := fact.fieldIndex(name); ok {
+			if vt, stable := runtime.ShapeFieldStableType(fact.ShapeID, idx); stable {
+				if typ, ok := runtimeValueTypeToIRType(vt); ok {
+					return typ, true
+				}
+			}
+		}
+	}
+	return TypeUnknown, false
+}
+
+func runtimeValueTypeToIRType(vt runtime.ValueType) (Type, bool) {
+	switch vt {
+	case runtime.TypeInt:
+		return TypeInt, true
+	case runtime.TypeFloat:
+		return TypeFloat, true
+	case runtime.TypeBool:
+		return TypeBool, true
+	case runtime.TypeString:
+		return TypeString, true
+	case runtime.TypeTable:
+		return TypeTable, true
+	default:
+		return TypeUnknown, false
+	}
 }
 
 func typedSelfConstFieldName(proto *vm.FuncProto, constIdx int) string {
@@ -1164,24 +1328,8 @@ func typedSelfParamFieldTypeWithFacts(proto *vm.FuncProto, paramSlot, constIdx i
 		return TypeUnknown, false
 	}
 	if fact, ok := argFacts[paramSlot]; ok {
-		if nested, ok := fact.FieldTableFacts[key.Str()]; ok &&
-			(nested.ShapeID != 0 || nested.ArrayElementType != TypeUnknown || nested.ArrayElementRange.known) {
-			return TypeTable, true
-		}
-		if fact.FieldTypes != nil {
-			if typ, ok := fact.FieldTypes[key.Str()]; ok && typ != TypeUnknown && typ != TypeAny {
-				return typ, true
-			}
-		}
-		if fact.FieldRanges != nil {
-			if _, ok := fact.FieldRanges[key.Str()]; ok {
-				return TypeInt, true
-			}
-		}
-		if fact.FieldLenRanges != nil {
-			if _, ok := fact.FieldLenRanges[key.Str()]; ok {
-				return TypeString, true
-			}
+		if typ, ok := typedSelfFieldTypeFromFact(fact, key.Str()); ok {
+			return typ, true
 		}
 	}
 	if paramSlot >= proto.NumParams {
@@ -1227,6 +1375,14 @@ func typedSelfParamFieldTypeWithFacts(proto *vm.FuncProto, paramSlot, constIdx i
 }
 
 func typedSelfBranchFacts(proto *vm.FuncProto, params []SpecializedABIParamRep, pc int) map[int]specializedSlotRep {
+	return typedSelfBranchFactsWithGlobals(proto, params, pc, nil)
+}
+
+func typedSelfBranchFactsWithGlobals(proto *vm.FuncProto, params []SpecializedABIParamRep, pc int, numericGlobals map[string]runtime.Value) map[int]specializedSlotRep {
+	return typedSelfBranchFactsWithFactsAndGlobals(proto, params, pc, numericGlobals, nil)
+}
+
+func typedSelfBranchFactsWithFactsAndGlobals(proto *vm.FuncProto, params []SpecializedABIParamRep, pc int, numericGlobals map[string]runtime.Value, globalArrayElementFacts map[string]FixedShapeTableFact) map[int]specializedSlotRep {
 	if proto == nil || pc < 0 {
 		return nil
 	}
@@ -1259,7 +1415,7 @@ func typedSelfBranchFacts(proto *vm.FuncProto, params []SpecializedABIParamRep, 
 		case vm.OP_JMP:
 			target := srcPC + 1 + vm.DecodesBx(inst)
 			if target == pc {
-				if slots, ok := typedSelfLoopFactSlotsAtPC(proto, params, srcPC); ok {
+				if slots, ok := typedSelfLoopFactSlotsAtPCWithFactsAndGlobals(proto, params, srcPC, numericGlobals, globalArrayElementFacts); ok {
 					mergePredFacts(typedSelfSlotFacts(slots))
 				}
 			}
@@ -1267,7 +1423,7 @@ func typedSelfBranchFacts(proto *vm.FuncProto, params []SpecializedABIParamRep, 
 		case vm.OP_EQ, vm.OP_LT, vm.OP_LE, vm.OP_TEST, vm.OP_TESTSET:
 			target := srcPC + 2
 			if target == pc {
-				if slots, ok := typedSelfLoopFactSlotsAtPC(proto, params, srcPC); ok {
+				if slots, ok := typedSelfLoopFactSlotsAtPCWithFactsAndGlobals(proto, params, srcPC, numericGlobals, globalArrayElementFacts); ok {
 					mergePredFacts(typedSelfSlotFacts(slots))
 				}
 			}
@@ -1282,14 +1438,28 @@ func typedSelfBranchFacts(proto *vm.FuncProto, params []SpecializedABIParamRep, 
 			continue
 		}
 		a := vm.DecodeA(inst)
-		if typedSelfForLoopControlProvenInt(proto, params, srcPC, a) {
+		if typedSelfForLoopControlProvenIntWithFactsAndGlobals(proto, params, srcPC, a, numericGlobals, globalArrayElementFacts) {
 			pred := make(map[int]specializedSlotRep)
 			addFact := func(slot int, rep specializedSlotRep) {
 				if slot >= 0 && slot < maxTrackedSlots {
 					pred[slot] = rep
 				}
 			}
-			preSlots, postSlots, ok := typedSelfForLoopStableSlots(proto, params, srcPC, a)
+			bodyTarget := srcPC + 1 + vm.DecodesBx(inst)
+			if preSlots, ok := typedSelfForLoopPreSlotsWithFactsAndGlobals(proto, params, srcPC, a, numericGlobals, globalArrayElementFacts); ok {
+				for slot, rep := range preSlots {
+					if typedSelfLoopBodyWritesSlot(proto, bodyTarget, srcPC, slot) {
+						continue
+					}
+					switch rep {
+					case specializedSlotRawInt, specializedSlotRawTable, specializedSlotNil,
+						specializedSlotSelfFunc, specializedSlotOtherFunc, specializedSlotStdMathTable,
+						specializedSlotMathSqrtFunc, specializedSlotMathFloorFunc:
+						addFact(slot, rep)
+					}
+				}
+			}
+			preSlots, postSlots, ok := typedSelfForLoopStableSlotsWithFactsAndGlobals(proto, params, srcPC, a, numericGlobals, globalArrayElementFacts)
 			if ok {
 				for slot, pre := range preSlots {
 					if pre != postSlots[slot] {
@@ -1297,7 +1467,8 @@ func typedSelfBranchFacts(proto *vm.FuncProto, params []SpecializedABIParamRep, 
 					}
 					switch pre {
 					case specializedSlotRawInt, specializedSlotRawTable, specializedSlotNil,
-						specializedSlotSelfFunc, specializedSlotOtherFunc:
+						specializedSlotSelfFunc, specializedSlotOtherFunc, specializedSlotStdMathTable,
+						specializedSlotMathSqrtFunc, specializedSlotMathFloorFunc:
 						addFact(slot, pre)
 					}
 				}
@@ -1319,7 +1490,8 @@ func typedSelfCollectSlotFacts(slots []specializedSlotRep, addFact func(int, spe
 	for slot, rep := range slots {
 		switch rep {
 		case specializedSlotRawInt, specializedSlotRawTable, specializedSlotNil,
-			specializedSlotSelfFunc, specializedSlotOtherFunc:
+			specializedSlotSelfFunc, specializedSlotOtherFunc, specializedSlotStdMathTable,
+			specializedSlotMathSqrtFunc, specializedSlotMathFloorFunc:
 			addFact(slot, rep)
 		}
 	}
@@ -1378,6 +1550,14 @@ func typedSelfSlotRepAtPC(proto *vm.FuncProto, params []SpecializedABIParamRep, 
 }
 
 func typedSelfSlotsAtPC(proto *vm.FuncProto, params []SpecializedABIParamRep, targetPC int) ([]specializedSlotRep, bool) {
+	return typedSelfSlotsAtPCWithGlobals(proto, params, targetPC, nil)
+}
+
+func typedSelfSlotsAtPCWithGlobals(proto *vm.FuncProto, params []SpecializedABIParamRep, targetPC int, numericGlobals map[string]runtime.Value) ([]specializedSlotRep, bool) {
+	return typedSelfSlotsAtPCWithFactsAndGlobals(proto, params, targetPC, numericGlobals, nil)
+}
+
+func typedSelfSlotsAtPCWithFactsAndGlobals(proto *vm.FuncProto, params []SpecializedABIParamRep, targetPC int, numericGlobals map[string]runtime.Value, globalArrayElementFacts map[string]FixedShapeTableFact) ([]specializedSlotRep, bool) {
 	if proto == nil || targetPC < 0 || targetPC > len(proto.Code) {
 		return nil, false
 	}
@@ -1387,9 +1567,9 @@ func typedSelfSlotsAtPC(proto *vm.FuncProto, params []SpecializedABIParamRep, ta
 	for pc := 0; pc < targetPC; pc++ {
 		if pc > 0 && branchTargets[pc] {
 			typedSelfResetSlots(slots, params)
-			typedSelfApplyBranchFacts(slots, typedSelfBranchFacts(proto, params, pc))
+			typedSelfApplyBranchFacts(slots, typedSelfBranchFactsWithFactsAndGlobals(proto, params, pc, numericGlobals, globalArrayElementFacts))
 		}
-		if !typedSelfAdvanceSimpleSlotFact(proto, slots, pc) {
+		if !typedSelfAdvanceSimpleSlotFactWithGlobalFacts(proto, slots, pc, numericGlobals, globalArrayElementFacts) {
 			return nil, false
 		}
 	}
@@ -1397,6 +1577,14 @@ func typedSelfSlotsAtPC(proto *vm.FuncProto, params []SpecializedABIParamRep, ta
 }
 
 func typedSelfLoopFactSlotsAtPC(proto *vm.FuncProto, params []SpecializedABIParamRep, targetPC int) ([]specializedSlotRep, bool) {
+	return typedSelfLoopFactSlotsAtPCWithGlobals(proto, params, targetPC, nil)
+}
+
+func typedSelfLoopFactSlotsAtPCWithGlobals(proto *vm.FuncProto, params []SpecializedABIParamRep, targetPC int, numericGlobals map[string]runtime.Value) ([]specializedSlotRep, bool) {
+	return typedSelfLoopFactSlotsAtPCWithFactsAndGlobals(proto, params, targetPC, numericGlobals, nil)
+}
+
+func typedSelfLoopFactSlotsAtPCWithFactsAndGlobals(proto *vm.FuncProto, params []SpecializedABIParamRep, targetPC int, numericGlobals map[string]runtime.Value, globalArrayElementFacts map[string]FixedShapeTableFact) ([]specializedSlotRep, bool) {
 	if proto == nil || targetPC < 0 || targetPC > len(proto.Code) {
 		return nil, false
 	}
@@ -1406,9 +1594,9 @@ func typedSelfLoopFactSlotsAtPC(proto *vm.FuncProto, params []SpecializedABIPara
 	for pc := 0; pc < targetPC; pc++ {
 		if pc > 0 && branchTargets[pc] {
 			typedSelfResetSlots(slots, params)
-			typedSelfApplyBranchFacts(slots, typedSelfForLoopBranchFacts(proto, params, pc))
+			typedSelfApplyBranchFacts(slots, typedSelfForLoopBranchFactsWithFactsAndGlobals(proto, params, pc, numericGlobals, globalArrayElementFacts))
 		}
-		if !typedSelfAdvanceSimpleSlotFact(proto, slots, pc) {
+		if !typedSelfAdvanceSimpleSlotFactWithGlobalFacts(proto, slots, pc, numericGlobals, globalArrayElementFacts) {
 			return nil, false
 		}
 	}
@@ -1416,6 +1604,14 @@ func typedSelfLoopFactSlotsAtPC(proto *vm.FuncProto, params []SpecializedABIPara
 }
 
 func typedSelfForLoopBranchFacts(proto *vm.FuncProto, params []SpecializedABIParamRep, pc int) map[int]specializedSlotRep {
+	return typedSelfForLoopBranchFactsWithGlobals(proto, params, pc, nil)
+}
+
+func typedSelfForLoopBranchFactsWithGlobals(proto *vm.FuncProto, params []SpecializedABIParamRep, pc int, numericGlobals map[string]runtime.Value) map[int]specializedSlotRep {
+	return typedSelfForLoopBranchFactsWithFactsAndGlobals(proto, params, pc, numericGlobals, nil)
+}
+
+func typedSelfForLoopBranchFactsWithFactsAndGlobals(proto *vm.FuncProto, params []SpecializedABIParamRep, pc int, numericGlobals map[string]runtime.Value, globalArrayElementFacts map[string]FixedShapeTableFact) map[int]specializedSlotRep {
 	if proto == nil || pc < 0 {
 		return nil
 	}
@@ -1439,16 +1635,30 @@ func typedSelfForLoopBranchFacts(proto *vm.FuncProto, params []SpecializedABIPar
 			continue
 		}
 		a := vm.DecodeA(inst)
-		if !typedSelfForLoopControlProvenInt(proto, params, srcPC, a) {
+		if !typedSelfForLoopControlProvenIntWithFactsAndGlobals(proto, params, srcPC, a, numericGlobals, globalArrayElementFacts) {
 			continue
 		}
-		preSlots, postSlots, ok := typedSelfForLoopStableSlots(proto, params, srcPC, a)
+		if preSlots, ok := typedSelfForLoopPreSlotsWithFactsAndGlobals(proto, params, srcPC, a, numericGlobals, globalArrayElementFacts); ok {
+			for slot, rep := range preSlots {
+				if typedSelfLoopBodyWritesSlot(proto, bodyTarget, srcPC, slot) {
+					continue
+				}
+				switch rep {
+				case specializedSlotRawInt, specializedSlotRawTable, specializedSlotNil,
+					specializedSlotSelfFunc, specializedSlotOtherFunc, specializedSlotStdMathTable,
+					specializedSlotMathSqrtFunc, specializedSlotMathFloorFunc:
+					addFact(slot, rep)
+				}
+			}
+		}
+		preSlots, postSlots, ok := typedSelfForLoopStableSlotsWithFactsAndGlobals(proto, params, srcPC, a, numericGlobals, globalArrayElementFacts)
 		if ok {
 			for slot, pre := range preSlots {
 				if pre == postSlots[slot] {
 					switch pre {
 					case specializedSlotRawInt, specializedSlotRawTable, specializedSlotNil,
-						specializedSlotSelfFunc, specializedSlotOtherFunc:
+						specializedSlotSelfFunc, specializedSlotOtherFunc, specializedSlotStdMathTable,
+						specializedSlotMathSqrtFunc, specializedSlotMathFloorFunc:
 						addFact(slot, pre)
 					}
 				}
@@ -1462,30 +1672,182 @@ func typedSelfForLoopBranchFacts(proto *vm.FuncProto, params []SpecializedABIPar
 	return facts
 }
 
+func typedSelfForLoopBranchTableFactsWithFactsAndGlobals(proto *vm.FuncProto, params []SpecializedABIParamRep, pc int, numericGlobals map[string]runtime.Value, globalArrayElementFacts map[string]FixedShapeTableFact) map[int]FixedShapeTableFact {
+	if proto == nil || pc < 0 {
+		return nil
+	}
+	var facts map[int]FixedShapeTableFact
+	addFact := func(slot int, fact FixedShapeTableFact) {
+		if slot < 0 || slot >= maxTrackedSlots || !fixedShapeTableFactHasUsableTableFact(fact) {
+			return
+		}
+		if facts == nil {
+			facts = make(map[int]FixedShapeTableFact)
+		}
+		facts[slot] = cloneFixedShapeTableFact(fact)
+	}
+	for srcPC, inst := range proto.Code {
+		if vm.DecodeOp(inst) != vm.OP_FORLOOP {
+			continue
+		}
+		bodyTarget := srcPC + 1 + vm.DecodesBx(inst)
+		exitTarget := srcPC + 1
+		if bodyTarget != pc && exitTarget != pc {
+			continue
+		}
+		a := vm.DecodeA(inst)
+		if !typedSelfForLoopControlProvenIntWithFactsAndGlobals(proto, params, srcPC, a, numericGlobals, globalArrayElementFacts) {
+			continue
+		}
+		prepPC := typedSelfFindForPrep(proto, srcPC, a)
+		if prepPC < 0 {
+			continue
+		}
+		preFacts, ok := typedSelfTableFactsAtPCWithFactsAndGlobals(proto, params, prepPC, numericGlobals, globalArrayElementFacts)
+		if !ok {
+			continue
+		}
+		for slot, fact := range preFacts {
+			if typedSelfLoopBodyWritesSlot(proto, bodyTarget, srcPC, slot) {
+				continue
+			}
+			addFact(slot, fact)
+		}
+	}
+	return facts
+}
+
+func typedSelfTableFactsAtPCWithFactsAndGlobals(proto *vm.FuncProto, params []SpecializedABIParamRep, targetPC int, numericGlobals map[string]runtime.Value, globalArrayElementFacts map[string]FixedShapeTableFact) (map[int]FixedShapeTableFact, bool) {
+	if proto == nil || targetPC < 0 || targetPC > len(proto.Code) {
+		return nil, false
+	}
+	slots := make([]specializedSlotRep, maxTrackedSlots)
+	typedSelfResetSlots(slots, params)
+	tableFacts := make(map[int]FixedShapeTableFact)
+	branchTargets := specializedABIBranchTargets(proto.Code)
+	for pc := 0; pc < targetPC; pc++ {
+		if pc > 0 && branchTargets[pc] {
+			typedSelfResetSlots(slots, params)
+			tableFacts = make(map[int]FixedShapeTableFact)
+			typedSelfApplyBranchFacts(slots, typedSelfBranchFactsWithFactsAndGlobals(proto, params, pc, numericGlobals, globalArrayElementFacts))
+			for slot, fact := range typedSelfForLoopBranchTableFactsWithFactsAndGlobals(proto, params, pc, numericGlobals, globalArrayElementFacts) {
+				tableFacts[slot] = fact
+			}
+		}
+		if !typedSelfAdvanceSimpleSlotFactWithGlobalFacts(proto, slots, pc, numericGlobals, globalArrayElementFacts) {
+			return nil, false
+		}
+		typedSelfAdvanceSimpleTableFacts(proto, slots, tableFacts, pc, globalArrayElementFacts)
+	}
+	return tableFacts, true
+}
+
+func typedSelfAdvanceSimpleTableFacts(proto *vm.FuncProto, slots []specializedSlotRep, tableFacts map[int]FixedShapeTableFact, pc int, globalArrayElementFacts map[string]FixedShapeTableFact) {
+	if proto == nil || pc < 0 || pc >= len(proto.Code) || tableFacts == nil {
+		return
+	}
+	inst := proto.Code[pc]
+	op := vm.DecodeOp(inst)
+	a := vm.DecodeA(inst)
+	b := vm.DecodeB(inst)
+	c := vm.DecodeC(inst)
+	kill := func(slot int) {
+		if slot >= 0 && slot < maxTrackedSlots {
+			delete(tableFacts, slot)
+		}
+	}
+	switch op {
+	case vm.OP_MOVE:
+		if fact, ok := tableFacts[b]; ok {
+			tableFacts[a] = cloneFixedShapeTableFact(fact)
+		} else {
+			kill(a)
+		}
+	case vm.OP_GETGLOBAL:
+		if fact, ok := typedSelfGlobalArrayElementFact(proto, vm.DecodeBx(inst), globalArrayElementFacts); ok {
+			tableFacts[a] = fact
+		} else {
+			kill(a)
+		}
+	case vm.OP_GETTABLE:
+		if typedSelfSlotIsTable(getSpecializedSlot(slots, b)) && typedSelfRKIsInt(slots, proto, c) {
+			if fact, ok := tableFacts[b]; ok && fixedShapeTableFactHasUsableTableFact(fact) {
+				tableFacts[a] = cloneFixedShapeTableFact(fact)
+				return
+			}
+		}
+		kill(a)
+	case vm.OP_GETFIELD:
+		name := typedSelfConstFieldName(proto, c)
+		if fact, ok := tableFacts[b]; ok {
+			if nested, ok := typedSelfNestedTableFactFromFact(fact, name); ok {
+				tableFacts[a] = nested
+				return
+			}
+		}
+		kill(a)
+	case vm.OP_LOADNIL:
+		for slot := a; slot <= a+b && slot < maxTrackedSlots; slot++ {
+			kill(slot)
+		}
+	case vm.OP_CALL:
+		callC := vm.DecodeC(inst)
+		if callC == 0 {
+			for slot := a; slot < maxTrackedSlots; slot++ {
+				kill(slot)
+			}
+		} else {
+			for slot := a; slot < a+callC-1 && slot < maxTrackedSlots; slot++ {
+				kill(slot)
+			}
+		}
+	case vm.OP_SETFIELD, vm.OP_SETTABLE, vm.OP_SETGLOBAL, vm.OP_SETUPVAL, vm.OP_JMP, vm.OP_EQ,
+		vm.OP_LT, vm.OP_LE, vm.OP_TEST, vm.OP_RETURN, vm.OP_CLOSE:
+		return
+	case vm.OP_FORLOOP:
+		kill(a)
+		kill(a + 3)
+	case vm.OP_FORPREP:
+		kill(a)
+	case vm.OP_SELF:
+		kill(a)
+		kill(a + 1)
+	case vm.OP_TFORCALL:
+		callC := vm.DecodeC(inst)
+		for slot := a + 3; slot < a+3+callC && slot < maxTrackedSlots; slot++ {
+			kill(slot)
+		}
+	default:
+		kill(a)
+	}
+}
+
 func typedSelfForLoopStableSlots(proto *vm.FuncProto, params []SpecializedABIParamRep, forLoopPC, a int) ([]specializedSlotRep, []specializedSlotRep, bool) {
+	return typedSelfForLoopStableSlotsWithGlobals(proto, params, forLoopPC, a, nil)
+}
+
+func typedSelfForLoopStableSlotsWithGlobals(proto *vm.FuncProto, params []SpecializedABIParamRep, forLoopPC, a int, numericGlobals map[string]runtime.Value) ([]specializedSlotRep, []specializedSlotRep, bool) {
+	return typedSelfForLoopStableSlotsWithFactsAndGlobals(proto, params, forLoopPC, a, numericGlobals, nil)
+}
+
+func typedSelfForLoopStableSlotsWithFactsAndGlobals(proto *vm.FuncProto, params []SpecializedABIParamRep, forLoopPC, a int, numericGlobals map[string]runtime.Value, globalArrayElementFacts map[string]FixedShapeTableFact) ([]specializedSlotRep, []specializedSlotRep, bool) {
 	if proto == nil || forLoopPC <= 0 {
 		return nil, nil, false
 	}
-	prepPC := -1
-	for pc := forLoopPC - 1; pc >= 0; pc-- {
-		if vm.DecodeOp(proto.Code[pc]) == vm.OP_FORPREP && vm.DecodeA(proto.Code[pc]) == a {
-			prepPC = pc
-			break
-		}
-	}
+	prepPC := typedSelfFindForPrep(proto, forLoopPC, a)
 	if prepPC < 0 {
 		return nil, nil, false
 	}
 	slots := make([]specializedSlotRep, maxTrackedSlots)
 	typedSelfResetSlots(slots, params)
 	for pc := 0; pc <= prepPC; pc++ {
-		if !typedSelfAdvanceSimpleSlotFact(proto, slots, pc) {
+		if !typedSelfAdvanceSimpleSlotFactWithGlobalFacts(proto, slots, pc, numericGlobals, globalArrayElementFacts) {
 			return nil, nil, false
 		}
 	}
 	preSlots := append([]specializedSlotRep(nil), slots...)
 	for pc := prepPC + 1; pc < forLoopPC; pc++ {
-		if !typedSelfAdvanceSimpleSlotFact(proto, slots, pc) {
+		if !typedSelfAdvanceSimpleSlotFactWithGlobalFacts(proto, slots, pc, numericGlobals, globalArrayElementFacts) {
 			return nil, nil, false
 		}
 	}
@@ -1493,8 +1855,86 @@ func typedSelfForLoopStableSlots(proto *vm.FuncProto, params []SpecializedABIPar
 	return preSlots, postSlots, true
 }
 
+func typedSelfForLoopPreSlotsWithGlobals(proto *vm.FuncProto, params []SpecializedABIParamRep, forLoopPC, a int, numericGlobals map[string]runtime.Value) ([]specializedSlotRep, bool) {
+	return typedSelfForLoopPreSlotsWithFactsAndGlobals(proto, params, forLoopPC, a, numericGlobals, nil)
+}
+
+func typedSelfForLoopPreSlotsWithFactsAndGlobals(proto *vm.FuncProto, params []SpecializedABIParamRep, forLoopPC, a int, numericGlobals map[string]runtime.Value, globalArrayElementFacts map[string]FixedShapeTableFact) ([]specializedSlotRep, bool) {
+	if proto == nil || forLoopPC <= 0 {
+		return nil, false
+	}
+	prepPC := typedSelfFindForPrep(proto, forLoopPC, a)
+	if prepPC < 0 {
+		return nil, false
+	}
+	return typedSelfSlotsAtPCWithFactsAndGlobals(proto, params, prepPC, numericGlobals, globalArrayElementFacts)
+}
+
+func typedSelfFindForPrep(proto *vm.FuncProto, forLoopPC, a int) int {
+	if proto == nil {
+		return -1
+	}
+	for pc := forLoopPC - 1; pc >= 0; pc-- {
+		if vm.DecodeOp(proto.Code[pc]) == vm.OP_FORPREP && vm.DecodeA(proto.Code[pc]) == a {
+			return pc
+		}
+	}
+	return -1
+}
+
+func typedSelfLoopBodyWritesSlot(proto *vm.FuncProto, bodyStart, forLoopPC, slot int) bool {
+	if proto == nil || slot < 0 || bodyStart < 0 || forLoopPC < bodyStart || forLoopPC > len(proto.Code) {
+		return true
+	}
+	for pc := bodyStart; pc < forLoopPC; pc++ {
+		if typedSelfInstrWritesSlot(proto.Code[pc], slot) {
+			return true
+		}
+	}
+	return false
+}
+
+func typedSelfInstrWritesSlot(inst uint32, slot int) bool {
+	op := vm.DecodeOp(inst)
+	a := vm.DecodeA(inst)
+	switch op {
+	case vm.OP_SETUPVAL, vm.OP_SETGLOBAL, vm.OP_SETFIELD, vm.OP_SETTABLE, vm.OP_SETLIST,
+		vm.OP_JMP, vm.OP_EQ, vm.OP_LT, vm.OP_LE, vm.OP_TEST, vm.OP_RETURN,
+		vm.OP_CLOSE, vm.OP_TFORLOOP:
+		return false
+	case vm.OP_LOADNIL:
+		b := vm.DecodeB(inst)
+		return slot >= a && slot <= a+b
+	case vm.OP_CALL:
+		c := vm.DecodeC(inst)
+		if c == 0 {
+			return slot >= a
+		}
+		return slot >= a && slot < a+c-1
+	case vm.OP_FORPREP:
+		return slot == a
+	case vm.OP_FORLOOP:
+		return slot == a || slot == a+3
+	case vm.OP_SELF:
+		return slot == a || slot == a+1
+	case vm.OP_TFORCALL:
+		c := vm.DecodeC(inst)
+		return slot >= a+3 && slot < a+3+c
+	default:
+		return slot == a
+	}
+}
+
 func typedSelfApplyStableForLoopFacts(proto *vm.FuncProto, params []SpecializedABIParamRep, forLoopPC, a int, slots []specializedSlotRep) {
-	preSlots, postSlots, ok := typedSelfForLoopStableSlots(proto, params, forLoopPC, a)
+	typedSelfApplyStableForLoopFactsWithGlobals(proto, params, forLoopPC, a, slots, nil)
+}
+
+func typedSelfApplyStableForLoopFactsWithGlobals(proto *vm.FuncProto, params []SpecializedABIParamRep, forLoopPC, a int, slots []specializedSlotRep, numericGlobals map[string]runtime.Value) {
+	typedSelfApplyStableForLoopFactsWithFactsAndGlobals(proto, params, forLoopPC, a, slots, numericGlobals, nil)
+}
+
+func typedSelfApplyStableForLoopFactsWithFactsAndGlobals(proto *vm.FuncProto, params []SpecializedABIParamRep, forLoopPC, a int, slots []specializedSlotRep, numericGlobals map[string]runtime.Value, globalArrayElementFacts map[string]FixedShapeTableFact) {
+	preSlots, postSlots, ok := typedSelfForLoopStableSlotsWithFactsAndGlobals(proto, params, forLoopPC, a, numericGlobals, globalArrayElementFacts)
 	if ok {
 		for slot, pre := range preSlots {
 			if pre != postSlots[slot] {
@@ -1502,7 +1942,8 @@ func typedSelfApplyStableForLoopFacts(proto *vm.FuncProto, params []SpecializedA
 			}
 			switch pre {
 			case specializedSlotRawInt, specializedSlotRawTable, specializedSlotNil,
-				specializedSlotSelfFunc, specializedSlotOtherFunc:
+				specializedSlotSelfFunc, specializedSlotOtherFunc, specializedSlotStdMathTable,
+				specializedSlotMathSqrtFunc, specializedSlotMathFloorFunc:
 				setSpecializedSlot(slots, slot, pre)
 			}
 		}
@@ -1513,6 +1954,14 @@ func typedSelfApplyStableForLoopFacts(proto *vm.FuncProto, params []SpecializedA
 }
 
 func typedSelfForLoopControlProvenInt(proto *vm.FuncProto, params []SpecializedABIParamRep, forLoopPC, a int) bool {
+	return typedSelfForLoopControlProvenIntWithGlobals(proto, params, forLoopPC, a, nil)
+}
+
+func typedSelfForLoopControlProvenIntWithGlobals(proto *vm.FuncProto, params []SpecializedABIParamRep, forLoopPC, a int, numericGlobals map[string]runtime.Value) bool {
+	return typedSelfForLoopControlProvenIntWithFactsAndGlobals(proto, params, forLoopPC, a, numericGlobals, nil)
+}
+
+func typedSelfForLoopControlProvenIntWithFactsAndGlobals(proto *vm.FuncProto, params []SpecializedABIParamRep, forLoopPC, a int, numericGlobals map[string]runtime.Value, globalArrayElementFacts map[string]FixedShapeTableFact) bool {
 	if proto == nil || forLoopPC <= 0 {
 		return false
 	}
@@ -1521,12 +1970,9 @@ func typedSelfForLoopControlProvenInt(proto *vm.FuncProto, params []SpecializedA
 		if vm.DecodeOp(inst) != vm.OP_FORPREP || vm.DecodeA(inst) != a {
 			continue
 		}
-		slots := make([]specializedSlotRep, maxTrackedSlots)
-		typedSelfResetSlots(slots, params)
-		for i := 0; i < pc; i++ {
-			if !typedSelfAdvanceSimpleSlotFact(proto, slots, i) {
-				return false
-			}
+		slots, ok := typedSelfSlotsAtPCWithFactsAndGlobals(proto, params, pc, numericGlobals, globalArrayElementFacts)
+		if !ok {
+			return false
 		}
 		return typedSelfSlotIsInt(getSpecializedSlot(slots, a)) &&
 			typedSelfSlotIsInt(getSpecializedSlot(slots, a+1)) &&
@@ -1536,6 +1982,14 @@ func typedSelfForLoopControlProvenInt(proto *vm.FuncProto, params []SpecializedA
 }
 
 func typedSelfAdvanceSimpleSlotFact(proto *vm.FuncProto, slots []specializedSlotRep, pc int) bool {
+	return typedSelfAdvanceSimpleSlotFactWithGlobals(proto, slots, pc, nil)
+}
+
+func typedSelfAdvanceSimpleSlotFactWithGlobals(proto *vm.FuncProto, slots []specializedSlotRep, pc int, numericGlobals map[string]runtime.Value) bool {
+	return typedSelfAdvanceSimpleSlotFactWithGlobalFacts(proto, slots, pc, numericGlobals, nil)
+}
+
+func typedSelfAdvanceSimpleSlotFactWithGlobalFacts(proto *vm.FuncProto, slots []specializedSlotRep, pc int, numericGlobals map[string]runtime.Value, globalArrayElementFacts map[string]FixedShapeTableFact) bool {
 	inst := proto.Code[pc]
 	op := vm.DecodeOp(inst)
 	a := vm.DecodeA(inst)
@@ -1559,7 +2013,13 @@ func typedSelfAdvanceSimpleSlotFact(proto *vm.FuncProto, slots []specializedSlot
 			setSpecializedSlot(slots, a, specializedSlotUnknown)
 		}
 	case vm.OP_GETTABLE, vm.OP_GETFIELD:
-		if typedSelfFeedbackResultIsInt(proto, pc) {
+		if op == vm.OP_GETFIELD && getSpecializedSlot(slots, b) == specializedSlotStdMathTable && typedSelfConstFieldName(proto, c) == "sqrt" {
+			setSpecializedSlot(slots, a, specializedSlotMathSqrtFunc)
+		} else if op == vm.OP_GETFIELD && getSpecializedSlot(slots, b) == specializedSlotStdMathTable && typedSelfConstFieldName(proto, c) == "floor" {
+			setSpecializedSlot(slots, a, specializedSlotMathFloorFunc)
+		} else if op == vm.OP_GETTABLE && typedSelfSlotIsTable(getSpecializedSlot(slots, b)) && typedSelfRKIsInt(slots, proto, c) {
+			setSpecializedSlot(slots, a, specializedSlotRawTable)
+		} else if typedSelfFeedbackResultIsInt(proto, pc) {
 			setSpecializedSlot(slots, a, specializedSlotRawInt)
 		} else if typedSelfFeedbackResultIsTable(proto, pc) {
 			setSpecializedSlot(slots, a, specializedSlotRawTable)
@@ -1575,8 +2035,25 @@ func typedSelfAdvanceSimpleSlotFact(proto *vm.FuncProto, slots []specializedSlot
 	case vm.OP_GETGLOBAL:
 		if specializedABIConstString(proto, vm.DecodeBx(inst)) == proto.Name {
 			setSpecializedSlot(slots, a, specializedSlotSelfFunc)
+		} else if rep, ok := typedSelfNumericGlobalRep(proto, vm.DecodeBx(inst), numericGlobals); ok {
+			setSpecializedSlot(slots, a, rep)
+		} else if _, ok := typedSelfGlobalArrayElementFact(proto, vm.DecodeBx(inst), globalArrayElementFacts); ok {
+			setSpecializedSlot(slots, a, specializedSlotRawTable)
+		} else if specializedABIConstString(proto, vm.DecodeBx(inst)) == "math" {
+			setSpecializedSlot(slots, a, specializedSlotStdMathTable)
 		} else {
 			setSpecializedSlot(slots, a, specializedSlotOtherFunc)
+		}
+	case vm.OP_CALL:
+		if typedSelfSlotIsMathUnaryFunc(getSpecializedSlot(slots, a)) && b == 2 && c == 2 &&
+			typedSelfSlotIsNumeric(getSpecializedSlot(slots, a+1)) {
+			if getSpecializedSlot(slots, a) == specializedSlotMathFloorFunc {
+				setSpecializedSlot(slots, a, specializedSlotRawInt)
+			} else {
+				setSpecializedSlot(slots, a, specializedSlotRawFloat)
+			}
+		} else {
+			setSpecializedSlot(slots, a, specializedSlotUnknown)
 		}
 	case vm.OP_FORPREP:
 		if typedSelfSlotIsInt(getSpecializedSlot(slots, a)) &&
@@ -1594,8 +2071,79 @@ func typedSelfAdvanceSimpleSlotFact(proto *vm.FuncProto, slots []specializedSlot
 	return true
 }
 
+func typedSelfNumericGlobalRep(proto *vm.FuncProto, constIdx int, numericGlobals map[string]runtime.Value) (specializedSlotRep, bool) {
+	if proto == nil || len(numericGlobals) == 0 || constIdx < 0 || constIdx >= len(proto.Constants) {
+		return specializedSlotUnknown, false
+	}
+	c := proto.Constants[constIdx]
+	if !c.IsString() {
+		return specializedSlotUnknown, false
+	}
+	v, ok := numericGlobals[c.Str()]
+	if !ok {
+		return specializedSlotUnknown, false
+	}
+	if v.IsInt() {
+		return specializedSlotRawInt, true
+	}
+	if v.IsFloat() {
+		return specializedSlotRawFloat, true
+	}
+	return specializedSlotUnknown, false
+}
+
+func typedSelfGlobalArrayElementFact(proto *vm.FuncProto, constIdx int, globalFacts map[string]FixedShapeTableFact) (FixedShapeTableFact, bool) {
+	if proto == nil || len(globalFacts) == 0 || constIdx < 0 || constIdx >= len(proto.Constants) {
+		return FixedShapeTableFact{}, false
+	}
+	c := proto.Constants[constIdx]
+	if !c.IsString() {
+		return FixedShapeTableFact{}, false
+	}
+	fact, ok := globalFacts[c.Str()]
+	if !ok || !fixedShapeTableFactHasUsableTableFact(fact) {
+		return FixedShapeTableFact{}, false
+	}
+	return cloneFixedShapeTableFact(fact), true
+}
+
 func typedSelfSlotIsInt(rep specializedSlotRep) bool {
 	return rep == specializedSlotRawInt || rep == specializedSlotSelfCallRawInt
+}
+
+func specializedSlotRepName(rep specializedSlotRep) string {
+	switch rep {
+	case specializedSlotUnknown:
+		return "unknown"
+	case specializedSlotRawInt:
+		return "raw-int"
+	case specializedSlotRawFloat:
+		return "raw-float"
+	case specializedSlotRawTable:
+		return "raw-table"
+	case specializedSlotRawString:
+		return "raw-string"
+	case specializedSlotNil:
+		return "nil"
+	case specializedSlotSelfCallRawInt:
+		return "self-call-raw-int"
+	case specializedSlotSelfCallRawFloat:
+		return "self-call-raw-float"
+	case specializedSlotSelfCallRawTable:
+		return "self-call-raw-table"
+	case specializedSlotSelfFunc:
+		return "self-func"
+	case specializedSlotOtherFunc:
+		return "other-func"
+	case specializedSlotStdMathTable:
+		return "std-math-table"
+	case specializedSlotMathSqrtFunc:
+		return "math.sqrt"
+	case specializedSlotMathFloorFunc:
+		return "math.floor"
+	default:
+		return "invalid"
+	}
 }
 
 func typedSelfSlotIsFloat(rep specializedSlotRep) bool {
@@ -1617,7 +2165,11 @@ func typedSelfNumericBaseRep(rep specializedSlotRep) specializedSlotRep {
 }
 
 func typedSelfSlotIsTable(rep specializedSlotRep) bool {
-	return rep == specializedSlotRawTable || rep == specializedSlotSelfCallRawTable
+	return rep == specializedSlotRawTable || rep == specializedSlotSelfCallRawTable || rep == specializedSlotStdMathTable
+}
+
+func typedSelfSlotIsMathUnaryFunc(rep specializedSlotRep) bool {
+	return rep == specializedSlotMathSqrtFunc || rep == specializedSlotMathFloorFunc
 }
 
 func typedSelfSlotIsString(rep specializedSlotRep) bool {

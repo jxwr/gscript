@@ -472,10 +472,30 @@ func mergeFieldTypeFacts(a, b map[string]Type) map[string]Type {
 	if len(b) == 0 {
 		return cloneStringTypeMap(a)
 	}
-	out := make(map[string]Type)
+	out := make(map[string]Type, len(a)+len(b))
 	for name, left := range a {
-		if right, ok := b[name]; ok && left == right && left != TypeUnknown && left != TypeAny {
+		if left == TypeUnknown || left == TypeAny {
+			continue
+		}
+		right, ok := b[name]
+		if !ok {
 			out[name] = left
+			continue
+		}
+		if right == TypeUnknown || right == TypeAny {
+			out[name] = left
+			continue
+		}
+		if left == right {
+			out[name] = left
+		}
+	}
+	for name, right := range b {
+		if right == TypeUnknown || right == TypeAny {
+			continue
+		}
+		if _, ok := a[name]; !ok {
+			out[name] = right
 		}
 	}
 	if len(out) == 0 {
@@ -655,12 +675,7 @@ func inferLocalArrayElementTableFacts(fn *Function, valueFacts map[int]FixedShap
 	if fn == nil || len(valueFacts) == 0 {
 		return nil
 	}
-	type state struct {
-		fact     FixedShapeTableFact
-		seen     bool
-		conflict bool
-	}
-	states := make(map[int]state)
+	states := make(map[int]arrayElementTableFactState)
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
 			if instr == nil || len(instr.Args) == 0 || instr.Args[0] == nil {
@@ -675,20 +690,22 @@ func inferLocalArrayElementTableFacts(fn *Function, valueFacts map[int]FixedShap
 				if !ok || valueFact.ShapeID == 0 || len(valueFact.FieldNames) == 0 {
 					continue
 				}
+				states[instr.Args[0].ID] = mergeArrayElementTableFactState(states[instr.Args[0].ID], valueFact)
+			case OpSetList:
 				st := states[instr.Args[0].ID]
-				if !st.seen {
-					st.fact = withoutFieldValues(valueFact)
-					st.seen = true
-				} else if st.fact.ShapeID != valueFact.ShapeID || !st.fact.sameShape(valueFact) {
-					st.conflict = true
-				} else {
-					merged, ok := mergeSameShapeFacts(st.fact, withoutFieldValues(valueFact))
-					if ok {
-						st.fact = merged
+				for _, arg := range instr.Args[1:] {
+					if arg == nil {
+						continue
 					}
+					valueFact, ok := valueFacts[arg.ID]
+					if !ok || valueFact.ShapeID == 0 || len(valueFact.FieldNames) == 0 {
+						st.conflict = true
+						continue
+					}
+					st = mergeArrayElementTableFactState(st, valueFact)
 				}
 				states[instr.Args[0].ID] = st
-			case OpAppend, OpSetList:
+			case OpAppend:
 				st := states[instr.Args[0].ID]
 				if st.seen {
 					st.conflict = true
@@ -712,6 +729,29 @@ func inferLocalArrayElementTableFacts(fn *Function, valueFacts map[int]FixedShap
 		return nil
 	}
 	return out
+}
+
+type arrayElementTableFactState struct {
+	fact     FixedShapeTableFact
+	seen     bool
+	conflict bool
+}
+
+func mergeArrayElementTableFactState(st arrayElementTableFactState, valueFact FixedShapeTableFact) arrayElementTableFactState {
+	valueFact = withoutFieldValues(valueFact)
+	if !st.seen {
+		st.fact = valueFact
+		st.seen = true
+		return st
+	}
+	if st.fact.ShapeID != valueFact.ShapeID || !st.fact.sameShape(valueFact) {
+		st.conflict = true
+		return st
+	}
+	if merged, ok := mergeSameShapeFacts(st.fact, valueFact); ok {
+		st.fact = merged
+	}
+	return st
 }
 
 func propagateArrayElementFactsThroughGlobals(fn *Function, arrayElementFacts map[int]FixedShapeTableFact) {
@@ -1630,6 +1670,7 @@ func inferLocalFixedShapeTables(fn *Function) map[int]FixedShapeTableFact {
 	}
 	out := make(map[int]FixedShapeTableFact)
 	for _, block := range fn.Blocks {
+		globalTypes := localSetGlobalTypes(block)
 		allocFields := make(map[int][]string)
 		allocValues := make(map[int]map[string]int)
 		allocTypes := make(map[int]map[string]Type)
@@ -1645,7 +1686,7 @@ func inferLocalFixedShapeTables(fn *Function) map[int]FixedShapeTableFact {
 				allocFieldTableFacts[instr.ID] = make(map[string]FixedShapeTableFact)
 				out[instr.ID] = FixedShapeTableFact{}
 			case OpNewFixedTable:
-				fact, ok := fixedShapeFactForFixedConstructor(fn, instr)
+				fact, ok := fixedShapeFactForFixedConstructor(fn, instr, globalTypes)
 				if ok {
 					out[instr.ID] = fact
 				}
@@ -1665,8 +1706,10 @@ func inferLocalFixedShapeTables(fn *Function) map[int]FixedShapeTableFact {
 				}
 				allocFields[allocID] = append(allocFields[allocID], name)
 				allocValues[allocID][name] = instr.Args[1].ID
-				if instr.Args[1].Def != nil && instr.Args[1].Def.Type != TypeUnknown && instr.Args[1].Def.Type != TypeAny {
-					allocTypes[allocID][name] = instr.Args[1].Def.Type
+				if instr.Args[1].Def != nil {
+					if typ := inferFixedCtorArgType(instr.Args[1].Def, globalTypes, make(map[int]bool)); typ != TypeUnknown && typ != TypeAny {
+						allocTypes[allocID][name] = typ
+					}
 				}
 				if valueFact, ok := out[instr.Args[1].ID]; ok && fixedShapeTableFactHasUsableTableFact(valueFact) {
 					allocFieldTableFacts[allocID][name] = withoutFieldValues(valueFact)
@@ -1724,7 +1767,7 @@ func inferLocalFixedShapeTables(fn *Function) map[int]FixedShapeTableFact {
 	return out
 }
 
-func fixedShapeFactForFixedConstructor(fn *Function, instr *Instr) (FixedShapeTableFact, bool) {
+func fixedShapeFactForFixedConstructor(fn *Function, instr *Instr, globalTypes map[int64]Type) (FixedShapeTableFact, bool) {
 	if fn == nil || fn.Proto == nil || instr == nil || instr.Op != OpNewFixedTable {
 		return FixedShapeTableFact{}, false
 	}
@@ -1758,8 +1801,10 @@ func fixedShapeFactForFixedConstructor(fn *Function, instr *Instr) (FixedShapeTa
 	types := make(map[string]Type, len(fields))
 	for i, field := range fields {
 		values[field] = instr.Args[i].ID
-		if instr.Args[i].Def != nil && instr.Args[i].Def.Type != TypeUnknown && instr.Args[i].Def.Type != TypeAny {
-			types[field] = instr.Args[i].Def.Type
+		if instr.Args[i].Def != nil {
+			if typ := inferFixedCtorArgType(instr.Args[i].Def, globalTypes, make(map[int]bool)); typ != TypeUnknown && typ != TypeAny {
+				types[field] = typ
+			}
 		}
 	}
 	return FixedShapeTableFact{

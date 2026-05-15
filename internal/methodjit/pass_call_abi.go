@@ -4,8 +4,10 @@ package methodjit
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
+	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
 
@@ -259,8 +261,12 @@ func callABITypedPeerDescriptorFor(fn *Function, instr *Instr, callee *vm.FuncPr
 		arrayElementArgFacts = mergeFixedShapeTableFacts(arrayElementArgFacts,
 			inferGuardedFixedShapeArrayElementArgFactsForProto(callee, config.Globals))
 	}
-	abi := AnalyzeTypedPeerABIWithFacts(callee, argFacts, arrayElementArgFacts)
+	abi := AnalyzeTypedPeerABIWithFactsAndGlobals(callee, argFacts, arrayElementArgFacts, config.NumericGlobalValues, config.GlobalArrayElementFacts)
 	if !abi.Eligible {
+		if remarks := functionRemarks(fn); remarks != nil && instr.Block != nil && len(config.GlobalArrayElementFacts) > 0 {
+			remarks.Add("CallABI", "missed", instr.Block.ID, instr.ID, instr.Op,
+				"typed-peer global array facts: "+fixedShapeGlobalFactSummary(config.GlobalArrayElementFacts))
+		}
 		return CallABIDescriptor{}, false, "callee typed-peer ABI rejected: " + abi.RejectWhy
 	}
 	wantRets := 1
@@ -382,6 +388,61 @@ func callABITypedPeerArrayElementArgFacts(fn *Function, instr *Instr, globals ma
 	return out
 }
 
+func collectStableGlobalArrayElementFacts(fn *Function) map[string]FixedShapeTableFact {
+	if fn == nil || fn.Proto == nil {
+		return nil
+	}
+	arrayFacts := inferLocalArrayElementTableFacts(fn, fn.FixedShapeTables)
+	if len(arrayFacts) == 0 {
+		return nil
+	}
+	type state struct {
+		fact     FixedShapeTableFact
+		seen     bool
+		conflict bool
+	}
+	states := make(map[string]state)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpSetGlobal || len(instr.Args) == 0 || instr.Args[0] == nil {
+				continue
+			}
+			name := protoConstString(fn.Proto, int(instr.Aux))
+			if name == "" {
+				continue
+			}
+			fact, ok := arrayFacts[instr.Args[0].ID]
+			st := states[name]
+			if !ok {
+				st.conflict = true
+				states[name] = st
+				continue
+			}
+			if !st.seen {
+				st.fact = cloneFixedShapeTableFact(fact)
+				st.fact.Guarded = true
+				st.seen = true
+			} else if st.fact.ShapeID != fact.ShapeID || !st.fact.sameShape(fact) {
+				st.conflict = true
+			} else if merged, ok := mergeSameShapeFacts(st.fact, fact); ok {
+				st.fact = merged
+				st.fact.Guarded = true
+			}
+			states[name] = st
+		}
+	}
+	out := make(map[string]FixedShapeTableFact)
+	for name, st := range states {
+		if st.seen && !st.conflict && fixedShapeTableFactHasUsableTableFact(st.fact) {
+			out[name] = st.fact
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func cloneCallABIArgFacts(in map[int]FixedShapeTableFact) map[int]FixedShapeTableFact {
 	if len(in) == 0 {
 		return nil
@@ -391,6 +452,57 @@ func cloneCallABIArgFacts(in map[int]FixedShapeTableFact) map[int]FixedShapeTabl
 		out[k] = cloneFixedShapeTableFact(v)
 	}
 	return out
+}
+
+func fixedShapeGlobalFactSummary(facts map[string]FixedShapeTableFact) string {
+	if len(facts) == 0 {
+		return "[]"
+	}
+	names := make([]string, 0, len(facts))
+	for name := range facts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		fact := facts[name]
+		parts = append(parts, fmt.Sprintf("%s shape=%d fields=%v types=%s stable=%s", name, fact.ShapeID, fact.FieldNames, fixedShapeTypeSummary(fact.FieldTypes), fixedShapeStableTypeSummary(fact)))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func fixedShapeTypeSummary(types map[string]Type) string {
+	if len(types) == 0 {
+		return "{}"
+	}
+	names := make([]string, 0, len(types))
+	for name := range types {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		parts = append(parts, fmt.Sprintf("%s:%s", name, types[name]))
+	}
+	return "{" + strings.Join(parts, ",") + "}"
+}
+
+func fixedShapeStableTypeSummary(fact FixedShapeTableFact) string {
+	if fact.ShapeID == 0 || len(fact.FieldNames) == 0 {
+		return "{}"
+	}
+	parts := make([]string, 0, len(fact.FieldNames))
+	for idx, name := range fact.FieldNames {
+		vt, ok := runtime.ShapeFieldStableType(fact.ShapeID, idx)
+		if !ok {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s:%v", name, vt))
+	}
+	if len(parts) == 0 {
+		return "{}"
+	}
+	return "{" + strings.Join(parts, ",") + "}"
 }
 
 func specializedRawIntParamReps(n int) []SpecializedABIParamRep {

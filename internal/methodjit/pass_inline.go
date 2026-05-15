@@ -276,16 +276,7 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 		hotLoopInlineAdmitted := false
 		if computeLoopInfo(calleeFn).hasLoops() && callerLoopBlock {
 			if reason := pureNumericInlineRejectReason(calleeFn); reason != "" {
-				loweredFn, notes := IntrinsicPass(calleeFn)
-				if len(notes) > 0 {
-					calleeFn = loweredFn
-					if typed, err := TypeSpecializePass(calleeFn); err == nil {
-						calleeFn = typed
-					}
-					if dced, err := DCEPass(calleeFn); err == nil {
-						calleeFn = dced
-					}
-				}
+				calleeFn = prepareNativeEffectLoopInlineCallee(calleeFn, config)
 				if nativeReason := nativeEffectLoopInlineRejectReason(calleeFn); nativeReason != "" {
 					functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
 						fmt.Sprintf("callee %s has loops inside caller loop and is not pure numeric: %s", calleeName, reason))
@@ -824,6 +815,67 @@ func resolveCallee(callInstr *Instr, fn *Function, config InlineConfig) (string,
 	return name, proto
 }
 
+func prepareNativeEffectLoopInlineCallee(calleeFn *Function, config InlineConfig) *Function {
+	if calleeFn == nil {
+		return calleeFn
+	}
+	out := calleeFn
+	out, _ = IntrinsicPass(out)
+	if typed, err := TypeSpecializePass(out); err == nil && typed != nil {
+		out = typed
+	}
+	if refreshed, err := SourceFeedbackRefreshPass(out); err == nil && refreshed != nil {
+		out = refreshed
+	}
+	if fixed, err := FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{
+		Globals: config.Globals,
+	})(out); err == nil && fixed != nil {
+		out = fixed
+	}
+	if lowered, err := TableArrayLowerPass(out); err == nil && lowered != nil {
+		out = lowered
+	}
+	if typedLoads, err := TableArrayLoadTypeSpecializePass(out); err == nil && typedLoads != nil {
+		out = typedLoads
+	}
+	if nested, err := TableArrayNestedLoadPass(out); err == nil && nested != nil {
+		out = nested
+	}
+	if fieldLowered, err := FieldSvalsLowerPass(out); err == nil && fieldLowered != nil {
+		out = fieldLowered
+	}
+	if fixed, err := FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{
+		Globals: config.Globals,
+	})(out); err == nil && fixed != nil {
+		out = fixed
+	}
+	if guarded, err := ShapeFieldTypeGuardPass(out); err == nil && guarded != nil {
+		out = guarded
+	}
+	if lowered, err := TableArrayLowerPass(out); err == nil && lowered != nil {
+		out = lowered
+	}
+	if typedLoads, err := TableArrayLoadTypeSpecializePass(out); err == nil && typedLoads != nil {
+		out = typedLoads
+	}
+	if stores, err := TableArrayStoreLowerPass(out); err == nil && stores != nil {
+		out = stores
+	}
+	if typed, err := TypeSpecializePass(out); err == nil && typed != nil {
+		out = typed
+	}
+	if loaded, err := LoadEliminationPass(out); err == nil && loaded != nil {
+		out = loaded
+	}
+	if consted, err := ConstPropPass(out); err == nil && consted != nil {
+		out = consted
+	}
+	if dced, err := DCEPass(out); err == nil && dced != nil {
+		out = dced
+	}
+	return out
+}
+
 func pureNumericInlineRejectReason(calleeFn *Function) string {
 	if calleeFn == nil || calleeFn.Proto == nil {
 		return "missing callee IR"
@@ -939,6 +991,9 @@ func nativeEffectLoopInlineOp(op Op) bool {
 	}
 	switch op {
 	case OpGetGlobal, OpGuardGlobalConst,
+		OpTableArrayHeader, OpTableArrayLen, OpTableArrayData, OpTableArrayLoad,
+		OpTableArrayNestedLoad, OpTableArrayStore,
+		OpFieldSvals, OpFieldLoad, OpFieldStore,
 		OpMatrixGetF, OpMatrixSetF,
 		OpMatrixFlat, OpMatrixStride,
 		OpMatrixLoadFAt, OpMatrixStoreFAt,

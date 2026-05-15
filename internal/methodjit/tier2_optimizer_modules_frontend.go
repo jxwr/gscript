@@ -3,6 +3,7 @@ package methodjit
 import (
 	"os"
 
+	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
 )
 
@@ -137,7 +138,9 @@ func tier2CallLoweringModules(protocolGlobals map[string]*vm.FuncProto) []Tier2O
 			Phase: Tier2PhaseCallLower,
 			RunWithContext: func(fn *Function, opts *Tier2PipelineOpts, ctx *Tier2OptimizerContext) (*Function, error) {
 				return AnnotateCallABIsPass(CallABIAnnotationConfig{
-					Globals: ctxGlobals(ctx),
+					Globals:                 ctxGlobals(ctx),
+					NumericGlobalValues:     optsNumericGlobalValuesByName(fn, opts),
+					GlobalArrayElementFacts: collectStableGlobalArrayElementFacts(fn),
 				})(fn)
 			},
 		},
@@ -160,6 +163,27 @@ func tier2CallLoweringModules(protocolGlobals map[string]*vm.FuncProto) []Tier2O
 			},
 		},
 	}
+}
+
+func optsNumericGlobalValuesByName(fn *Function, opts *Tier2PipelineOpts) map[string]runtime.Value {
+	if fn == nil || fn.Proto == nil || opts == nil || len(opts.GlobalConstValues) == 0 {
+		return nil
+	}
+	out := make(map[string]runtime.Value)
+	for constIdx, v := range opts.GlobalConstValues {
+		if constIdx < 0 || constIdx >= len(fn.Proto.Constants) {
+			continue
+		}
+		c := fn.Proto.Constants[constIdx]
+		if !c.IsString() || (!v.IsInt() && !v.IsFloat()) {
+			continue
+		}
+		out[c.Str()] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func tier2PostRewriteModules() []Tier2OptimizerModule {

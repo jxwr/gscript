@@ -658,7 +658,7 @@ func driver(m, n) {
 	}
 }
 
-func TestInline_LoopCalleeInsideCallerLoopRejectsImpureNumeric(t *testing.T) {
+func TestInline_NativeEffectTableLoopCalleeInsideCallerLoop(t *testing.T) {
 	src := `
 func sum_table(t, n) {
 	total := 0
@@ -682,8 +682,16 @@ func driver(t, n) {
 	if err != nil {
 		t.Fatalf("InlinePass error: %v", err)
 	}
-	if n := countOp(result, OpCall); n == 0 {
-		t.Fatalf("expected table-reading loop callee to remain behind call boundary\nIR:\n%s", Print(result))
+	if n := countOp(result, OpCall); n != 0 {
+		t.Fatalf("expected table-reading loop callee to inline through guarded native array path\nIR:\n%s", Print(result))
+	}
+	if n := countOp(result, OpTableArrayLoad); n == 0 {
+		t.Fatalf("expected inlined table loop to use TableArrayLoad\nIR:\n%s", Print(result))
+	}
+	if errs := Validate(result); len(errs) > 0 {
+		for _, e := range errs {
+			t.Errorf("validation error: %v", e)
+		}
 	}
 }
 

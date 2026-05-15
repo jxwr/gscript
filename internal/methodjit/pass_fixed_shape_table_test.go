@@ -282,6 +282,64 @@ func TestFixedShapeTableFactsPass_PropagatesStringMapValueShape(t *testing.T) {
 	}
 }
 
+func TestFixedShapeTableFactsPass_InfersSetFieldTypesFromLocalGlobals(t *testing.T) {
+	proto := &vm.FuncProto{
+		Name: "local_global_field_types",
+		Constants: []runtime.Value{
+			runtime.StringValue("mass"),
+			runtime.StringValue("velocity"),
+		},
+	}
+	fn := &Function{Proto: proto, NumRegs: 6}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	base := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Block: b}
+	setGlobal := &Instr{ID: fn.newValueID(), Op: OpSetGlobal, Type: TypeUnknown, Aux: 7, Args: []*Value{base.Value()}, Block: b}
+	obj := &Instr{ID: fn.newValueID(), Op: OpNewTable, Type: TypeTable, Block: b}
+	global := &Instr{ID: fn.newValueID(), Op: OpGetGlobal, Type: TypeAny, Aux: 7, Block: b}
+	mass := &Instr{ID: fn.newValueID(), Op: OpSetField, Type: TypeUnknown, Aux: 0, Args: []*Value{obj.Value(), global.Value()}, Block: b}
+	scale := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Block: b}
+	product := &Instr{ID: fn.newValueID(), Op: OpMul, Type: TypeAny, Args: []*Value{scale.Value(), global.Value()}, Block: b}
+	velocity := &Instr{ID: fn.newValueID(), Op: OpSetField, Type: TypeUnknown, Aux: 1, Args: []*Value{obj.Value(), product.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{obj.Value()}, Block: b}
+	b.Instrs = []*Instr{base, setGlobal, obj, global, mass, scale, product, velocity, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	out, err := FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{})(fn)
+	if err != nil {
+		t.Fatalf("FixedShapeTableFactsPassWith: %v", err)
+	}
+	fact, ok := out.FixedShapeTables[obj.ID]
+	if !ok {
+		t.Fatalf("missing object fact\n%s", Print(out))
+	}
+	if fact.FieldTypes["mass"] != TypeFloat || fact.FieldTypes["velocity"] != TypeFloat {
+		t.Fatalf("field types=%v, want mass/velocity float\n%s", fact.FieldTypes, Print(out))
+	}
+}
+
+func TestMergeSameShapeFactsKeepsKnownFieldTypes(t *testing.T) {
+	fields := []string{"name", "mass"}
+	left := FixedShapeTableFact{
+		ShapeID:    runtime.GetShapeID(fields),
+		FieldNames: fields,
+		FieldTypes: map[string]Type{"name": TypeString},
+	}
+	right := FixedShapeTableFact{
+		ShapeID:    runtime.GetShapeID(fields),
+		FieldNames: fields,
+		FieldTypes: map[string]Type{"name": TypeString, "mass": TypeFloat},
+	}
+
+	merged, ok := mergeSameShapeFacts(left, right)
+	if !ok {
+		t.Fatal("mergeSameShapeFacts rejected matching shapes")
+	}
+	if merged.FieldTypes["name"] != TypeString || merged.FieldTypes["mass"] != TypeFloat {
+		t.Fatalf("merged field types=%v, want name string and mass float", merged.FieldTypes)
+	}
+}
+
 func TestFixedShapeTableFactsPass_PropagatesNestedStringMapValueShape(t *testing.T) {
 	proto := &vm.FuncProto{
 		Name:      "nested_string_map_value_fact",

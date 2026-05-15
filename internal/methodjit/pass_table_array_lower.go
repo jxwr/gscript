@@ -84,6 +84,11 @@ func refreshTableArrayLoweringFeedback(instr *Instr) {
 			instr.Type = typ
 		}
 	}
+	if !tableArrayLowerableKind(instr.Aux2) {
+		if kind, ok := inferredArrayKindForIntKeyTableLoad(instr); ok {
+			instr.Aux2 = kind
+		}
+	}
 }
 
 func tableArrayLowerableKind(kind int64) bool {
@@ -96,8 +101,15 @@ func tableArrayLowerableKind(kind int64) bool {
 }
 
 func tableArrayLowerableGetTable(fn *Function, instr *Instr) bool {
-	if instr == nil || instr.Op != OpGetTable || len(instr.Args) < 2 || !tableArrayLowerableKind(instr.Aux2) {
+	if instr == nil || instr.Op != OpGetTable || len(instr.Args) < 2 {
 		return false
+	}
+	if !tableArrayLowerableKind(instr.Aux2) {
+		kind, ok := inferredArrayKindForIntKeyTableLoad(instr)
+		if !ok {
+			return false
+		}
+		instr.Aux2 = kind
 	}
 	if tableDynamicStringKeyCacheLikely(fn, instr) && !tableKeyProvenInt(instr.Args[1]) {
 		blockID := -1
@@ -109,6 +121,20 @@ func tableArrayLowerableGetTable(fn *Function, instr *Instr) bool {
 		return false
 	}
 	return true
+}
+
+func inferredArrayKindForIntKeyTableLoad(instr *Instr) (int64, bool) {
+	if instr == nil || instr.Op != OpGetTable || len(instr.Args) < 2 {
+		return 0, false
+	}
+	if !tableKeyProvenInt(instr.Args[1]) {
+		return 0, false
+	}
+	// Without mature array-kind feedback, an int-key table load can still use
+	// the ordinary guarded ArrayMixed fast path. The header guard checks table
+	// shape/metatable/kind and the existing table-exit path recovers misses, so
+	// this is speculation by representation, not by benchmark shape.
+	return int64(vm.FBKindMixed), true
 }
 
 func tableKeyProvenInt(key *Value) bool {

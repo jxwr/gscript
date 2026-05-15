@@ -299,7 +299,9 @@ type CallABIDescriptor struct {
 // annotation pass. The pass also derives conservative stable globals from the
 // current proto when possible.
 type CallABIAnnotationConfig struct {
-	Globals map[string]*vm.FuncProto
+	Globals                 map[string]*vm.FuncProto
+	NumericGlobalValues     map[string]runtime.Value
+	GlobalArrayElementFacts map[string]FixedShapeTableFact
 }
 
 // TableArrayDataPtrFact describes the guard-backed ABI contract for a typed
