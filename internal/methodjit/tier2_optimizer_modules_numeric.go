@@ -112,6 +112,16 @@ func tier2LoopPostModules() []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
 		tier2PassModule("UnrollAndJam", Tier2PhaseLoopPost, UnrollAndJamPass),
 		tier2PassModule("MatrixRowPtrFactoring (post-UnrollAndJam)", Tier2PhaseLoopPost, MatrixRowPtrFactoringPass),
+		{
+			Name:  "LICM (post-MatrixRowPtrFactoring)",
+			Phase: Tier2PhaseLoopPost,
+			Run: func(fn *Function, opts *Tier2PipelineOpts) (*Function, error) {
+				if !hasMatrixNativeIR(fn) {
+					return fn, nil
+				}
+				return LICMPass(fn)
+			},
+		},
 		tier2PassModule("QuadraticStepStrengthReduction", Tier2PhaseLoopPost, QuadraticStepStrengthReductionPass),
 		tier2PassModule("RangeAnalysis (post-UnrollAndJam)", Tier2PhaseLoopPost, RangeAnalysisPass),
 		tier2PassModule("DCE (post-UnrollAndJam)", Tier2PhaseLoopPost, DCEPass),

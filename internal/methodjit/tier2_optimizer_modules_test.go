@@ -215,6 +215,7 @@ func TestTier2LoopPostModuleOrder(t *testing.T) {
 	assertTier2ModuleOrder(t, tier2LoopPostModules(), Tier2PhaseLoopPost, []string{
 		"UnrollAndJam",
 		"MatrixRowPtrFactoring (post-UnrollAndJam)",
+		"LICM (post-MatrixRowPtrFactoring)",
 		"QuadraticStepStrengthReduction",
 		"RangeAnalysis (post-UnrollAndJam)",
 		"DCE (post-UnrollAndJam)",
