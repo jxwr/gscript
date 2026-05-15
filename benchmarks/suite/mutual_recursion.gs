@@ -13,7 +13,7 @@ func M(n) {
 }
 
 N := 25
-REPS := 1000
+REPS := 1000000
 
 t0 := time.now()
 result := 0

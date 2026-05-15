@@ -15,7 +15,7 @@ M = function(n)
 end
 
 local N = 25
-local REPS = 1000
+local REPS = 1000000
 
 local t0 = os.clock()
 local result = 0

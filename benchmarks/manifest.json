@@ -344,7 +344,7 @@
       "lua_path": "benchmarks/lua/mutual_recursion.lua",
       "params": {
         "N": 25,
-        "REPS": 1000
+        "REPS": 1000000
       },
       "recommended_scale": {
         "hot": {}
