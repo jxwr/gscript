@@ -379,6 +379,59 @@ func TestTableAccessFeedback_StableStringShapeField(t *testing.T) {
 	}
 }
 
+func TestArgArrayElementShapeFeedback_ObservesStringMapValueShape(t *testing.T) {
+	var fb ArgArrayElementShapeFeedback
+	mapTbl := runtime.NewTable()
+	itemA := runtime.NewTable()
+	itemA.RawSet(runtime.StringValue("stock"), runtime.IntValue(10))
+	itemA.RawSet(runtime.StringValue("reserved"), runtime.IntValue(2))
+	itemB := runtime.NewTable()
+	itemB.RawSet(runtime.StringValue("stock"), runtime.IntValue(20))
+	itemB.RawSet(runtime.StringValue("reserved"), runtime.IntValue(4))
+	mapTbl.RawSet(runtime.StringValue("SKU00001"), runtime.TableValue(itemA))
+	mapTbl.RawSet(runtime.StringValue("SKU00002"), runtime.TableValue(itemB))
+
+	fb.ObserveTableValue(mapTbl)
+	if fb.StringValueShape == nil {
+		t.Fatalf("expected string-map value shape feedback")
+	}
+	shapeID, fields, ok := fb.StringValueShape.StableShape()
+	if !ok {
+		t.Fatalf("expected stable value shape, got %#v", fb.StringValueShape)
+	}
+	if shapeID != itemA.ShapeID() || len(fields) != 2 || fields[0] != "stock" || fields[1] != "reserved" {
+		t.Fatalf("unexpected value shape id=%d fields=%v want id=%d [stock reserved]", shapeID, fields, itemA.ShapeID())
+	}
+	if got := fb.StringValueShape.FieldTypes["stock"]; got != FBInt {
+		t.Fatalf("stock type=%v want int", got)
+	}
+}
+
+func TestArgArrayElementShapeFeedback_ObservesNestedStringMapValueShape(t *testing.T) {
+	var fb ArgArrayElementShapeFeedback
+	inventory := runtime.NewTable()
+	bySKU := runtime.NewTable()
+	item := runtime.NewTable()
+	item.RawSet(runtime.StringValue("stock"), runtime.IntValue(10))
+	item.RawSet(runtime.StringValue("reserved"), runtime.IntValue(2))
+	bySKU.RawSet(runtime.StringValue("SKU00001"), runtime.TableValue(item))
+	inventory.RawSet(runtime.StringValue("items"), runtime.IntValue(1))
+	inventory.RawSet(runtime.StringValue("by_sku"), runtime.TableValue(bySKU))
+
+	fb.ObserveTableValue(inventory)
+	nested, ok := fb.Nested["by_sku"]
+	if !ok {
+		t.Fatalf("expected nested feedback for by_sku: %#v", fb.Nested)
+	}
+	if nested.StringValueShape == nil {
+		t.Fatalf("expected nested string-map value shape: %#v", nested)
+	}
+	shapeID, fields, ok := nested.StringValueShape.StableShape()
+	if !ok || shapeID != item.ShapeID() || len(fields) != 2 || fields[0] != "stock" || fields[1] != "reserved" {
+		t.Fatalf("unexpected nested value shape id=%d fields=%v ok=%v want id=%d [stock reserved]", shapeID, fields, ok, item.ShapeID())
+	}
+}
+
 func TestTableAccessFeedback_MetatableSeen(t *testing.T) {
 	var tk TableKeyFeedback
 	tbl := runtime.NewTable()

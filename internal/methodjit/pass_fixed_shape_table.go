@@ -24,6 +24,7 @@ type FixedShapeTableFact struct {
 	FieldVMProtos     map[string]*vm.FuncProto
 	FieldVMClosures   map[string]uintptr
 	FieldTableFacts   map[string]FixedShapeTableFact
+	StringValueFact   *FixedShapeTableFact
 	ArrayElementType  Type
 	ArrayElementRange intRange
 	Guarded           bool
@@ -148,6 +149,8 @@ func FixedShapeTableFactsPassWith(config FixedShapeTableFactsConfig) PassFunc {
 					fmt.Sprintf("call result carries fixed table shape %v", fact.FieldNames))
 			}
 		}
+		seedLocalStringMapValueFacts(fn, facts)
+		seedLocalFieldTableFacts(fn, facts)
 		arrayElementFacts := inferLocalArrayElementTableFacts(fn, facts)
 		seedLocalArrayElementTableFacts(fn, facts, arrayElementFacts)
 
@@ -155,6 +158,9 @@ func FixedShapeTableFactsPassWith(config FixedShapeTableFactsConfig) PassFunc {
 			return fn, nil
 		}
 		fn.FixedShapeTables = facts
+		annotateFixedShapeStringValueAccesses(fn, facts)
+		annotateFixedShapeGetFields(fn, facts)
+		annotateFixedShapeStringValueAccesses(fn, facts)
 		annotateFixedShapeGetFields(fn, facts)
 		annotateFixedShapeSetFields(fn, facts)
 		annotateFixedShapeArrayElementAccesses(fn, facts)
@@ -352,6 +358,7 @@ func fixedShapeFactFromProfiledValueShape(feedback vm.ArgArrayElementShapeFeedba
 		FieldRanges:       profiledFixedShapeFieldRanges(feedback),
 		FieldLenRanges:    profiledFixedShapeFieldLenRanges(feedback),
 		FieldTableFacts:   profiledNestedFixedShapeTableFacts(feedback),
+		StringValueFact:   profiledStringValueFixedShapeTableFact(feedback),
 		ArrayElementType:  profiledArrayElementType(feedback),
 		ArrayElementRange: profiledArrayElementRange(feedback),
 		Guarded:           true,
@@ -430,6 +437,7 @@ func mergeSameShapeFacts(a, b FixedShapeTableFact) (FixedShapeTableFact, bool) {
 	out.FieldVMProtos = mergeFieldProtoFacts(a.FieldVMProtos, b.FieldVMProtos)
 	out.FieldVMClosures = mergeFieldClosureFacts(a.FieldVMClosures, b.FieldVMClosures)
 	out.FieldTableFacts = mergeNestedTableFacts(a.FieldTableFacts, b.FieldTableFacts)
+	out.StringValueFact = mergeStringValueFacts(a.StringValueFact, b.StringValueFact)
 	if a.ArrayElementType == b.ArrayElementType {
 		out.ArrayElementType = a.ArrayElementType
 	}
@@ -554,6 +562,93 @@ func mergeNestedTableFacts(a, b map[string]FixedShapeTableFact) map[string]Fixed
 		return nil
 	}
 	return out
+}
+
+func mergeStringValueFacts(a, b *FixedShapeTableFact) *FixedShapeTableFact {
+	if a == nil || b == nil {
+		return nil
+	}
+	if a.ShapeID != b.ShapeID || !a.sameShape(*b) {
+		return nil
+	}
+	merged, ok := mergeSameShapeFacts(*a, *b)
+	if !ok {
+		return nil
+	}
+	return cloneFixedShapeTableFactPtr(merged)
+}
+
+func seedLocalStringMapValueFacts(fn *Function, facts map[int]FixedShapeTableFact) {
+	if fn == nil || len(facts) == 0 {
+		return
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpSetTable || len(instr.Args) < 3 ||
+				instr.Args[0] == nil || instr.Args[1] == nil || instr.Args[2] == nil {
+				continue
+			}
+			if !tableKeyProvenString(fn, instr, instr.Args[1]) {
+				continue
+			}
+			valueFact, ok := facts[instr.Args[2].ID]
+			if !ok || valueFact.ShapeID == 0 || len(valueFact.FieldNames) == 0 {
+				continue
+			}
+			tableFact := facts[instr.Args[0].ID]
+			stripped := withoutFieldValues(valueFact)
+			if tableFact.StringValueFact == nil {
+				tableFact.StringValueFact = cloneFixedShapeTableFactPtr(stripped)
+			} else if merged := mergeStringValueFacts(tableFact.StringValueFact, &stripped); merged != nil {
+				tableFact.StringValueFact = merged
+			} else {
+				continue
+			}
+			facts[instr.Args[0].ID] = tableFact
+			functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
+				fmt.Sprintf("local string-map value carries fixed table shape %v", stripped.FieldNames))
+		}
+	}
+}
+
+func seedLocalFieldTableFacts(fn *Function, facts map[int]FixedShapeTableFact) {
+	if fn == nil || len(facts) == 0 {
+		return
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpSetField || len(instr.Args) < 2 ||
+				instr.Args[0] == nil || instr.Args[1] == nil {
+				continue
+			}
+			receiverFact, ok := facts[instr.Args[0].ID]
+			if !ok || receiverFact.ShapeID == 0 {
+				continue
+			}
+			valueFact, ok := facts[instr.Args[1].ID]
+			if !ok || !fixedShapeTableFactHasUsableTableFact(valueFact) {
+				continue
+			}
+			name := fieldNameFromAux(fn, instr.Aux)
+			if name == "" {
+				continue
+			}
+			if _, ok := receiverFact.FieldTableFacts[name]; ok {
+				continue
+			}
+			if receiverFact.FieldTableFacts == nil {
+				receiverFact.FieldTableFacts = make(map[string]FixedShapeTableFact)
+			}
+			receiverFact.FieldTableFacts[name] = withoutFieldValues(valueFact)
+			if receiverFact.FieldTypes == nil {
+				receiverFact.FieldTypes = make(map[string]Type)
+			}
+			receiverFact.FieldTypes[name] = TypeTable
+			facts[instr.Args[0].ID] = receiverFact
+			functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
+				fmt.Sprintf("field %q carries local table fact", name))
+		}
+	}
 }
 
 func inferLocalArrayElementTableFacts(fn *Function, valueFacts map[int]FixedShapeTableFact) map[int]FixedShapeTableFact {
@@ -762,6 +857,7 @@ func guardedFixedShapeArgFact(fact FixedShapeTableFact) (FixedShapeTableFact, bo
 		FieldVMProtos:     cloneStringProtoMap(fact.FieldVMProtos),
 		FieldVMClosures:   cloneStringUintptrMap(fact.FieldVMClosures),
 		FieldTableFacts:   cloneFixedShapeTableFactMap(fact.FieldTableFacts),
+		StringValueFact:   cloneFixedShapeTableFactPtrFromPtr(fact.StringValueFact),
 		ArrayElementType:  fact.ArrayElementType,
 		ArrayElementRange: fact.ArrayElementRange,
 		Guarded:           true,
@@ -958,6 +1054,7 @@ func profiledFixedShapeFactsFromFeedback(target *vm.FuncProto, feedbacks vm.ArgA
 			FieldRanges:       profiledFixedShapeFieldRanges(feedback),
 			FieldLenRanges:    profiledFixedShapeFieldLenRanges(feedback),
 			FieldTableFacts:   profiledNestedFixedShapeTableFacts(feedback),
+			StringValueFact:   profiledStringValueFixedShapeTableFact(feedback),
 			ArrayElementType:  profiledArrayElementType(feedback),
 			ArrayElementRange: profiledArrayElementRange(feedback),
 			Guarded:           true,
@@ -994,6 +1091,7 @@ func profiledFixedShapeArrayElementPolyFactsForProto(target *vm.FuncProto) map[i
 				FieldVMProtos:    profiledShapeCaseFieldVMProtos(shape),
 				FieldVMClosures:  profiledShapeCaseFieldVMClosures(shape),
 				FieldTableFacts:  profiledNestedFixedShapeTableFacts(feedback),
+				StringValueFact:  profiledStringValueFixedShapeTableFact(feedback),
 				Guarded:          true,
 			})
 		}
@@ -1033,7 +1131,8 @@ func profiledNestedFixedShapeTableFacts(feedback vm.ArgArrayElementShapeFeedback
 		shapeID, fields, ok := nested.StableShape()
 		arrayType := profiledArrayElementType(nested)
 		arrayRange := profiledArrayElementRange(nested)
-		if !ok && arrayType == TypeUnknown && !arrayRange.known {
+		stringValueFact := profiledStringValueFixedShapeTableFact(nested)
+		if !ok && arrayType == TypeUnknown && !arrayRange.known && stringValueFact == nil {
 			continue
 		}
 		out[name] = FixedShapeTableFact{
@@ -1042,6 +1141,8 @@ func profiledNestedFixedShapeTableFacts(feedback vm.ArgArrayElementShapeFeedback
 			FieldTypes:        profiledFixedShapeFieldTypes(nested),
 			FieldRanges:       profiledFixedShapeFieldRanges(nested),
 			FieldLenRanges:    profiledFixedShapeFieldLenRanges(nested),
+			FieldTableFacts:   profiledNestedFixedShapeTableFacts(nested),
+			StringValueFact:   stringValueFact,
 			ArrayElementType:  profiledArrayElementType(nested),
 			ArrayElementRange: profiledArrayElementRange(nested),
 			Guarded:           true,
@@ -1051,6 +1152,17 @@ func profiledNestedFixedShapeTableFacts(feedback vm.ArgArrayElementShapeFeedback
 		return nil
 	}
 	return out
+}
+
+func profiledStringValueFixedShapeTableFact(feedback vm.ArgArrayElementShapeFeedback) *FixedShapeTableFact {
+	if feedback.StringValueShape == nil {
+		return nil
+	}
+	fact, ok := fixedShapeFactFromProfiledValueShape(*feedback.StringValueShape)
+	if !ok {
+		return nil
+	}
+	return cloneFixedShapeTableFactPtr(fact)
 }
 
 func profiledFixedShapeFieldTypes(feedback vm.ArgArrayElementShapeFeedback) map[string]Type {
@@ -1230,6 +1342,8 @@ func inferFixedShapeValuesForArgs(fn *Function, globals map[string]*vm.FuncProto
 			facts[instr.ID] = fact
 		}
 	}
+	seedLocalStringMapValueFacts(fn, facts)
+	seedLocalFieldTableFacts(fn, facts)
 	if len(facts) == 0 {
 		return nil
 	}
@@ -1345,6 +1459,8 @@ func AnalyzeFixedShapeReturnFact(proto *vm.FuncProto) (FixedShapeTableFact, bool
 		return FixedShapeTableFact{}, false
 	}
 	facts := inferLocalFixedShapeTables(fn)
+	seedLocalStringMapValueFacts(fn, facts)
+	seedLocalFieldTableFacts(fn, facts)
 	instrByID := fixedShapeInstrByID(fn)
 	var out FixedShapeTableFact
 	var fieldAgg map[string]fixedShapeFieldAccumulator
@@ -1439,6 +1555,7 @@ func withoutFieldValues(fact FixedShapeTableFact) FixedShapeTableFact {
 		FieldVMProtos:     cloneStringProtoMap(fact.FieldVMProtos),
 		FieldVMClosures:   cloneStringUintptrMap(fact.FieldVMClosures),
 		FieldTableFacts:   cloneFixedShapeTableFactMap(fact.FieldTableFacts),
+		StringValueFact:   cloneFixedShapeTableFactPtrFromPtr(fact.StringValueFact),
 		ArrayElementType:  fact.ArrayElementType,
 		ArrayElementRange: fact.ArrayElementRange,
 	}
@@ -1516,6 +1633,8 @@ func inferLocalFixedShapeTables(fn *Function) map[int]FixedShapeTableFact {
 		allocFields := make(map[int][]string)
 		allocValues := make(map[int]map[string]int)
 		allocTypes := make(map[int]map[string]Type)
+		allocFieldTableFacts := make(map[int]map[string]FixedShapeTableFact)
+		allocStringValueFacts := make(map[int]*FixedShapeTableFact)
 		killed := make(map[int]bool)
 		for _, instr := range block.Instrs {
 			switch instr.Op {
@@ -1523,6 +1642,7 @@ func inferLocalFixedShapeTables(fn *Function) map[int]FixedShapeTableFact {
 				allocFields[instr.ID] = nil
 				allocValues[instr.ID] = make(map[string]int)
 				allocTypes[instr.ID] = make(map[string]Type)
+				allocFieldTableFacts[instr.ID] = make(map[string]FixedShapeTableFact)
 				out[instr.ID] = FixedShapeTableFact{}
 			case OpNewFixedTable:
 				fact, ok := fixedShapeFactForFixedConstructor(fn, instr)
@@ -1548,13 +1668,45 @@ func inferLocalFixedShapeTables(fn *Function) map[int]FixedShapeTableFact {
 				if instr.Args[1].Def != nil && instr.Args[1].Def.Type != TypeUnknown && instr.Args[1].Def.Type != TypeAny {
 					allocTypes[allocID][name] = instr.Args[1].Def.Type
 				}
-				out[allocID] = FixedShapeTableFact{
-					ShapeID:       runtime.GetShapeID(allocFields[allocID]),
-					FieldNames:    append([]string(nil), allocFields[allocID]...),
-					FieldValueIDs: cloneStringIntMap(allocValues[allocID]),
-					FieldTypes:    cloneStringTypeMap(allocTypes[allocID]),
+				if valueFact, ok := out[instr.Args[1].ID]; ok && fixedShapeTableFactHasUsableTableFact(valueFact) {
+					allocFieldTableFacts[allocID][name] = withoutFieldValues(valueFact)
+					allocTypes[allocID][name] = TypeTable
 				}
-			case OpSetTable, OpAppend, OpSetList:
+				out[allocID] = FixedShapeTableFact{
+					ShapeID:         runtime.GetShapeID(allocFields[allocID]),
+					FieldNames:      append([]string(nil), allocFields[allocID]...),
+					FieldValueIDs:   cloneStringIntMap(allocValues[allocID]),
+					FieldTypes:      cloneStringTypeMap(allocTypes[allocID]),
+					FieldTableFacts: cloneFixedShapeTableFactMap(allocFieldTableFacts[allocID]),
+				}
+			case OpSetTable:
+				if len(instr.Args) < 3 || instr.Args[0] == nil || instr.Args[1] == nil || instr.Args[2] == nil {
+					continue
+				}
+				allocID := instr.Args[0].ID
+				if _, ok := allocValues[allocID]; !ok || killed[allocID] {
+					continue
+				}
+				valueFact, hasValueFact := out[instr.Args[2].ID]
+				if tableKeyProvenString(fn, instr, instr.Args[1]) && hasValueFact && valueFact.ShapeID != 0 && len(valueFact.FieldNames) != 0 {
+					stripped := withoutFieldValues(valueFact)
+					if existing := allocStringValueFacts[allocID]; existing == nil {
+						allocStringValueFacts[allocID] = cloneFixedShapeTableFactPtr(stripped)
+					} else if merged := mergeStringValueFacts(existing, &stripped); merged != nil {
+						allocStringValueFacts[allocID] = merged
+					} else {
+						killed[allocID] = true
+						delete(out, allocID)
+						continue
+					}
+					fact := out[allocID]
+					fact.StringValueFact = cloneFixedShapeTableFactPtrFromPtr(allocStringValueFacts[allocID])
+					out[allocID] = fact
+					continue
+				}
+				killed[allocID] = true
+				delete(out, allocID)
+			case OpAppend, OpSetList:
 				if len(instr.Args) == 0 || instr.Args[0] == nil {
 					continue
 				}
@@ -1685,6 +1837,56 @@ func annotateFixedShapeGetFields(fn *Function, facts map[int]FixedShapeTableFact
 	}
 }
 
+func annotateFixedShapeStringValueAccesses(fn *Function, facts map[int]FixedShapeTableFact) {
+	if fn == nil || len(facts) == 0 {
+		return
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || len(instr.Args) == 0 || instr.Args[0] == nil {
+				continue
+			}
+			var table *Value
+			switch instr.Op {
+			case OpGetTable:
+				if len(instr.Args) < 2 || !tableKeyProvenString(fn, instr, instr.Args[1]) {
+					continue
+				}
+				table = instr.Args[0]
+			case OpGetTableStringFormatInt:
+				table = instr.Args[0]
+			default:
+				continue
+			}
+			fact, ok := facts[table.ID]
+			if !ok || fact.StringValueFact == nil || !fixedShapeTableFactHasUsableTableFact(*fact.StringValueFact) {
+				continue
+			}
+			valueFact := cloneFixedShapeTableFact(*fact.StringValueFact)
+			facts[instr.ID] = valueFact
+			if instr.Type == TypeAny || instr.Type == TypeUnknown {
+				instr.Type = TypeTable
+			}
+			functionRemarks(fn).Add("FixedShapeTableFacts", "changed", block.ID, instr.ID, instr.Op,
+				fmt.Sprintf("string-map value carries guarded fixed table shape %v", valueFact.FieldNames))
+		}
+	}
+}
+
+func tableKeyProvenString(fn *Function, instr *Instr, key *Value) bool {
+	if key != nil && key.Def != nil && (key.Def.Type == TypeString || key.Def.Op == OpConstString || key.Def.Op == OpStringFormatInt || key.Def.Op == OpStringFormatConst) {
+		return true
+	}
+	if key != nil && key.Def != nil && isStringFieldCall(fn, key.Def, "format") {
+		return true
+	}
+	proto := instrSourceProto(fn, instr)
+	if proto == nil || instr == nil || !instr.HasSource || instr.SourcePC < 0 {
+		return false
+	}
+	return instr.SourcePC < len(proto.Feedback) && proto.Feedback[instr.SourcePC].Right == vm.FBString
+}
+
 func annotateFixedShapeFieldLoad(fn *Function, block *Block, instr *Instr, facts map[int]FixedShapeTableFact) bool {
 	if instr == nil || (instr.Op != OpFieldLoad && instr.Op != OpFieldLoadNumToFloat) || len(instr.Args) == 0 || instr.Args[0] == nil {
 		return false
@@ -1800,7 +2002,7 @@ func annotateFixedShapeSetFields(fn *Function, facts map[int]FixedShapeTableFact
 }
 
 func fixedShapeTableFactHasUsableTableFact(fact FixedShapeTableFact) bool {
-	return fact.ShapeID != 0 || fact.ArrayElementType != TypeUnknown || fact.ArrayElementRange.known
+	return fact.ShapeID != 0 || fact.ArrayElementType != TypeUnknown || fact.ArrayElementRange.known || fact.StringValueFact != nil
 }
 
 func annotateFixedShapeArrayElementAccesses(fn *Function, facts map[int]FixedShapeTableFact) {
@@ -2143,6 +2345,18 @@ func cloneFixedShapeTableFactMap(in map[string]FixedShapeTableFact) map[string]F
 	return out
 }
 
+func cloneFixedShapeTableFactPtr(fact FixedShapeTableFact) *FixedShapeTableFact {
+	cloned := cloneFixedShapeTableFact(fact)
+	return &cloned
+}
+
+func cloneFixedShapeTableFactPtrFromPtr(fact *FixedShapeTableFact) *FixedShapeTableFact {
+	if fact == nil {
+		return nil
+	}
+	return cloneFixedShapeTableFactPtr(*fact)
+}
+
 func cloneFixedShapeTableFact(fact FixedShapeTableFact) FixedShapeTableFact {
 	fact.FieldNames = append([]string(nil), fact.FieldNames...)
 	fact.FieldValueIDs = cloneStringIntMap(fact.FieldValueIDs)
@@ -2153,6 +2367,7 @@ func cloneFixedShapeTableFact(fact FixedShapeTableFact) FixedShapeTableFact {
 	fact.FieldVMProtos = cloneStringProtoMap(fact.FieldVMProtos)
 	fact.FieldVMClosures = cloneStringUintptrMap(fact.FieldVMClosures)
 	fact.FieldTableFacts = cloneFixedShapeTableFactMap(fact.FieldTableFacts)
+	fact.StringValueFact = cloneFixedShapeTableFactPtrFromPtr(fact.StringValueFact)
 	return fact
 }
 

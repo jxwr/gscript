@@ -200,6 +200,7 @@ type ArgArrayElementShapeFeedback struct {
 	FieldRanges       map[string]IntRangeFeedback
 	FieldLenRanges    map[string]IntRangeFeedback
 	Nested            map[string]ArgArrayElementShapeFeedback
+	StringValueShape  *ArgArrayElementShapeFeedback
 	ArrayElementType  FeedbackType
 	ArrayElementRange IntRangeFeedback
 	Shapes            [MaxCallSiteFeedbackVMProtos]ArgArrayElementShapeCase
@@ -315,15 +316,22 @@ func (af *ArgArrayElementShapeFeedback) observeElementTable(tbl *runtime.Table) 
 }
 
 func (af *ArgArrayElementShapeFeedback) ObserveTableValue(tbl *runtime.Table) {
-	af.observeTableValue(tbl, false)
+	af.observeTableValueDepth(tbl, false, 2)
 }
 
 func (af *ArgArrayElementShapeFeedback) observeTableValue(tbl *runtime.Table, invalidOnEmpty bool) {
+	af.observeTableValueDepth(tbl, invalidOnEmpty, 2)
+}
+
+func (af *ArgArrayElementShapeFeedback) observeTableValueDepth(tbl *runtime.Table, invalidOnEmpty bool, depth int) {
 	if af == nil || tbl == nil {
 		return
 	}
 	shapeID := tbl.ShapeID()
 	fields := tbl.ShapeFieldNames()
+	if depth > 0 {
+		af.observeStringValueTables(tbl, depth-1)
+	}
 	if shapeID == 0 || len(fields) == 0 {
 		if invalidOnEmpty {
 			af.Count++
@@ -342,6 +350,21 @@ func (af *ArgArrayElementShapeFeedback) observeTableValue(tbl *runtime.Table, in
 	af.observeNestedTables(tbl, fields)
 	af.observeArrayElements(tbl)
 	af.Count++
+}
+
+func (af *ArgArrayElementShapeFeedback) observeStringValueTables(tbl *runtime.Table, depth int) {
+	if af == nil || tbl == nil {
+		return
+	}
+	tbl.SampleStringTableValues(argArrayElementShapeSampleLimit, func(value runtime.Value) {
+		if !value.IsTable() {
+			return
+		}
+		if af.StringValueShape == nil {
+			af.StringValueShape = &ArgArrayElementShapeFeedback{}
+		}
+		af.StringValueShape.observeTableValueDepth(value.Table(), false, depth)
+	})
 }
 
 func (af ArgArrayElementShapeFeedback) StableShape() (shapeID uint32, fieldNames []string, ok bool) {
@@ -541,13 +564,15 @@ func (af *ArgArrayElementShapeFeedback) observeNestedTables(tbl *runtime.Table, 
 		var arrayElementRange IntRangeFeedback
 		observeArrayElementFeedback(nestedTable, &arrayElementType, &arrayElementRange)
 		hasArrayElement := arrayElementType != FBUnobserved
-		if !hasShape && !hasArrayElement {
-			continue
-		}
 		if af.Nested == nil {
 			af.Nested = make(map[string]ArgArrayElementShapeFeedback)
 		}
 		nested := af.Nested[field]
+		nested.observeStringValueTables(nestedTable, 1)
+		hasStringValue := nested.StringValueShape != nil
+		if !hasShape && !hasArrayElement && !hasStringValue {
+			continue
+		}
 		if hasShape && nested.Count == 0 {
 			nested.ShapeID = shapeID
 			nested.FieldNames = nestedFields

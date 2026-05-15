@@ -25,6 +25,10 @@ func SourceFeedbackRefreshPass(fn *Function) (*Function, error) {
 				continue
 			}
 			switch instr.Op {
+			case OpGetField, OpGetFieldNumToFloat:
+				sourceFeedbackRefreshGetField(fn, block, instr)
+			case OpSetField:
+				sourceFeedbackRefreshSetField(fn, block, instr)
 			case OpGetTable:
 				sourceFeedbackRefreshGetTable(fn, block, instr)
 			case OpSetTable:
@@ -35,6 +39,30 @@ func SourceFeedbackRefreshPass(fn *Function) (*Function, error) {
 		}
 	}
 	return fn, nil
+}
+
+func sourceFeedbackRefreshGetField(fn *Function, block *Block, instr *Instr) {
+	if aux2 := sourceFeedbackFieldShapeAux2(instr.SourceProto, instr.SourcePC); aux2 != 0 && instr.Aux2 == 0 {
+		instr.Aux2 = aux2
+		functionRemarks(fn).Add("SourceFeedbackRefresh", "changed", block.ID, instr.ID, instr.Op,
+			"restored source field shape")
+	}
+	if typ, ok := sourceFeedbackFieldValueType(instr.SourceProto, instr.SourcePC); ok &&
+		(instr.Type == TypeAny || instr.Type == TypeUnknown) {
+		instr.Type = typ
+		functionRemarks(fn).Add("SourceFeedbackRefresh", "changed", block.ID, instr.ID, instr.Op,
+			"restored source field type "+typ.String())
+	}
+}
+
+func sourceFeedbackRefreshSetField(fn *Function, block *Block, instr *Instr) {
+	aux2 := sourceFeedbackFieldShapeAux2(instr.SourceProto, instr.SourcePC)
+	if aux2 == 0 || instr.Aux2 != 0 {
+		return
+	}
+	instr.Aux2 = aux2
+	functionRemarks(fn).Add("SourceFeedbackRefresh", "changed", block.ID, instr.ID, instr.Op,
+		"restored source field shape")
 }
 
 func sourceFeedbackRefreshGetTable(fn *Function, block *Block, instr *Instr) {
@@ -105,4 +133,26 @@ func sourceFeedbackResultType(proto *vm.FuncProto, pc int) (Type, bool) {
 		}
 	}
 	return TypeUnknown, false
+}
+
+func sourceFeedbackFieldShapeAux2(proto *vm.FuncProto, pc int) int64 {
+	if proto == nil || pc < 0 || proto.FieldAccessFeedback == nil || pc >= len(proto.FieldAccessFeedback) {
+		return 0
+	}
+	feedback := proto.FieldAccessFeedback[pc]
+	if feedback.Count == 0 {
+		return 0
+	}
+	shapeID, fieldIdx, ok := feedback.StableShapeField()
+	if !ok {
+		return 0
+	}
+	return int64(shapeID)<<32 | int64(uint32(fieldIdx))
+}
+
+func sourceFeedbackFieldValueType(proto *vm.FuncProto, pc int) (Type, bool) {
+	if proto == nil || pc < 0 || proto.FieldAccessFeedback == nil || pc >= len(proto.FieldAccessFeedback) {
+		return TypeUnknown, false
+	}
+	return feedbackToIRType(proto.FieldAccessFeedback[pc].ValueType)
 }

@@ -1375,6 +1375,51 @@ func (t *Table) RawSet(key, val Value) {
 	}
 }
 
+// SampleStringTableValues visits up to limit table-valued entries stored under
+// string keys. It samples both fixed-shape string fields and the hash part so
+// profiling can learn generic string-map value shapes without exposing table
+// internals.
+func (t *Table) SampleStringTableValues(limit int, visit func(Value)) {
+	if t == nil || limit <= 0 || visit == nil {
+		return
+	}
+	if t.mu != nil {
+		t.mu.RLock()
+		defer t.mu.RUnlock()
+	}
+	seen := 0
+	for _, val := range t.svals {
+		if !val.IsTable() {
+			continue
+		}
+		visit(val)
+		seen++
+		if seen >= limit {
+			return
+		}
+	}
+	for _, val := range t.smap {
+		if !val.IsTable() {
+			continue
+		}
+		visit(val)
+		seen++
+		if seen >= limit {
+			return
+		}
+	}
+	for key, val := range t.hash {
+		if !key.IsString() || !val.IsTable() {
+			continue
+		}
+		visit(val)
+		seen++
+		if seen >= limit {
+			return
+		}
+	}
+}
+
 // setShape updates both t.shape and t.shapeID from the current skeys.
 // Pass nil/empty skeys to clear (hash-mode or empty table).
 // Must be called with lock held (if mu != nil).

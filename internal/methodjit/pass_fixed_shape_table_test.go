@@ -234,6 +234,112 @@ func TestFixedShapeTableFactsPass_PropagatesNestedArrayElementFacts(t *testing.T
 	}
 }
 
+func TestFixedShapeTableFactsPass_PropagatesStringMapValueShape(t *testing.T) {
+	proto := &vm.FuncProto{
+		Name:      "string_map_value_fact",
+		NumParams: 1,
+		Constants: []runtime.Value{
+			runtime.StringValue("SKU00001"),
+			runtime.StringValue("stock"),
+		},
+	}
+	fn := &Function{Proto: proto, NumRegs: 4}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	bySKU := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	key := &Instr{ID: fn.newValueID(), Op: OpConstString, Type: TypeString, Aux: 0, Block: b}
+	item := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeAny, Args: []*Value{bySKU.Value(), key.Value()}, Block: b}
+	stock := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeAny, Aux: 1, Args: []*Value{item.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{stock.Value()}, Block: b}
+	b.Instrs = []*Instr{bySKU, key, item, stock, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	itemFields := []string{"stock", "reserved"}
+	out, err := FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{
+		ArgFacts: map[int]FixedShapeTableFact{
+			0: {
+				ShapeID:    91,
+				FieldNames: []string{"sentinel"},
+				StringValueFact: &FixedShapeTableFact{
+					ShapeID:    runtime.GetShapeID(itemFields),
+					FieldNames: itemFields,
+					FieldTypes: map[string]Type{"stock": TypeInt, "reserved": TypeInt},
+					Guarded:    true,
+				},
+				Guarded: true,
+			},
+		},
+		EntryGuardedArgs: true,
+	})(fn)
+	if err != nil {
+		t.Fatalf("FixedShapeTableFactsPassWith: %v", err)
+	}
+	if fact, ok := out.FixedShapeTables[item.ID]; !ok || fact.ShapeID == 0 || len(fact.FieldNames) != 2 {
+		t.Fatalf("GetTable did not receive string-map value fact: %#v\n%s", fact, Print(out))
+	}
+	if stock.Aux2 == 0 || stock.Type != TypeInt {
+		t.Fatalf("value field was not annotated from string-map shape: aux2=%d type=%s\n%s", stock.Aux2, stock.Type, Print(out))
+	}
+}
+
+func TestFixedShapeTableFactsPass_PropagatesNestedStringMapValueShape(t *testing.T) {
+	proto := &vm.FuncProto{
+		Name:      "nested_string_map_value_fact",
+		NumParams: 1,
+		Constants: []runtime.Value{
+			runtime.StringValue("by_sku"),
+			runtime.StringValue("SKU00001"),
+			runtime.StringValue("stock"),
+		},
+	}
+	fn := &Function{Proto: proto, NumRegs: 5}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	inv := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	bySKU := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeAny, Aux: 0, Args: []*Value{inv.Value()}, Block: b}
+	key := &Instr{ID: fn.newValueID(), Op: OpConstString, Type: TypeString, Aux: 1, Block: b}
+	item := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeAny, Args: []*Value{bySKU.Value(), key.Value()}, Block: b}
+	stock := &Instr{ID: fn.newValueID(), Op: OpGetField, Type: TypeAny, Aux: 2, Args: []*Value{item.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{stock.Value()}, Block: b}
+	b.Instrs = []*Instr{inv, bySKU, key, item, stock, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	itemFields := []string{"stock", "reserved"}
+	out, err := FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{
+		ArgFacts: map[int]FixedShapeTableFact{
+			0: {
+				ShapeID:    93,
+				FieldNames: []string{"by_sku"},
+				FieldTableFacts: map[string]FixedShapeTableFact{
+					"by_sku": {
+						StringValueFact: &FixedShapeTableFact{
+							ShapeID:    runtime.GetShapeID(itemFields),
+							FieldNames: itemFields,
+							FieldTypes: map[string]Type{"stock": TypeInt, "reserved": TypeInt},
+							Guarded:    true,
+						},
+						Guarded: true,
+					},
+				},
+				Guarded: true,
+			},
+		},
+		EntryGuardedArgs: true,
+	})(fn)
+	if err != nil {
+		t.Fatalf("FixedShapeTableFactsPassWith: %v", err)
+	}
+	if fact, ok := out.FixedShapeTables[bySKU.ID]; !ok || fact.StringValueFact == nil {
+		t.Fatalf("nested map did not retain string value fact: %#v\n%s", fact, Print(out))
+	}
+	if fact, ok := out.FixedShapeTables[item.ID]; !ok || fact.ShapeID == 0 {
+		t.Fatalf("nested string-map lookup did not produce item fact: %#v\n%s", fact, Print(out))
+	}
+	if stock.Aux2 == 0 || stock.Type != TypeInt {
+		t.Fatalf("nested value field was not annotated: aux2=%d type=%s\n%s", stock.Aux2, stock.Type, Print(out))
+	}
+}
+
 func TestFixedShapeTableFactsPass_ForwardsReturnedParamField(t *testing.T) {
 	top := compileProto(t, `
 func makePair(x, y) {
@@ -600,6 +706,46 @@ result := driver()
 	}
 	if got := countOps(out)[OpTableArrayLoad]; got == 0 {
 		t.Fatalf("guarded array element fact should feed mixed array lowering:\n%s", Print(out))
+	}
+}
+
+func TestFixedShapeReturnFact_CarriesStringMapValueShape(t *testing.T) {
+	top := compileProto(t, `
+func buildInventory(n) {
+    bySKU := {}
+    for i := 1; i <= n; i++ {
+        key := string.format("SKU%05d", i)
+        item := {stock: i, reserved: i + 1}
+        bySKU[key] = item
+    }
+    return {by_sku: bySKU}
+}
+result := buildInventory(2)
+`)
+	buildInventory := findProtoByName(top, "buildInventory")
+	if buildInventory == nil {
+		t.Fatal("expected buildInventory proto")
+	}
+	fn := BuildGraph(buildInventory)
+	out, err := FixedShapeTableFactsPass(nil)(fn)
+	if err != nil {
+		t.Fatalf("FixedShapeTableFactsPass: %v", err)
+	}
+	var returnedFact FixedShapeTableFact
+	for _, block := range out.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op == OpReturn && len(instr.Args) == 1 && instr.Args[0] != nil {
+				returnedFact = out.FixedShapeTables[instr.Args[0].ID]
+			}
+		}
+	}
+	bySKUFact, ok := returnedFact.FieldTableFacts["by_sku"]
+	if !ok || bySKUFact.StringValueFact == nil {
+		t.Fatalf("returned by_sku did not carry string-map value fact: %#v\n%s", returnedFact, Print(out))
+	}
+	if bySKUFact.StringValueFact.ShapeID == 0 || len(bySKUFact.StringValueFact.FieldNames) != 2 ||
+		bySKUFact.StringValueFact.FieldNames[0] != "stock" || bySKUFact.StringValueFact.FieldNames[1] != "reserved" {
+		t.Fatalf("unexpected string-map value fact: %#v", bySKUFact.StringValueFact)
 	}
 }
 
