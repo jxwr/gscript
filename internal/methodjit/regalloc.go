@@ -284,7 +284,7 @@ func allowNestedFloatPhiOverride(fn *Function) bool {
 				OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat,
 				OpNumToFloat, OpSqrt, OpFMA, OpFMSUB,
 				OpLtInt, OpLeInt, OpEqInt, OpLtFloat, OpLeFloat,
-				OpGuardType, OpGuardIntRange, OpGuardShapeFieldType, OpGuardTruthy,
+				OpGuardType, OpGuardIntRange, OpGuardShapeFieldType, OpGuardShapeFieldTypeMask, OpGuardTruthy,
 				OpJump, OpBranch, OpReturn:
 				continue
 			default:
@@ -1479,7 +1479,7 @@ func instructionHasNoSSAResult(instr *Instr) bool {
 	case OpNop, OpStoreSlot,
 		OpSetTable, OpTableArrayStore, OpTableArraySwap, OpTableArraySwapPairs, OpTableBoolArrayFill,
 		OpFieldStore, OpSetField, OpSetList, OpAppend,
-		OpGuardGlobalConst, OpGuardTableKind, OpGuardShapeFieldType,
+		OpGuardGlobalConst, OpGuardTableKind, OpGuardShapeFieldType, OpGuardShapeFieldTypeMask,
 		OpSetGlobal, OpSetUpval,
 		OpMatrixSetF, OpMatrixStoreFAt, OpMatrixStoreFRow, OpMatrixStoreFRowConst,
 		OpClose, OpGo, OpSend:

@@ -988,6 +988,49 @@ func (ec *emitContext) emitGuardShapeFieldType(instr *Instr) {
 	ec.asm.Label(doneLabel)
 }
 
+func (ec *emitContext) emitGuardShapeFieldTypeMask(instr *Instr) {
+	shapeID := uint32(instr.Aux >> 32)
+	want := Type(uint32(instr.Aux))
+	mask := uint64(instr.Aux2)
+	runtimeType, ok := irTypeToRuntimeValueType(want)
+	deoptLabel := ec.uniqueLabel("guard_shape_field_type_mask_deopt")
+	doneLabel := ec.uniqueLabel("guard_shape_field_type_mask_done")
+	if !ok || shapeID == 0 || mask == 0 {
+		ec.emitPreciseDeopt(instr)
+		return
+	}
+	basePtr := uintptr(runtime.ShapeFieldTypeEpochPtr(shapeID, 0))
+	if basePtr == 0 {
+		ec.emitPreciseDeopt(instr)
+		return
+	}
+	ec.asm.LoadImm64(jit.X8, int64(basePtr))
+	for fieldIdx := 0; fieldIdx < 64; fieldIdx++ {
+		if mask&(uint64(1)<<uint(fieldIdx)) == 0 {
+			continue
+		}
+		if got, stable := runtime.ShapeFieldStableType(shapeID, fieldIdx); !stable || got != runtimeType {
+			ec.emitPreciseDeopt(instr)
+			return
+		}
+		epoch := runtime.ShapeFieldTypeEpoch(shapeID, fieldIdx)
+		offset := fieldIdx * 8
+		if offset <= 32760 {
+			ec.asm.LDR(jit.X9, jit.X8, offset)
+		} else {
+			ec.asm.LoadImm64(jit.X10, int64(offset))
+			ec.asm.LDRreg(jit.X9, jit.X8, jit.X10)
+		}
+		ec.asm.LoadImm64(jit.X10, int64(epoch))
+		ec.asm.CMPreg(jit.X9, jit.X10)
+		ec.asm.BCond(jit.CondNE, deoptLabel)
+	}
+	ec.asm.B(doneLabel)
+	ec.asm.Label(deoptLabel)
+	ec.emitPreciseDeopt(instr)
+	ec.asm.Label(doneLabel)
+}
+
 func irTypeToRuntimeValueType(t Type) (runtime.ValueType, bool) {
 	switch t {
 	case TypeInt:

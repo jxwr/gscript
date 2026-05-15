@@ -16,10 +16,9 @@ func ShapeFieldTypeGuardPass(fn *Function) (*Function, error) {
 	seedShapeFieldTypesFromFixedConstructors(fn)
 	type key struct {
 		shapeID uint32
-		field   int
 		typ     Type
 	}
-	guards := make(map[key]bool)
+	guardMasks := make(map[key]uint64)
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
 			if instr == nil || instr.Op != OpFieldLoad || instr.Type != TypeFloat || len(instr.Args) == 0 || instr.Args[0] == nil {
@@ -48,8 +47,11 @@ func ShapeFieldTypeGuardPass(fn *Function) (*Function, error) {
 					fmt.Sprintf("shape %d field %d cannot elide type check: %s", shapeID, fieldIdx, reason))
 				continue
 			}
-			k := key{shapeID: shapeID, field: fieldIdx, typ: instr.Type}
-			guards[k] = true
+			if fieldIdx >= 64 {
+				continue
+			}
+			k := key{shapeID: shapeID, typ: instr.Type}
+			guardMasks[k] |= uint64(1) << uint(fieldIdx)
 			if fn.ShapeFieldTypeElidedLoads == nil {
 				fn.ShapeFieldTypeElidedLoads = make(map[int]bool)
 			}
@@ -58,25 +60,25 @@ func ShapeFieldTypeGuardPass(fn *Function) (*Function, error) {
 				fmt.Sprintf("elide per-load type check for shape %d field %d as %s", shapeID, fieldIdx, instr.Type))
 		}
 	}
-	if len(guards) == 0 {
+	if len(guardMasks) == 0 {
 		return fn, nil
 	}
 	entry := fn.Entry
 	if entry == nil {
 		entry = fn.Blocks[0]
 	}
-	for k := range guards {
+	for k, mask := range guardMasks {
 		guard := &Instr{
 			ID:    fn.newValueID(),
-			Op:    OpGuardShapeFieldType,
+			Op:    OpGuardShapeFieldTypeMask,
 			Type:  TypeBool,
-			Aux:   int64(k.shapeID)<<32 | int64(uint32(k.field)),
-			Aux2:  int64(k.typ),
+			Aux:   int64(k.shapeID)<<32 | int64(uint32(k.typ)),
+			Aux2:  int64(mask),
 			Block: entry,
 		}
 		insertBeforeTerminator(entry, guard)
 		functionRemarks(fn).Add("ShapeFieldTypeGuard", "changed", entry.ID, guard.ID, guard.Op,
-			fmt.Sprintf("guard shape %d field %d stable type %s", k.shapeID, k.field, k.typ))
+			fmt.Sprintf("guard shape %d field mask 0x%x stable type %s", k.shapeID, mask, k.typ))
 	}
 	return fn, nil
 }

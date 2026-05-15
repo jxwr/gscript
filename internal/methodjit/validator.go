@@ -269,6 +269,14 @@ func (v *validator) checkOpContracts() {
 					v.errorf("B%d: GuardShapeFieldType (v%d) must carry shape/field Aux and concrete Aux2 type, got Aux=%d Aux2=%d",
 						blk.ID, instr.ID, instr.Aux, instr.Aux2)
 				}
+			case OpGuardShapeFieldTypeMask:
+				v.checkArgCount(blk, instr, 0, 0)
+				shapeID := uint32(instr.Aux >> 32)
+				typ := Type(uint32(instr.Aux))
+				if shapeID == 0 || typ == TypeAny || typ == TypeUnknown || instr.Aux2 == 0 {
+					v.errorf("B%d: GuardShapeFieldTypeMask (v%d) must carry shape/type Aux and non-empty Aux2 mask, got Aux=%d Aux2=%d",
+						blk.ID, instr.ID, instr.Aux, instr.Aux2)
+				}
 			case OpFieldSvals:
 				v.checkArgCount(blk, instr, 1, 1)
 				if instr.Aux <= 0 {

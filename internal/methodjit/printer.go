@@ -166,6 +166,10 @@ func printInstr(sb *strings.Builder, i *Instr) {
 		shapeID := uint32(i.Aux >> 32)
 		fieldIdx := int(int32(i.Aux & 0xFFFFFFFF))
 		fmt.Fprintf(sb, "shape[%d].field[%d] stable_type == %s", shapeID, fieldIdx, Type(i.Aux2))
+	case OpGuardShapeFieldTypeMask:
+		shapeID := uint32(i.Aux >> 32)
+		typ := Type(uint32(i.Aux))
+		fmt.Fprintf(sb, "shape[%d].fields[0x%x] stable_type == %s", shapeID, uint64(i.Aux2), typ)
 	case OpPhi:
 		args := make([]string, len(i.Args))
 		for j, a := range i.Args {

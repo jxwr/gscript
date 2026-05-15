@@ -1159,6 +1159,23 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 			return nil, false, fmt.Errorf("IR interpreter: GuardShapeFieldType failed")
 		}
 
+	case OpGuardShapeFieldTypeMask:
+		shapeID := uint32(instr.Aux >> 32)
+		want, ok := irTypeToRuntimeValueType(Type(uint32(instr.Aux)))
+		if !ok {
+			return nil, false, fmt.Errorf("IR interpreter: GuardShapeFieldTypeMask unsupported type")
+		}
+		mask := uint64(instr.Aux2)
+		for fieldIdx := 0; fieldIdx < 64; fieldIdx++ {
+			if mask&(uint64(1)<<uint(fieldIdx)) == 0 {
+				continue
+			}
+			got, stable := runtime.ShapeFieldStableType(shapeID, fieldIdx)
+			if !stable || got != want {
+				return nil, false, fmt.Errorf("IR interpreter: GuardShapeFieldTypeMask failed")
+			}
+		}
+
 	case OpGuardNonNil:
 		s.values[instr.ID] = s.val(instr.Args[0])
 
