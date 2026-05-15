@@ -169,6 +169,118 @@ func (ec *emitContext) emitStringFormatIntCacheStore(pattern string, intReg, val
 	asm.STR(jit.X5, jit.X4, int(unsafe.Offsetof(runtime.NativeStringFormatIntCacheEntry{}.PatternData)))
 }
 
+// emitStringFormatIntArenaBytes writes string.format(pattern, X1) to the
+// native string arena and returns key data in X5 and length in X6. The caller
+// must reserve at least 64 bytes at SP for temporary reversed digits and must
+// already have rejected MinInt64.
+func (ec *emitContext) emitStringFormatIntArenaBytes(pat stringFormatIntPatternNative, slowLabel string) {
+	asm := ec.asm
+	nonNegLabel := ec.uniqueLabel("strfmt_bytes_nonneg")
+	digitLoopLabel := ec.uniqueLabel("strfmt_bytes_digit_loop")
+	widthOKLabel := ec.uniqueLabel("strfmt_bytes_width_ok")
+	signLabel := ec.uniqueLabel("strfmt_bytes_sign")
+	signZeroPadLabel := ec.uniqueLabel("strfmt_bytes_sign_zeropad")
+	padLoopLabel := ec.uniqueLabel("strfmt_bytes_pad_loop")
+	padDoneLabel := ec.uniqueLabel("strfmt_bytes_pad_done")
+	digitCopyLoopLabel := ec.uniqueLabel("strfmt_bytes_digit_copy")
+	digitCopyDoneLabel := ec.uniqueLabel("strfmt_bytes_digit_done")
+	arenaCASLoopLabel := ec.uniqueLabel("strfmt_bytes_arena_cas")
+	arenaNoSpaceLabel := ec.uniqueLabel("strfmt_bytes_arena_full")
+
+	asm.MOVimm16(jit.X2, 0) // sign flag
+	asm.MOVreg(jit.X3, jit.X1)
+	asm.CMPimm(jit.X1, 0)
+	asm.BCond(jit.CondGE, nonNegLabel)
+	asm.MOVimm16(jit.X2, 1)
+	asm.NEG(jit.X3, jit.X1)
+	asm.Label(nonNegLabel)
+
+	asm.MOVimm16(jit.X4, 0) // reversed digit count
+	asm.MOVimm16(jit.X10, 10)
+	asm.Label(digitLoopLabel)
+	asm.SDIV(jit.X11, jit.X3, jit.X10)
+	asm.MSUB(jit.X12, jit.X11, jit.X10, jit.X3)
+	asm.ADDimm(jit.X12, jit.X12, uint16('0'))
+	asm.STRBreg(jit.X12, jit.SP, jit.X4)
+	asm.ADDimm(jit.X4, jit.X4, 1)
+	asm.MOVreg(jit.X3, jit.X11)
+	asm.CBNZ(jit.X3, digitLoopLabel)
+
+	asm.ADDreg(jit.X13, jit.X4, jit.X2)
+	asm.LoadImm64(jit.X14, int64(pat.width))
+	asm.CMPreg(jit.X14, jit.X13)
+	asm.BCond(jit.CondLE, widthOKLabel)
+	asm.MOVreg(jit.X13, jit.X14)
+	asm.Label(widthOKLabel)
+	asm.SUBreg(jit.X14, jit.X13, jit.X4)
+	asm.SUBreg(jit.X14, jit.X14, jit.X2)
+
+	totalStatic := len(pat.prefix) + len(pat.suffix)
+	ec.emitAddConst(jit.X15, jit.X13, totalStatic, jit.X17)
+	asm.ADDimm(jit.X16, jit.X15, 31)
+	asm.LoadImm64(jit.X17, -16)
+	asm.ANDreg(jit.X16, jit.X16, jit.X17)
+
+	asm.LoadImm64(jit.X17, int64(uintptr(unsafe.Pointer(runtime.NativeStringArenaCursorPtr()))))
+	asm.LoadImm64(jit.X3, int64(uintptr(unsafe.Pointer(runtime.NativeStringArenaEndPtr()))))
+	asm.LDR(jit.X3, jit.X3, 0)
+	asm.Label(arenaCASLoopLabel)
+	asm.LDAXR(jit.X0, jit.X17)
+	asm.ADDreg(jit.X5, jit.X0, jit.X16)
+	asm.CMPreg(jit.X5, jit.X3)
+	asm.BCond(jit.CondHI, arenaNoSpaceLabel)
+	asm.STLXR(jit.X6, jit.X5, jit.X17)
+	asm.CBNZ(jit.X6, arenaCASLoopLabel)
+	asm.B(arenaNoSpaceLabel + "_done")
+	asm.Label(arenaNoSpaceLabel)
+	asm.CLREX()
+	asm.B(slowLabel)
+	asm.Label(arenaNoSpaceLabel + "_done")
+
+	asm.ADDimm(jit.X5, jit.X0, 16)
+	asm.STR(jit.X5, jit.SP, 56) // stable data pointer for the caller
+	asm.STR(jit.X5, jit.X0, 0)
+	asm.STR(jit.X15, jit.X0, 8)
+
+	ec.emitCopyConstBytes(jit.X5, pat.prefix)
+	if len(pat.prefix) > 0 {
+		ec.emitAddConst(jit.X5, jit.X5, len(pat.prefix), jit.X17)
+	}
+
+	asm.CBNZ(jit.X2, signLabel)
+	ec.emitRepeatByte(jit.X5, jit.X14, pat.pad, padLoopLabel, padDoneLabel)
+	asm.B(digitCopyLoopLabel)
+
+	asm.Label(signLabel)
+	if pat.pad == '0' {
+		asm.B(signZeroPadLabel)
+	}
+	ec.emitRepeatByte(jit.X5, jit.X14, pat.pad, padLoopLabel+"_sign", padDoneLabel+"_sign")
+	asm.MOVimm16(jit.X12, uint16('-'))
+	asm.STRB(jit.X12, jit.X5, 0)
+	asm.ADDimm(jit.X5, jit.X5, 1)
+	asm.B(digitCopyLoopLabel)
+
+	asm.Label(signZeroPadLabel)
+	asm.MOVimm16(jit.X12, uint16('-'))
+	asm.STRB(jit.X12, jit.X5, 0)
+	asm.ADDimm(jit.X5, jit.X5, 1)
+	ec.emitRepeatByte(jit.X5, jit.X14, '0', padLoopLabel+"_zero", padDoneLabel+"_zero")
+
+	asm.Label(digitCopyLoopLabel)
+	asm.CBZ(jit.X4, digitCopyDoneLabel)
+	asm.SUBimm(jit.X4, jit.X4, 1)
+	asm.LDRBreg(jit.X12, jit.SP, jit.X4)
+	asm.STRB(jit.X12, jit.X5, 0)
+	asm.ADDimm(jit.X5, jit.X5, 1)
+	asm.B(digitCopyLoopLabel)
+	asm.Label(digitCopyDoneLabel)
+
+	ec.emitCopyConstBytes(jit.X5, pat.suffix)
+	asm.LDR(jit.X5, jit.SP, 56)
+	asm.MOVreg(jit.X6, jit.X15)
+}
+
 func (ec *emitContext) emitStringFormatIntNative(instr *Instr) {
 	if instr == nil || len(instr.Args) != 3 || ec.fn == nil {
 		ec.emitStringFormatIntExit(instr)

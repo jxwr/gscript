@@ -3,6 +3,8 @@
 package methodjit
 
 import (
+	"math"
+
 	"github.com/gscript/gscript/internal/jit"
 	"github.com/gscript/gscript/internal/runtime"
 	"github.com/gscript/gscript/internal/vm"
@@ -498,6 +500,20 @@ func (ec *emitContext) emitFormattedIntQueryCacheSlot(dst, tmp jit.Reg, pattern 
 	asm.ADDreg(dst, tmp, dst)
 }
 
+func (ec *emitContext) emitFormattedIntQueryCacheStore(pattern string, intReg, valueReg jit.Reg) {
+	asm := ec.asm
+	ec.emitFormattedIntQueryCacheSlot(jit.X11, jit.X12, pattern, intReg)
+	asm.LDR(jit.X13, jit.X0, jit.TableOffStringLookupVer)
+	asm.STR(jit.X0, jit.X11, nativeFormattedIntQueryCacheEntryTable)
+	asm.STR(jit.X13, jit.X11, nativeFormattedIntQueryCacheEntryVersion)
+	asm.LoadImm64(jit.X13, int64(stringDataPtr(pattern)))
+	asm.STR(jit.X13, jit.X11, nativeFormattedIntQueryCacheEntryPatternData)
+	asm.LoadImm64(jit.X13, int64(len(pattern)))
+	asm.STR(jit.X13, jit.X11, nativeFormattedIntQueryCacheEntryPatternLen)
+	asm.STR(intReg, jit.X11, nativeFormattedIntQueryCacheEntryN)
+	asm.STR(valueReg, jit.X11, nativeFormattedIntQueryCacheEntryValue)
+}
+
 func (ec *emitContext) emitGetTableStringFormatIntNative(instr *Instr) {
 	if instr == nil || len(instr.Args) != 4 || ec.fn == nil {
 		ec.emitGetTableStringFormatIntExit(instr)
@@ -509,8 +525,13 @@ func (ec *emitContext) emitGetTableStringFormatIntNative(instr *Instr) {
 		return
 	}
 	pattern := ec.fn.StringFormatPatterns[patternIdx]
+	pat, canFormatNative := parseStringFormatIntPatternNative(pattern)
+	canFormatNative = canFormatNative && runtime.NativeStringArenaEnsure()
 	asm := ec.asm
-	missLabel := ec.uniqueLabel("fmtint_gettable_miss")
+	cacheMissLabel := ec.uniqueLabel("fmtint_gettable_cache_miss")
+	nativeMissLabel := ec.uniqueLabel("fmtint_gettable_miss")
+	slowAfterStackLabel := ec.uniqueLabel("fmtint_gettable_stack_miss")
+	probeMissAfterStackLabel := ec.uniqueLabel("fmtint_gettable_probe_stack_miss")
 	doneLabel := ec.uniqueLabel("fmtint_gettable_done")
 
 	resultSlot, hasSlot := ec.slotMap[instr.ID]
@@ -526,57 +547,57 @@ func (ec *emitContext) emitGetTableStringFormatIntNative(instr *Instr) {
 	if tblReg != jit.X0 {
 		asm.MOVreg(jit.X0, tblReg)
 	}
-	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, missLabel)
+	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, nativeMissLabel)
 	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
-	asm.CBZ(jit.X0, missLabel)
+	asm.CBZ(jit.X0, nativeMissLabel)
 	asm.LDR(jit.X2, jit.X0, jit.TableOffMetatable)
-	asm.CBNZ(jit.X2, missLabel)
+	asm.CBNZ(jit.X2, nativeMissLabel)
 
 	callee := ec.resolveValueNB(instr.Args[1].ID, jit.X1)
 	if callee != jit.X1 {
 		asm.MOVreg(jit.X1, callee)
 	}
-	ec.emitStdStringFormatGuard(jit.X1, missLabel)
+	ec.emitStdStringFormatGuard(jit.X1, nativeMissLabel)
 	patternVal := ec.resolveValueNB(instr.Args[2].ID, jit.X1)
 	if patternVal != jit.X1 {
 		asm.MOVreg(jit.X1, patternVal)
 	}
-	ec.emitStringValueEqualsConstGuard(jit.X1, pattern, missLabel)
+	ec.emitStringValueEqualsConstGuard(jit.X1, pattern, nativeMissLabel)
 	intVal := ec.resolveValueNB(instr.Args[3].ID, jit.X1)
 	if intVal != jit.X1 {
 		asm.MOVreg(jit.X1, intVal)
 	}
 	emitCheckIsInt(asm, jit.X1, jit.X2)
-	asm.BCond(jit.CondNE, missLabel)
+	asm.BCond(jit.CondNE, nativeMissLabel)
 	jit.EmitUnboxInt(asm, jit.X1, jit.X1)
 
 	ec.emitFormattedIntQueryCacheSlot(jit.X11, jit.X12, pattern, jit.X1)
 	asm.LDR(jit.X13, jit.X11, nativeFormattedIntQueryCacheEntryTable)
 	asm.CMPreg(jit.X13, jit.X0)
-	asm.BCond(jit.CondNE, missLabel)
+	asm.BCond(jit.CondNE, cacheMissLabel)
 	asm.LDR(jit.X13, jit.X0, jit.TableOffStringLookupVer)
 	asm.LDR(jit.X14, jit.X11, nativeFormattedIntQueryCacheEntryVersion)
 	asm.CMPreg(jit.X14, jit.X13)
-	asm.BCond(jit.CondNE, missLabel)
+	asm.BCond(jit.CondNE, cacheMissLabel)
 	asm.LDR(jit.X14, jit.X11, nativeFormattedIntQueryCacheEntryPatternData)
 	asm.LoadImm64(jit.X13, int64(stringDataPtr(pattern)))
 	asm.CMPreg(jit.X14, jit.X13)
-	asm.BCond(jit.CondNE, missLabel)
+	asm.BCond(jit.CondNE, cacheMissLabel)
 	asm.LDR(jit.X14, jit.X11, nativeFormattedIntQueryCacheEntryPatternLen)
 	asm.LoadImm64(jit.X13, int64(len(pattern)))
 	asm.CMPreg(jit.X14, jit.X13)
-	asm.BCond(jit.CondNE, missLabel)
+	asm.BCond(jit.CondNE, cacheMissLabel)
 	asm.LDR(jit.X14, jit.X11, nativeFormattedIntQueryCacheEntryN)
 	asm.CMPreg(jit.X14, jit.X1)
-	asm.BCond(jit.CondNE, missLabel)
+	asm.BCond(jit.CondNE, cacheMissLabel)
 	asm.LDR(jit.X0, jit.X11, nativeFormattedIntQueryCacheEntryValue)
-	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, missLabel)
+	jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, cacheMissLabel)
 	ec.setValueRepr(instr.ID, valueReprBoxed)
 	ec.storeValue(jit.X0, instr.ID)
 	ec.activeRegs[instr.ID] = false
 	asm.B(doneLabel)
 
-	asm.Label(missLabel)
+	asm.Label(cacheMissLabel)
 	for i, arg := range instr.Args {
 		valReg := ec.resolveValueNB(arg.ID, jit.X0)
 		if valReg != jit.X0 {
@@ -584,8 +605,97 @@ func (ec *emitContext) emitGetTableStringFormatIntNative(instr *Instr) {
 		}
 		asm.STR(jit.X0, mRegRegs, slotOffset(tempBase+i))
 	}
+	if canFormatNative {
+		asm.LDR(jit.X0, mRegRegs, slotOffset(tempBase))
+		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, nativeMissLabel)
+		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
+		asm.CBZ(jit.X0, nativeMissLabel)
+		asm.LDR(jit.X2, jit.X0, jit.TableOffMetatable)
+		asm.CBNZ(jit.X2, nativeMissLabel)
+		asm.LDR(jit.X1, mRegRegs, slotOffset(tempBase+3))
+		emitCheckIsInt(asm, jit.X1, jit.X2)
+		asm.BCond(jit.CondNE, nativeMissLabel)
+		jit.EmitUnboxInt(asm, jit.X1, jit.X1)
+		asm.LoadImm64(jit.X2, math.MinInt64)
+		asm.CMPreg(jit.X1, jit.X2)
+		asm.BCond(jit.CondEQ, nativeMissLabel)
+		asm.SUBimm(jit.SP, jit.SP, 80)
+		asm.STR(jit.X0, jit.SP, 64)
+		asm.STR(jit.X1, jit.SP, 72)
+		ec.emitStringFormatIntArenaBytes(pat, slowAfterStackLabel)
+		asm.LDR(jit.X0, jit.SP, 64)
+		asm.LDR(jit.X1, jit.SP, 72)
+		ec.emitFormattedIntStringLookupCacheProbe(pattern, instr, probeMissAfterStackLabel, doneLabel)
+		asm.Label(probeMissAfterStackLabel)
+		asm.ADDimm(jit.SP, jit.SP, 80)
+		asm.B(nativeMissLabel)
+		asm.Label(slowAfterStackLabel)
+		asm.ADDimm(jit.SP, jit.SP, 80)
+	}
+
+	asm.Label(nativeMissLabel)
 	ec.emitGetTableStringFormatIntExitFromTemps(instr, resultSlot, tempBase)
 	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) emitFormattedIntStringLookupCacheProbe(pattern string, instr *Instr, missLabel, doneLabel string) {
+	asm := ec.asm
+	asm.LDR(jit.X8, jit.X0, jit.TableOffStringLookupCache)
+	asm.CBZ(jit.X8, missLabel)
+	asm.LDR(jit.X3, jit.X8, jit.StringLookupCacheOffEntries)
+	asm.CBZ(jit.X3, missLabel)
+	asm.LDR(jit.X10, jit.X8, jit.StringLookupCacheOffMask)
+	ec.emitStringLookupContentHash(jit.X5, jit.X6, jit.X9, jit.X11, jit.X14, jit.X15, "fmtint_smap_hash")
+	asm.MOVreg(jit.X15, jit.X9)
+	asm.ANDreg(jit.X9, jit.X9, jit.X10)
+
+	loopLabel := ec.uniqueLabel("fmtint_smap_loop")
+	nextLabel := ec.uniqueLabel("fmtint_smap_next")
+	foundLabel := ec.uniqueLabel("fmtint_smap_found")
+	bytesLabel := ec.uniqueLabel("fmtint_smap_bytes")
+	asm.MOVimm16(jit.X13, 0)
+	asm.Label(loopLabel)
+	asm.ADDreg(jit.X11, jit.X9, jit.X13)
+	asm.ANDreg(jit.X11, jit.X11, jit.X10)
+	asm.LSLimm(jit.X12, jit.X11, 6)
+	asm.ADDreg(jit.X12, jit.X3, jit.X12)
+	asm.LDRB(jit.X14, jit.X12, jit.StringLookupCacheEntryOffValid)
+	asm.CBZ(jit.X14, missLabel)
+	asm.LDR(jit.X14, jit.X12, jit.StringLookupCacheEntryOffHash)
+	asm.CMPreg(jit.X14, jit.X15)
+	asm.BCond(jit.CondNE, nextLabel)
+	asm.LDR(jit.X14, jit.X12, jit.StringLookupCacheEntryOffKeyLen)
+	asm.CMPreg(jit.X14, jit.X6)
+	asm.BCond(jit.CondNE, nextLabel)
+	asm.LDR(jit.X14, jit.X12, jit.StringLookupCacheEntryOffKeyData)
+	asm.CMPreg(jit.X14, jit.X5)
+	asm.BCond(jit.CondEQ, foundLabel)
+	asm.CBZ(jit.X6, foundLabel)
+	asm.MOVimm16(jit.X15, 0)
+	asm.Label(bytesLabel)
+	asm.LDRBreg(jit.X16, jit.X14, jit.X15)
+	asm.LDRBreg(jit.X17, jit.X5, jit.X15)
+	asm.CMPreg(jit.X16, jit.X17)
+	asm.BCond(jit.CondNE, nextLabel)
+	asm.ADDimm(jit.X15, jit.X15, 1)
+	asm.CMPreg(jit.X15, jit.X6)
+	asm.BCond(jit.CondLT, bytesLabel)
+
+	asm.Label(foundLabel)
+	asm.LDR(jit.X16, jit.X12, jit.StringLookupCacheEntryOffValue)
+	jit.EmitCheckIsTableFull(asm, jit.X16, jit.X2, jit.X3, missLabel)
+	ec.emitFormattedIntQueryCacheStore(pattern, jit.X1, jit.X16)
+	ec.setValueRepr(instr.ID, valueReprBoxed)
+	ec.storeValue(jit.X16, instr.ID)
+	ec.activeRegs[instr.ID] = false
+	asm.ADDimm(jit.SP, jit.SP, 80)
+	asm.B(doneLabel)
+
+	asm.Label(nextLabel)
+	asm.ADDimm(jit.X13, jit.X13, 1)
+	asm.CMPimm(jit.X13, runtime.StringLookupCacheProbeLimit)
+	asm.BCond(jit.CondLT, loopLabel)
+	asm.B(missLabel)
 }
 
 func (ec *emitContext) emitStringLookupContentHash(dataReg, lenReg, dstReg, idxReg, byteReg, primeReg jit.Reg, prefix string) {
