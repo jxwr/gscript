@@ -511,8 +511,24 @@ func report(sku, stock, sold, price) {
 	if exits := gotTM.ExitStats().ByExitCode["ExitCallExit"]; exits != 0 {
 		t.Fatalf("StringFormatConst should avoid call exits, ExitCallExit=%d", exits)
 	}
-	if exits := gotTM.ExitStats().ByExitCode["ExitOpExit"]; exits == 0 {
-		t.Fatal("StringFormatConst should use a precise op-exit fallback")
+	if exits := gotTM.ExitStats().ByExitCode["ExitOpExit"]; exits != 0 {
+		t.Fatalf("StringFormatConst positive fixed-float native should avoid op exits, ExitOpExit=%d", exits)
+	}
+
+	negArgs := []runtime.Value{
+		runtime.StringValue("SKU00042"),
+		runtime.IntValue(95),
+		runtime.IntValue(7),
+		runtime.FloatValue(-12.5),
+	}
+	wantNeg := requireOneString(t, "VM negative", runStringFuncVM(t, src, "report", negArgs))
+	gotNegValues, gotNegTM, _ := runStringFuncForcedTier2WithManager(t, src, "report", negArgs, true)
+	gotNeg := requireOneString(t, "Tier2 negative", gotNegValues)
+	if gotNeg != wantNeg {
+		t.Fatalf("report negative Tier2=%q, want VM=%q", gotNeg, wantNeg)
+	}
+	if exits := gotNegTM.ExitStats().ByExitCode["ExitOpExit"]; exits == 0 {
+		t.Fatal("StringFormatConst negative fixed-float should fall back through precise op-exit")
 	}
 }
 

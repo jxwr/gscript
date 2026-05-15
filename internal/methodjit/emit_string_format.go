@@ -21,6 +21,7 @@ type stringFormatIntPatternNative struct {
 type stringFormatConstIntSpecNative struct {
 	litBefore string
 	width     int
+	prec      int
 	pad       byte
 	kind      byte
 }
@@ -93,15 +94,38 @@ func parseStringFormatConstIntPatternNative(pattern string) (stringFormatConstIn
 			width = width*10 + int(pattern[i]-'0')
 			i++
 		}
-		if i >= len(pattern) || pattern[i] != 'd' {
+		prec := 6
+		if i < len(pattern) && pattern[i] == '.' {
+			i++
+			prec = 0
+			if i >= len(pattern) || pattern[i] < '0' || pattern[i] > '9' {
+				return stringFormatConstIntPatternNative{}, false
+			}
+			for i < len(pattern) && pattern[i] >= '0' && pattern[i] <= '9' {
+				prec = prec*10 + int(pattern[i]-'0')
+				i++
+			}
+		}
+		if i >= len(pattern) {
+			return stringFormatConstIntPatternNative{}, false
+		}
+		kind = pattern[i]
+		if kind != 'd' && kind != 'f' {
+			return stringFormatConstIntPatternNative{}, false
+		}
+		if kind == 'd' && prec != 6 {
+			return stringFormatConstIntPatternNative{}, false
+		}
+		if kind == 'f' && (pad != ' ' || prec > 9) {
 			return stringFormatConstIntPatternNative{}, false
 		}
 		i++
 		pat.specs = append(pat.specs, stringFormatConstIntSpecNative{
 			litBefore: lit,
 			width:     width,
+			prec:      prec,
 			pad:       pad,
-			kind:      'd',
+			kind:      kind,
 		})
 		pat.staticLen += len(lit)
 		litStart = i
@@ -116,6 +140,14 @@ func stringDataPtr(s string) uintptr {
 		return 0
 	}
 	return uintptr(unsafe.Pointer(unsafe.StringData(s)))
+}
+
+func pow10IntNative(n int) int64 {
+	v := int64(1)
+	for i := 0; i < n; i++ {
+		v *= 10
+	}
+	return v
 }
 
 func (ec *emitContext) emitStringFormatIntCacheProbe(pattern string, intReg jit.Reg, instrID int, doneLabel string) {
@@ -516,6 +548,64 @@ func (ec *emitContext) emitStringFormatConstNative(instr *Instr) {
 			asm.ADDreg(jit.X15, jit.X15, jit.X4)
 			continue
 		}
+		if spec.kind == 'f' {
+			emitToFloatNumberOrMiss(asm, jit.D0, jit.X1, jit.X2, slowAfterStackLabel)
+
+			asm.LoadImm64(jit.X3, 0)
+			asm.FMOVtoFP(jit.D1, jit.X3)
+			asm.FCMPd(jit.D0, jit.D1)
+			asm.BCond(jit.CondVS, slowAfterStackLabel)
+			asm.BCond(jit.CondLT, slowAfterStackLabel)
+
+			scale := pow10IntNative(spec.prec)
+			asm.LoadImm64(jit.X3, int64(math.Float64bits(float64(math.MaxInt64/scale))))
+			asm.FMOVtoFP(jit.D1, jit.X3)
+			asm.FCMPd(jit.D0, jit.D1)
+			asm.BCond(jit.CondVS, slowAfterStackLabel)
+			asm.BCond(jit.CondGE, slowAfterStackLabel)
+
+			asm.LoadImm64(jit.X3, int64(math.Float64bits(float64(scale))))
+			asm.FMOVtoFP(jit.D1, jit.X3)
+			asm.FMULd(jit.D0, jit.D0, jit.D1)
+			asm.LoadImm64(jit.X3, int64(math.Float64bits(0.5)))
+			asm.FMOVtoFP(jit.D1, jit.X3)
+			asm.FADDd(jit.D0, jit.D0, jit.D1)
+			asm.FCVTZS(jit.X1, jit.D0)
+
+			asm.LoadImm64(jit.X10, scale)
+			asm.SDIV(jit.X3, jit.X1, jit.X10)
+			asm.MSUB(jit.X14, jit.X3, jit.X10, jit.X1)
+			asm.STR(jit.X3, jit.SP, i*32)
+			asm.STR(jit.X14, jit.SP, i*32+24)
+
+			digitLoopLabel := ec.uniqueLabel("strfmtc_f_len_digit_loop")
+			digitDoneLabel := ec.uniqueLabel("strfmtc_f_len_digit_done")
+			widthOKLabel := ec.uniqueLabel("strfmtc_f_len_width_ok")
+
+			asm.ADDimm(jit.X5, jit.SP, uint16(digitBase+i*32))
+			asm.MOVimm16(jit.X10, 10)
+			asm.MOVimm16(jit.X4, 0)
+			asm.Label(digitLoopLabel)
+			asm.SDIV(jit.X11, jit.X3, jit.X10)
+			asm.MSUB(jit.X12, jit.X11, jit.X10, jit.X3)
+			asm.ADDimm(jit.X12, jit.X12, uint16('0'))
+			asm.STRBreg(jit.X12, jit.X5, jit.X4)
+			asm.ADDimm(jit.X4, jit.X4, 1)
+			asm.MOVreg(jit.X3, jit.X11)
+			asm.CBNZ(jit.X3, digitLoopLabel)
+			asm.Label(digitDoneLabel)
+
+			asm.STR(jit.X4, jit.SP, i*32+16)
+			ec.emitAddConst(jit.X13, jit.X4, 1+spec.prec, jit.X17)
+			asm.LoadImm64(jit.X14, int64(spec.width))
+			asm.CMPreg(jit.X14, jit.X13)
+			asm.BCond(jit.CondLE, widthOKLabel)
+			asm.MOVreg(jit.X13, jit.X14)
+			asm.Label(widthOKLabel)
+			asm.STR(jit.X13, jit.SP, i*32+8)
+			asm.ADDreg(jit.X15, jit.X15, jit.X13)
+			continue
+		}
 		emitCheckIsInt(asm, jit.X1, jit.X2)
 		asm.BCond(jit.CondNE, slowAfterStackLabel)
 		jit.EmitUnboxInt(asm, jit.X1, jit.X1)
@@ -593,6 +683,8 @@ func (ec *emitContext) emitStringFormatConstNative(instr *Instr) {
 		}
 		if spec.kind == 's' {
 			ec.emitCopyFormatConstStringArgNative(i)
+		} else if spec.kind == 'f' {
+			ec.emitFormatConstFloatArgNative(i, digitBase+i*32, spec.prec)
 		} else {
 			ec.emitFormatConstIntArgNative(i, digitBase+i*32, spec.pad)
 		}
@@ -662,6 +754,55 @@ func (ec *emitContext) emitFormatConstIntArgNative(argIdx, digitOff int, pad byt
 	asm.ADDimm(jit.X5, jit.X5, 1)
 	asm.B(digitCopyLoopLabel)
 	asm.Label(digitCopyDoneLabel)
+}
+
+func (ec *emitContext) emitFormatConstFloatArgNative(argIdx, digitOff, prec int) {
+	asm := ec.asm
+	padLoopLabel := ec.uniqueLabel("strfmtc_f_pad_loop")
+	padDoneLabel := ec.uniqueLabel("strfmtc_f_pad_done")
+	digitCopyLoopLabel := ec.uniqueLabel("strfmtc_f_digit_copy")
+	digitCopyDoneLabel := ec.uniqueLabel("strfmtc_f_digit_copy_done")
+	fracLoopLabel := ec.uniqueLabel("strfmtc_f_frac_loop")
+	fracDoneLabel := ec.uniqueLabel("strfmtc_f_frac_done")
+
+	asm.LDR(jit.X4, jit.SP, argIdx*32+16)
+	asm.LDR(jit.X13, jit.SP, argIdx*32+8)
+	ec.emitAddConst(jit.X14, jit.X4, 1+prec, jit.X17)
+	asm.SUBreg(jit.X14, jit.X13, jit.X14)
+	ec.emitRepeatByte(jit.X5, jit.X14, ' ', padLoopLabel, padDoneLabel)
+
+	asm.Label(digitCopyLoopLabel)
+	asm.CBZ(jit.X4, digitCopyDoneLabel)
+	asm.SUBimm(jit.X4, jit.X4, 1)
+	asm.ADDimm(jit.X6, jit.SP, uint16(digitOff))
+	asm.LDRBreg(jit.X12, jit.X6, jit.X4)
+	asm.STRB(jit.X12, jit.X5, 0)
+	asm.ADDimm(jit.X5, jit.X5, 1)
+	asm.B(digitCopyLoopLabel)
+	asm.Label(digitCopyDoneLabel)
+
+	if prec == 0 {
+		return
+	}
+	asm.MOVimm16(jit.X12, uint16('.'))
+	asm.STRB(jit.X12, jit.X5, 0)
+	asm.ADDimm(jit.X5, jit.X5, 1)
+
+	asm.LDR(jit.X1, jit.SP, argIdx*32+24)
+	asm.LoadImm64(jit.X10, pow10IntNative(prec-1))
+	asm.MOVimm16(jit.X4, uint16(prec))
+	asm.Label(fracLoopLabel)
+	asm.CBZ(jit.X4, fracDoneLabel)
+	asm.SDIV(jit.X11, jit.X1, jit.X10)
+	asm.MSUB(jit.X1, jit.X11, jit.X10, jit.X1)
+	asm.ADDimm(jit.X12, jit.X11, uint16('0'))
+	asm.STRB(jit.X12, jit.X5, 0)
+	asm.ADDimm(jit.X5, jit.X5, 1)
+	asm.MOVimm16(jit.X12, 10)
+	asm.SDIV(jit.X10, jit.X10, jit.X12)
+	asm.SUBimm(jit.X4, jit.X4, 1)
+	asm.B(fracLoopLabel)
+	asm.Label(fracDoneLabel)
 }
 
 func (ec *emitContext) emitCopyFormatConstStringArgNative(argIdx int) {
