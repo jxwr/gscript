@@ -176,6 +176,8 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 
 	// Collect in-loop field/table writes, global writes, and effectful calls for alias analysis.
 	setFields := make(map[loadKey]bool)
+	fieldStores := make(map[loadKey]bool)
+	shapeMutatingTables := make(map[int]bool)
 	arrayElementWrites := make(map[loadKey]bool)
 	setGlobals := make(map[int64]bool) // Aux (constant pool index) of in-loop SetGlobal
 	var loopCalls []*Instr
@@ -186,12 +188,18 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 			case OpSetField:
 				if len(instr.Args) >= 1 {
 					setFields[loadKey{objID: instr.Args[0].ID, fieldAux: instr.Aux}] = true
+					shapeMutatingTables[instr.Args[0].ID] = true
+				}
+			case OpFieldStore:
+				if len(instr.Args) >= 1 {
+					fieldStores[loadKey{objID: instr.Args[0].ID, fieldAux: instr.Aux}] = true
 				}
 			case OpSetTable:
 				// SetTable uses dynamic keys — conservatively kills all fields on that obj.
 				// Use fieldAux = -1 as sentinel for "any field on this obj".
 				if len(instr.Args) >= 1 {
 					setFields[loadKey{objID: instr.Args[0].ID, fieldAux: -1}] = true
+					shapeMutatingTables[instr.Args[0].ID] = true
 				}
 			case OpTableArrayStore, OpTableArraySwap:
 				// Checked typed-array stores preserve table kind/len/data but
@@ -289,6 +297,37 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 					if setFields[(loadKey{objID: instr.Args[0].ID, fieldAux: -1})] {
 						functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
 							"table write may alias this field")
+						continue
+					}
+				}
+			}
+			// FieldSvals reads the fixed-shape payload pointer after checking
+			// the receiver shape. It can move with an invariant receiver, but
+			// only when nothing inside the loop can mutate the receiver shape
+			// before the original guard point.
+			if instr.Op == OpFieldSvals {
+				if len(instr.Args) >= 1 && licmLoopCallMayMutateValue(fn, loopCalls, instr.Args[0]) {
+					functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
+						"loop contains a call that may mutate fields")
+					continue
+				}
+				if len(instr.Args) >= 1 {
+					if shapeMutatingTables[instr.Args[0].ID] || setFields[(loadKey{objID: instr.Args[0].ID, fieldAux: -1})] {
+						functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
+							"table write may change field shape")
+						continue
+					}
+				}
+			}
+			// FieldLoad reads a fixed-shape svals slot after FieldSvalsLower.
+			// It is safe to hoist across stores to other fields on the same
+			// svals pointer, but not across a store to the same field.
+			if instr.Op == OpFieldLoad || instr.Op == OpFieldLoadNumToFloat {
+				if len(instr.Args) >= 1 {
+					key := loadKey{objID: instr.Args[0].ID, fieldAux: instr.Aux}
+					if fieldStores[key] {
+						functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
+							"field slot is written inside the loop")
 						continue
 					}
 				}
@@ -804,6 +843,8 @@ func canHoistOp(op Op) bool {
 	case OpTableShapeID:
 		// Pure table-shape extraction guarded by the table operand. Hoisting is
 		// valid when the table value is loop-invariant.
+		return true
+	case OpFieldSvals, OpFieldLoad, OpFieldLoadNumToFloat:
 		return true
 	case OpMatrixFlat, OpMatrixStride:
 		// R45: extracting dmFlat / dmStride is pure (output depends
