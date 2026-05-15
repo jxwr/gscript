@@ -64,6 +64,10 @@ func AnnotateCallABIs(fn *Function, config CallABIAnnotationConfig) *Function {
 				instr.Type = TypeFloat
 			case SpecializedABIReturnRawTablePtr:
 				instr.Type = TypeTable
+			case SpecializedABIReturnNone:
+				// CALL C=1 has no SSA result. Keep the synthetic call value
+				// untyped so later passes and codegen do not try to consume a
+				// fabricated raw integer result.
 			default:
 				instr.Type = TypeInt
 			}

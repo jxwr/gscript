@@ -424,6 +424,64 @@ func TestCallABIAnnotate_FieldShapeTypedPeerDescriptor(t *testing.T) {
 	}
 }
 
+func TestCallABIAnnotate_TypedPeerNoResultLeavesCallUntyped(t *testing.T) {
+	src := `func step_io(a, tick) {
+    a.queue = a.queue + tick
+}`
+	top := compileTop(t, src)
+	stepIO := findProtoByName(top, "step_io")
+	if stepIO == nil {
+		t.Fatal("step_io proto not found")
+	}
+	calleeLoad := &Instr{ID: 7, Op: OpGetField}
+	tick := &Value{ID: 2, Def: &Instr{ID: 2, Op: OpLoadSlot, Type: TypeInt}}
+	call := &Instr{
+		ID:        9,
+		Op:        OpCall,
+		Args:      []*Value{{ID: calleeLoad.ID, Def: calleeLoad}, {ID: 1}, tick},
+		Aux:       0,
+		Aux2:      1,
+		HasSource: true,
+		SourcePC:  0,
+		Type:      TypeAny,
+	}
+	block := &Block{ID: 0, Instrs: []*Instr{call}}
+	fn := &Function{
+		Proto:  &vm.FuncProto{Name: "caller", Code: []uint32{vm.EncodeABC(vm.OP_CALL, 0, 3, 1)}},
+		Blocks: []*Block{block},
+		FieldPolyShapeFacts: map[int][]FieldPolyShapeCase{
+			calleeLoad.ID: {
+				{
+					ShapeID:  316,
+					FieldIdx: 2,
+					VMProto:  stepIO,
+					ReceiverFact: FixedShapeTableFact{
+						ShapeID:    316,
+						FieldNames: []string{"id", "queue", "step"},
+						FieldTypes: map[string]Type{
+							"id":    TypeInt,
+							"queue": TypeInt,
+							"step":  TypeFunction,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	fn = AnnotateCallABIs(fn, CallABIAnnotationConfig{})
+	desc, ok := fn.CallABIs[call.ID]
+	if !ok {
+		t.Fatalf("missing typed-peer descriptor")
+	}
+	if !desc.TypedPeer || desc.Callee != stepIO || desc.ReturnRep != SpecializedABIReturnNone || desc.NumRets != 0 {
+		t.Fatalf("unexpected descriptor: %+v", desc)
+	}
+	if call.Type == TypeInt {
+		t.Fatalf("no-result typed-peer call Type=%s, want untyped", call.Type)
+	}
+}
+
 func TestFieldShapeTypedPeerCallCases_AcceptsMixedNumericReturns(t *testing.T) {
 	top := compileTop(t, `func step_int(a, tick) {
 	a.count = a.count + tick
