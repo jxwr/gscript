@@ -594,6 +594,61 @@ func TestLICM_NoHoistFieldSvals_WhenShapeMayMutate(t *testing.T) {
 	}
 }
 
+func TestLICM_NoHoistFieldLoad_WhenAliasSvalsSameTableShapeFieldStored(t *testing.T) {
+	fn := &Function{NumRegs: 8}
+	b0, b1, b2, b3 := buildSimpleLoop(fn)
+
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Block: b0, Aux: 0}
+	zero := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Block: b0, Aux: 0}
+	svalsLoad := &Instr{ID: fn.newValueID(), Op: OpFieldSvals, Type: TypeInt, Block: b0,
+		Args: []*Value{tbl.Value()}, Aux: 42}
+	svalsStore := &Instr{ID: fn.newValueID(), Op: OpFieldSvals, Type: TypeInt, Block: b0,
+		Args: []*Value{tbl.Value()}, Aux: 42}
+	b0Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b0, Aux: int64(b1.ID)}
+	b0.Instrs = []*Instr{tbl, zero, svalsLoad, svalsStore, b0Term}
+
+	phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeFloat, Block: b1}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Block: b1, Aux: 1}
+	b1Term := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Block: b1,
+		Args: []*Value{cond.Value()}, Aux: int64(b2.ID), Aux2: int64(b3.ID)}
+	b1.Instrs = []*Instr{phi, cond, b1Term}
+
+	load := &Instr{ID: fn.newValueID(), Op: OpFieldLoad, Type: TypeFloat, Block: b2,
+		Args: []*Value{svalsLoad.Value()}, Aux: 1}
+	next := &Instr{ID: fn.newValueID(), Op: OpAddFloat, Type: TypeFloat, Block: b2,
+		Args: []*Value{phi.Value(), load.Value()}}
+	storeAlias := &Instr{ID: fn.newValueID(), Op: OpFieldStore, Type: TypeUnknown, Block: b2,
+		Args: []*Value{svalsStore.Value(), next.Value()}, Aux: 1}
+	b2Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b2, Aux: int64(b1.ID)}
+	b2.Instrs = []*Instr{load, next, storeAlias, b2Term}
+
+	phi.Args = []*Value{zero.Value(), next.Value()}
+	b3.Instrs = []*Instr{
+		&Instr{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: b3,
+			Args: []*Value{phi.Value()}},
+	}
+
+	assertValidates(t, fn, "input")
+	loadID := load.ID
+
+	_, err := LICMPass(fn)
+	if err != nil {
+		t.Fatalf("LICMPass: %v", err)
+	}
+	assertValidates(t, fn, "after LICM")
+
+	found := false
+	for _, instr := range b2.Instrs {
+		if instr.ID == loadID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("OpFieldLoad v%d should NOT be hoisted; distinct svals values alias the same table shape field", loadID)
+	}
+}
+
 // ---------- Test 6b: no-hoist GetField when SetField on same (obj, field) ----------
 
 func TestLICM_NoHoistGetField_WhenStored(t *testing.T) {

@@ -162,6 +162,25 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 		instr *Instr
 		block *Block
 	}
+	type fieldSlotKey struct {
+		svalsID  int
+		tableID  int
+		shapeID  int64
+		fieldAux int64
+	}
+	canonicalFieldSlotKey := func(svals *Value, fieldAux int64) fieldSlotKey {
+		key := fieldSlotKey{fieldAux: fieldAux}
+		if svals == nil {
+			return key
+		}
+		key.svalsID = svals.ID
+		if def := svals.Def; def != nil && def.Op == OpFieldSvals && len(def.Args) > 0 && def.Args[0] != nil {
+			key.tableID = def.Args[0].ID
+			key.shapeID = def.Aux
+			key.svalsID = 0
+		}
+		return key
+	}
 	var inLoop []instrLoc
 	// stores: slot number → true (for LoadSlot hoist check).
 	storedSlots := make(map[int64]bool)
@@ -176,7 +195,7 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 
 	// Collect in-loop field/table writes, global writes, and effectful calls for alias analysis.
 	setFields := make(map[loadKey]bool)
-	fieldStores := make(map[loadKey]bool)
+	fieldStores := make(map[fieldSlotKey]bool)
 	shapeMutatingTables := make(map[int]bool)
 	arrayElementWrites := make(map[loadKey]bool)
 	setGlobals := make(map[int64]bool) // Aux (constant pool index) of in-loop SetGlobal
@@ -192,7 +211,7 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 				}
 			case OpFieldStore:
 				if len(instr.Args) >= 1 {
-					fieldStores[loadKey{objID: instr.Args[0].ID, fieldAux: instr.Aux}] = true
+					fieldStores[canonicalFieldSlotKey(instr.Args[0], instr.Aux)] = true
 				}
 			case OpSetTable:
 				// SetTable uses dynamic keys — conservatively kills all fields on that obj.
@@ -324,7 +343,7 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 			// svals pointer, but not across a store to the same field.
 			if instr.Op == OpFieldLoad || instr.Op == OpFieldLoadNumToFloat {
 				if len(instr.Args) >= 1 {
-					key := loadKey{objID: instr.Args[0].ID, fieldAux: instr.Aux}
+					key := canonicalFieldSlotKey(instr.Args[0], instr.Aux)
 					if fieldStores[key] {
 						functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
 							"field slot is written inside the loop")
