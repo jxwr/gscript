@@ -203,6 +203,10 @@ func (ec *emitContext) emitNewFixedTableNCacheFastPath(instr *Instr, doneLabel, 
 		return false
 	}
 	ctor, _ := fixedTableCtorNForInstr(ec.fn.Proto, instr)
+	shapeID := uint32(0)
+	if ctor != nil && ctor.Shape != nil {
+		shapeID = ctor.Shape.ID
+	}
 	useFixedRecord := fixedRecordCtorNCacheableForProto(ec.fn.Proto, ctor)
 	slots := fixedTableArgSlots(ec, instr)
 	if len(slots) != len(instr.Args) {
@@ -267,10 +271,44 @@ func (ec *emitContext) emitNewFixedTableNCacheFastPath(instr *Instr, doneLabel, 
 		if valReg != jit.X5 {
 			asm.MOVreg(jit.X5, valReg)
 		}
+		if !ec.emitNewFixedTableValueTypeGuard(shapeID, i, arg, jit.X5, missLabel) {
+			return false
+		}
 		asm.STR(jit.X5, jit.X2, i*jit.ValueSize)
 	}
 	ec.storeResultNB(jit.X0, instr.ID)
 	asm.B(doneLabel)
+	return true
+}
+
+func (ec *emitContext) emitNewFixedTableValueTypeGuard(shapeID uint32, fieldIdx int, arg *Value, valReg jit.Reg, missLabel string) bool {
+	stable, ok := runtime.ShapeFieldStableType(shapeID, fieldIdx)
+	if !ok {
+		return true
+	}
+	if arg != nil && arg.Def != nil {
+		if rt, ok := irTypeToRuntimeValueType(arg.Def.Type); ok {
+			if rt == stable {
+				return true
+			}
+			return false
+		}
+	}
+	switch stable {
+	case runtime.TypeFloat:
+		ec.asm.LSRimm(jit.X6, valReg, 48)
+		ec.asm.MOVimm16(jit.X7, jit.NB_TagNilShr48)
+		ec.asm.CMPreg(jit.X6, jit.X7)
+		ec.asm.BCond(jit.CondGE, missLabel)
+	case runtime.TypeInt:
+		if valReg != jit.X6 {
+			ec.asm.MOVreg(jit.X6, valReg)
+		}
+		emitCheckIsInt(ec.asm, jit.X6, jit.X7)
+		ec.asm.BCond(jit.CondNE, missLabel)
+	default:
+		return true
+	}
 	return true
 }
 

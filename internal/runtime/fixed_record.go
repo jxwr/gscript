@@ -93,6 +93,18 @@ func (h *Heap) AllocFixedRecord() *FixedRecord {
 }
 
 func NewFixedRecordValue(ctor *SmallTableCtorN, vals []Value) (Value, bool) {
+	return newFixedRecordValue(ctor, vals, true)
+}
+
+// NewFixedRecordCacheValue constructs a reusable cached record placeholder
+// without feeding shape-field type profile. Cache placeholders are overwritten
+// by native code before becoming program-visible, so observing their seed values
+// would poison runtime specialization feedback.
+func NewFixedRecordCacheValue(ctor *SmallTableCtorN, vals []Value) (Value, bool) {
+	return newFixedRecordValue(ctor, vals, false)
+}
+
+func newFixedRecordValue(ctor *SmallTableCtorN, vals []Value, observeTypes bool) (Value, bool) {
 	if ctor == nil || ctor.Shape == nil || len(vals) < len(ctor.Keys) {
 		return NilValue(), false
 	}
@@ -116,6 +128,9 @@ func NewFixedRecordValue(ctor *SmallTableCtorN, vals []Value) (Value, bool) {
 			return NilValue(), false
 		}
 		fr.values[i] = v
+		if observeTypes {
+			ObserveShapeFieldValueType(fr.shapeID, i, v.Type())
+		}
 	}
 	p := unsafe.Pointer(fr)
 	if DefaultHeap == nil {
@@ -153,6 +168,7 @@ func FillFixedRecordKnownCtor(fr *FixedRecord, ctor *SmallTableCtorN, vals []Val
 			return NilValue(), false
 		}
 		fr.values[i] = v
+		ObserveShapeFieldValueType(fr.shapeID, i, v.Type())
 	}
 	p := unsafe.Pointer(fr)
 	return Value(tagPtr | ptrSubFixedRecord | (uint64(uintptr(p)) & ptrAddrMask)), true
@@ -176,6 +192,7 @@ func FillFixedRecord5KnownCtor(fr *FixedRecord, ctor *SmallTableCtorN, v0, v1, v
 	fr.values[2] = v2
 	fr.values[3] = v3
 	fr.values[4] = v4
+	observeFixedRecord5ValueTypes(fr.shapeID, v0, v1, v2, v3, v4)
 	p := unsafe.Pointer(fr)
 	return Value(tagPtr | ptrSubFixedRecord | (uint64(uintptr(p)) & ptrAddrMask)), true
 }
@@ -199,11 +216,20 @@ func NewFixedRecordValue5KnownCtor(ctor *SmallTableCtorN, v0, v1, v2, v3, v4 Val
 	fr.values[2] = v2
 	fr.values[3] = v3
 	fr.values[4] = v4
+	observeFixedRecord5ValueTypes(fr.shapeID, v0, v1, v2, v3, v4)
 	p := unsafe.Pointer(fr)
 	if DefaultHeap == nil {
 		keepAlive(p, fr)
 	}
 	return Value(tagPtr | ptrSubFixedRecord | (uint64(uintptr(p)) & ptrAddrMask)), true
+}
+
+func observeFixedRecord5ValueTypes(shapeID uint32, v0, v1, v2, v3, v4 Value) {
+	ObserveShapeFieldValueType(shapeID, 0, v0.Type())
+	ObserveShapeFieldValueType(shapeID, 1, v1.Type())
+	ObserveShapeFieldValueType(shapeID, 2, v2.Type())
+	ObserveShapeFieldValueType(shapeID, 3, v3.Type())
+	ObserveShapeFieldValueType(shapeID, 4, v4.Type())
 }
 
 func (v Value) FixedRecord() *FixedRecord {

@@ -261,6 +261,14 @@ func (v *validator) checkOpContracts() {
 					v.errorf("B%d: GuardFieldCalleeProto (v%d) must carry proto Aux and shape/field Aux2, got Aux=%d Aux2=%d",
 						blk.ID, instr.ID, instr.Aux, instr.Aux2)
 				}
+			case OpGuardShapeFieldType:
+				v.checkArgCount(blk, instr, 0, 0)
+				shapeID := uint32(instr.Aux >> 32)
+				fieldIdx := int(int32(instr.Aux & 0xFFFFFFFF))
+				if shapeID == 0 || fieldIdx < 0 || Type(instr.Aux2) == TypeAny || Type(instr.Aux2) == TypeUnknown {
+					v.errorf("B%d: GuardShapeFieldType (v%d) must carry shape/field Aux and concrete Aux2 type, got Aux=%d Aux2=%d",
+						blk.ID, instr.ID, instr.Aux, instr.Aux2)
+				}
 			case OpFieldSvals:
 				v.checkArgCount(blk, instr, 1, 1)
 				if instr.Aux <= 0 {

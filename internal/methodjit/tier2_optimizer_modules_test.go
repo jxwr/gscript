@@ -162,6 +162,7 @@ func TestTier2TableNativeLoweringModuleOrder(t *testing.T) {
 			"FieldSvalsLower",
 			"FieldSvalsCSE",
 			"FixedShapeTableFacts (post-FieldSvalsLower)",
+			"ShapeFieldTypeGuard",
 			"TableArrayLower (post-FieldSvalsLower)",
 			"TableArrayLoadTypeSpecialize (post-FieldSvalsLower)",
 			"TableArrayStoreLower (post-FieldSvalsLower)",
@@ -169,6 +170,7 @@ func TestTier2TableNativeLoweringModuleOrder(t *testing.T) {
 			"LateModuloMultiplyOverflowBoxing",
 			"ProfiledStringLenFold",
 			"RangeAnalysis (post-TableFieldLower)",
+			"TableArrayStaticBounds",
 			"DCE (post-TableArrayStoreLower)",
 		})
 	assertTier2ModuleOrder(t, tier2TableLoopKernelModules(), Tier2PhaseLoopKernel,

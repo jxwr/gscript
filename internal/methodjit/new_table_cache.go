@@ -132,7 +132,7 @@ func prewarmFixedTableNCacheEntry(entry *newTableCacheEntry, ctor *runtime.Small
 		seed[i] = runtime.IntValue(0)
 	}
 	for i := range entry.Values {
-		t := runtime.NewTableFromCtorNNonNil(ctor, seed)
+		t := runtime.NewTableFromCtorNNonNilCache(ctor, seed)
 		entry.addRoot(t)
 		entry.Values[i] = runtime.FreshTableValue(t)
 	}
@@ -587,10 +587,10 @@ func allocateFixedRecordNFullWithCache(caches []newTableCacheEntry, instrID int,
 		seed[i] = runtime.IntValue(0)
 	}
 	for i := range entry.Values {
-		if cached, ok := runtime.NewFixedRecordValue(ctor, seed); ok {
+		if cached, ok := runtime.NewFixedRecordCacheValue(ctor, seed); ok {
 			entry.Values[i] = cached
 		} else {
-			t := runtime.NewTableFromCtorNNonNil(ctor, seed)
+			t := runtime.NewTableFromCtorNNonNilCache(ctor, seed)
 			entry.addRoot(t)
 			entry.Values[i] = runtime.FreshTableValue(t)
 		}

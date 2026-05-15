@@ -205,6 +205,7 @@ const (
 	OpGuardTableKind   // Args[0] must be a table with array kind Aux
 	OpGuardCalleeProto // Args[0] must be a VM closure whose proto pointer is Aux
 	OpGuardFieldCalleeProto
+	OpGuardShapeFieldType // shape field type epoch must match; Aux=(shape<<32)|field, Aux2=Type
 	OpGuardNonNil
 	OpGuardTruthy
 
@@ -359,6 +360,7 @@ var opNames = [...]string{
 	OpGuardTableKind:             "GuardTableKind",
 	OpGuardCalleeProto:           "GuardCalleeProto",
 	OpGuardFieldCalleeProto:      "GuardFieldCalleeProto",
+	OpGuardShapeFieldType:        "GuardShapeFieldType",
 	OpGuardNonNil:                "GuardNonNil",
 	OpGuardTruthy:                "GuardTruthy",
 	OpJump:                       "Jump",

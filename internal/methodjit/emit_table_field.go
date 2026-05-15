@@ -833,6 +833,9 @@ func (ec *emitContext) emitFieldStore(instr *Instr) {
 		ec.emitDeopt(instr)
 		return
 	}
+	if !ec.emitStableShapeFieldStoreTypeGuard(instr, fieldIdx) {
+		return
+	}
 	valueID := instr.Args[1].ID
 	valStore := ec.prepareFieldStoreValue(valueID)
 	if !valStore.isFPR {
@@ -846,8 +849,61 @@ func (ec *emitContext) emitFieldStore(instr *Instr) {
 	ec.emitPreparedFieldStoreAt(valStore, svals, fieldIdx)
 }
 
+func (ec *emitContext) emitStableShapeFieldStoreTypeGuard(instr *Instr, fieldIdx int) bool {
+	if instr == nil || len(instr.Args) < 2 || instr.Args[0] == nil || instr.Args[1] == nil {
+		return true
+	}
+	svals := instr.Args[0].Def
+	if svals == nil || svals.Op != OpFieldSvals || svals.Aux <= 0 {
+		return true
+	}
+	shapeID := uint32(svals.Aux)
+	stable, ok := runtime.ShapeFieldStableType(shapeID, fieldIdx)
+	if !ok {
+		return true
+	}
+	value := instr.Args[1]
+	if value.Def != nil {
+		if rt, ok := irTypeToRuntimeValueType(value.Def.Type); ok {
+			if rt == stable {
+				return true
+			}
+			ec.emitPreciseDeopt(instr)
+			return false
+		}
+	}
+	valReg := ec.resolveValueNB(value.ID, jit.X0)
+	if valReg != jit.X0 {
+		ec.asm.MOVreg(jit.X0, valReg)
+	}
+	deoptLabel := ec.uniqueLabel("field_store_type_deopt")
+	doneLabel := ec.uniqueLabel("field_store_type_done")
+	switch stable {
+	case runtime.TypeFloat:
+		ec.asm.LSRimm(jit.X2, jit.X0, 48)
+		ec.asm.MOVimm16(jit.X3, jit.NB_TagNilShr48)
+		ec.asm.CMPreg(jit.X2, jit.X3)
+		ec.asm.BCond(jit.CondGE, deoptLabel)
+	case runtime.TypeInt:
+		emitCheckIsInt(ec.asm, jit.X0, jit.X2)
+		ec.asm.BCond(jit.CondNE, deoptLabel)
+	default:
+		return true
+	}
+	ec.asm.B(doneLabel)
+	ec.asm.Label(deoptLabel)
+	ec.emitPreciseDeopt(instr)
+	ec.asm.Label(doneLabel)
+	return true
+}
+
 func (ec *emitContext) emitStoreTypedFieldLoad(instr *Instr, valReg jit.Reg, typeDeoptLabel string) {
 	if instr.Type == TypeFloat {
+		if ec.fieldLoadTypeCheckElided(instr) {
+			ec.asm.FMOVtoFP(jit.D0, valReg)
+			ec.storeRawFloat(jit.D0, instr.ID)
+			return
+		}
 		ec.asm.LSRimm(jit.X2, valReg, 48)
 		ec.asm.MOVimm16(jit.X3, jit.NB_TagNilShr48)
 		ec.asm.CMPreg(jit.X2, jit.X3)
@@ -893,6 +949,60 @@ func (ec *emitContext) emitStoreNumericFieldLoad(instr *Instr, valReg jit.Reg, d
 
 	asm.Label(storeLabel)
 	ec.storeRawFloat(jit.D0, instr.ID)
+}
+
+func (ec *emitContext) fieldLoadTypeCheckElided(instr *Instr) bool {
+	return ec != nil && ec.fn != nil && ec.fn.ShapeFieldTypeElidedLoads != nil &&
+		instr != nil && ec.fn.ShapeFieldTypeElidedLoads[instr.ID]
+}
+
+func (ec *emitContext) emitGuardShapeFieldType(instr *Instr) {
+	shapeID := uint32(instr.Aux >> 32)
+	fieldIdx := int(int32(instr.Aux & 0xFFFFFFFF))
+	want := Type(instr.Aux2)
+	runtimeType, ok := irTypeToRuntimeValueType(want)
+	deoptLabel := ec.uniqueLabel("guard_shape_field_type_deopt")
+	doneLabel := ec.uniqueLabel("guard_shape_field_type_done")
+	if !ok {
+		ec.emitPreciseDeopt(instr)
+		return
+	}
+	if got, stable := runtime.ShapeFieldStableType(shapeID, fieldIdx); !stable || got != runtimeType {
+		ec.emitPreciseDeopt(instr)
+		return
+	}
+	epochPtr := uintptr(runtime.ShapeFieldTypeEpochPtr(shapeID, fieldIdx))
+	if epochPtr == 0 {
+		ec.emitPreciseDeopt(instr)
+		return
+	}
+	epoch := runtime.ShapeFieldTypeEpoch(shapeID, fieldIdx)
+	ec.asm.LoadImm64(jit.X8, int64(epochPtr))
+	ec.asm.LDR(jit.X8, jit.X8, 0)
+	ec.asm.LoadImm64(jit.X9, int64(epoch))
+	ec.asm.CMPreg(jit.X8, jit.X9)
+	ec.asm.BCond(jit.CondNE, deoptLabel)
+	ec.asm.B(doneLabel)
+	ec.asm.Label(deoptLabel)
+	ec.emitPreciseDeopt(instr)
+	ec.asm.Label(doneLabel)
+}
+
+func irTypeToRuntimeValueType(t Type) (runtime.ValueType, bool) {
+	switch t {
+	case TypeInt:
+		return runtime.TypeInt, true
+	case TypeFloat:
+		return runtime.TypeFloat, true
+	case TypeBool:
+		return runtime.TypeBool, true
+	case TypeString:
+		return runtime.TypeString, true
+	case TypeTable:
+		return runtime.TypeTable, true
+	default:
+		return runtime.TypeNil, false
+	}
 }
 
 // emitSetField emits ARM64 code for OpSetField (table field write).

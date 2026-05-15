@@ -899,6 +899,8 @@ func newTableFromCtor2Shape(ctor *SmallTableCtor2, shape *Shape, val1, val2 Valu
 	t.shape = shape
 	t.shapeID = ctor.shapeID
 	t.skeys = ctor.fieldKeys
+	ObserveShapeFieldValueType(t.shapeID, 0, val1.Type())
+	ObserveShapeFieldValueType(t.shapeID, 1, val2.Type())
 	return t
 }
 
@@ -921,6 +923,9 @@ func NewTableFromCtorN(ctor *SmallTableCtorN, vals []Value) *Table {
 		t.shape = ctor.Shape
 		t.shapeID = ctor.shapeID
 		t.skeys = ctor.fieldKeys
+		for i := 0; i < n; i++ {
+			ObserveShapeFieldValueType(t.shapeID, i, t.svals[i].Type())
+		}
 		return t
 	}
 	return newTableFromCtorNFallback(ctor, vals)
@@ -929,6 +934,17 @@ func NewTableFromCtorN(ctor *SmallTableCtorN, vals []Value) *Table {
 // NewTableFromCtorNNonNil constructs a fixed-shape small string table when the
 // caller has already proven every constructor value is non-nil.
 func NewTableFromCtorNNonNil(ctor *SmallTableCtorN, vals []Value) *Table {
+	return newTableFromCtorNNonNil(ctor, vals, true)
+}
+
+// NewTableFromCtorNNonNilCache constructs a cache placeholder without updating
+// shape-field type feedback. Native code overwrites every field before the
+// object is exposed to program code.
+func NewTableFromCtorNNonNilCache(ctor *SmallTableCtorN, vals []Value) *Table {
+	return newTableFromCtorNNonNil(ctor, vals, false)
+}
+
+func newTableFromCtorNNonNil(ctor *SmallTableCtorN, vals []Value, observeTypes bool) *Table {
 	if ctor == nil || ctor.Shape == nil || len(vals) < len(ctor.Keys) {
 		return NewTableFromCtorN(ctor, vals)
 	}
@@ -939,6 +955,11 @@ func NewTableFromCtorNNonNil(ctor *SmallTableCtorN, vals []Value) *Table {
 	t.shape = ctor.Shape
 	t.shapeID = ctor.shapeID
 	t.skeys = ctor.fieldKeys
+	if observeTypes {
+		for i := 0; i < n; i++ {
+			ObserveShapeFieldValueType(t.shapeID, i, t.svals[i].Type())
+		}
+	}
 	return t
 }
 
@@ -1167,6 +1188,7 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 			cache.ShapeID = 0
 		} else {
 			t.svals[idx] = val
+			ObserveShapeFieldValueType(oldShapeID, idx, val.Type())
 		}
 		RecordShapeFieldMutation(oldShapeID, idx)
 		return
@@ -1199,6 +1221,7 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 				t.svals[i] = val
 				cache.FieldIdx = i
 				cache.ShapeID = t.shapeID
+				ObserveShapeFieldValueType(oldShapeID, i, val.Type())
 			}
 			t.bumpStringLookupVersionLocked()
 			RecordShapeFieldMutation(oldShapeID, i)
@@ -1267,6 +1290,7 @@ func (t *Table) RawSetStringDynamicCached(key string, val Value, cache []TableSt
 		if idx, ok := t.lookupDynamicStringCacheLocked(data, keyLen, cache); ok {
 			RecordShapeFieldMutation(t.shapeID, idx)
 			t.svals[idx] = val
+			ObserveShapeFieldValueType(t.shapeID, idx, val.Type())
 			t.bumpStringLookupVersionLocked()
 			RecordRuntimePathTableStringSetCacheHit()
 			return
@@ -1281,6 +1305,7 @@ func (t *Table) RawSetStringDynamicCached(key string, val Value, cache []TableSt
 			} else {
 				t.svals[i] = val
 				t.rememberDynamicStringCacheLocked(key, data, keyLen, i, cache)
+				ObserveShapeFieldValueType(oldShapeID, i, val.Type())
 			}
 			t.bumpStringLookupVersionLocked()
 			RecordShapeFieldMutation(oldShapeID, i)
@@ -1461,6 +1486,7 @@ func (t *Table) appendShape(key string) {
 func (t *Table) appendSmallStringField(key string, val Value) {
 	t.appendSmallStringValue(val)
 	t.appendShape(key)
+	ObserveShapeFieldValueType(t.shapeID, len(t.svals)-1, val.Type())
 }
 
 func (t *Table) appendSmallStringValue(val Value) {
@@ -1523,6 +1549,7 @@ func (t *Table) RawSetString(key string, val Value) {
 				t.deleteSmallStringField(i)
 			} else {
 				t.svals[i] = val
+				ObserveShapeFieldValueType(oldShapeID, i, val.Type())
 			}
 			t.bumpStringLookupVersionLocked()
 			RecordShapeFieldMutation(oldShapeID, i)

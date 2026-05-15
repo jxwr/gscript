@@ -31,6 +31,8 @@ type Shape struct {
 	transitions    sync.Map       // string → *Shape (cached addField transitions)
 	mutations      uint64         // observed overwrites/deletes of this shape
 	fieldMutations []uint64       // observed overwrites/deletes by field index
+	fieldTypes     []uint32       // stable observed field value types, encoded as ValueType+1
+	fieldTypeEpoch []uint64       // increments when a field's observed type changes or becomes mixed
 }
 
 // GetFieldIndex returns the slot index of key in FieldKeys, or -1 if absent.
@@ -78,6 +80,8 @@ func getOrCreateShape(keys []string) *Shape {
 		FieldKeys:      keys,
 		FieldMap:       fm,
 		fieldMutations: make([]uint64, len(keys)),
+		fieldTypes:     make([]uint32, len(keys)),
+		fieldTypeEpoch: make([]uint64, len(keys)),
 	}
 	actual, loaded := shapeByKey.LoadOrStore(k, s)
 	if loaded {
@@ -99,6 +103,8 @@ func getOrCreateSingleFieldShape(key string) *Shape {
 		FieldKeys:      keys,
 		FieldMap:       map[string]int{key: 0},
 		fieldMutations: make([]uint64, len(keys)),
+		fieldTypes:     make([]uint32, len(keys)),
+		fieldTypeEpoch: make([]uint64, len(keys)),
 	}
 	actual, loaded := shapeByKey.LoadOrStore(key, s)
 	if loaded {
@@ -208,6 +214,91 @@ func ShapeFieldMutationCountPtr(id uint32, fieldIdx int) unsafe.Pointer {
 		return unsafe.Pointer(&s.fieldMutations[fieldIdx])
 	}
 	return nil
+}
+
+const shapeFieldTypeMixed uint32 = ^uint32(0)
+
+func encodeShapeFieldType(t ValueType) uint32 {
+	return uint32(t) + 1
+}
+
+func decodeShapeFieldType(encoded uint32) (ValueType, bool) {
+	if encoded == 0 || encoded == shapeFieldTypeMixed {
+		return TypeNil, false
+	}
+	return ValueType(encoded - 1), true
+}
+
+// ObserveShapeFieldValueType records the process-wide stable type seen for one
+// shape field. This is deliberately separate from value mutation epochs: hot
+// numeric fields may change value every iteration while still preserving type.
+func ObserveShapeFieldValueType(id uint32, fieldIdx int, typ ValueType) {
+	if id == 0 || typ == TypeNil {
+		return
+	}
+	s := LookupShapeByID(id)
+	if s == nil || fieldIdx < 0 || fieldIdx >= len(s.fieldTypes) {
+		return
+	}
+	encoded := encodeShapeFieldType(typ)
+	for {
+		old := atomic.LoadUint32(&s.fieldTypes[fieldIdx])
+		switch old {
+		case shapeFieldTypeMixed:
+			return
+		case 0:
+			if atomic.CompareAndSwapUint32(&s.fieldTypes[fieldIdx], 0, encoded) {
+				return
+			}
+		case encoded:
+			return
+		default:
+			if atomic.CompareAndSwapUint32(&s.fieldTypes[fieldIdx], old, shapeFieldTypeMixed) {
+				atomic.AddUint64(&s.fieldTypeEpoch[fieldIdx], 1)
+				return
+			}
+		}
+	}
+}
+
+// ShapeFieldStableType reports the globally observed stable value type for a
+// shape field. A false result means unknown or mixed, so JITs must keep normal
+// per-load type checks.
+func ShapeFieldStableType(id uint32, fieldIdx int) (ValueType, bool) {
+	if id == 0 {
+		return TypeNil, false
+	}
+	s := LookupShapeByID(id)
+	if s == nil || fieldIdx < 0 || fieldIdx >= len(s.fieldTypes) {
+		return TypeNil, false
+	}
+	return decodeShapeFieldType(atomic.LoadUint32(&s.fieldTypes[fieldIdx]))
+}
+
+// ShapeFieldTypeEpoch returns the epoch used by native guards for stable field
+// type assumptions.
+func ShapeFieldTypeEpoch(id uint32, fieldIdx int) uint64 {
+	if id == 0 {
+		return 0
+	}
+	s := LookupShapeByID(id)
+	if s == nil || fieldIdx < 0 || fieldIdx >= len(s.fieldTypeEpoch) {
+		return 0
+	}
+	return atomic.LoadUint64(&s.fieldTypeEpoch[fieldIdx])
+}
+
+// ShapeFieldTypeEpochPtr returns the address of a field type epoch for native
+// JIT guards.
+func ShapeFieldTypeEpochPtr(id uint32, fieldIdx int) unsafe.Pointer {
+	if id == 0 {
+		return nil
+	}
+	s := LookupShapeByID(id)
+	if s == nil || fieldIdx < 0 || fieldIdx >= len(s.fieldTypeEpoch) {
+		return nil
+	}
+	return unsafe.Pointer(&s.fieldTypeEpoch[fieldIdx])
 }
 
 // ShapeWasMutated reports whether this shape has ever been mutated after

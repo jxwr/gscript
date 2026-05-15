@@ -134,6 +134,11 @@ type Function struct {
 	// of optimization, not as an error.
 	LoopTableArrayFacts map[int]LoopTableArrayFact
 
+	// ShapeFieldTypeElidedLoads marks fixed-shape field loads whose result type
+	// is guarded once by shape field type epochs. Codegen may skip the per-load
+	// NaN-box tag check for these loads.
+	ShapeFieldTypeElidedLoads map[int]bool
+
 	// TableArrayDataPtrs records typed table-array data pointer SSA values. The
 	// key is an OpTableArrayData value ID; consumers can resolve it as a raw
 	// backing-array pointer only while the matching header guard remains valid.
