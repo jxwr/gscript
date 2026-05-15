@@ -215,6 +215,9 @@ func newTableCacheBatchSizeForHints(arrayHint int64, hashHint int, kind runtime.
 	if arrayHint == 0 && hashHint == 0 && kind == runtime.ArrayMixed {
 		return 64
 	}
+	if kind == runtime.ArrayMixed && arrayHint == 0 && hashHint > 0 && hashHint <= runtime.SmallFieldCap {
+		return 64
+	}
 	if arrayHint <= 0 || hashHint != 0 || arrayHint > tier2NewTableCacheMaxArrayHint {
 		return 0
 	}
