@@ -65,7 +65,8 @@ func (vm *VM) TryRunValueWholeCallKernelForJIT(fn runtime.Value, args []runtime.
 	if !ok {
 		return false, nil, nil
 	}
-	if cl.Proto == nil || !hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelMandelbrotCount) {
+	if cl.Proto == nil || !(hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelMandelbrotCount) ||
+		hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelSumPrimes)) {
 		return false, nil, nil
 	}
 	return vm.tryRunValueWholeCallKernel(cl, args)
@@ -140,7 +141,8 @@ func mayHaveWholeCallValueKernelCandidate(proto *FuncProto, argc int, includeRec
 		}
 		return (proto.MaxStack == 30 && len(proto.Constants) == 2 && len(proto.Protos) == 0) ||
 			(proto.MaxStack >= 13 && len(proto.Constants) == 0 && len(proto.Protos) == 0 && len(proto.Code) == 45) ||
-			(proto.MaxStack == 27 && len(proto.Constants) == 5 && len(proto.Protos) == 0 && len(proto.Code) == 64)
+			(proto.MaxStack == 27 && len(proto.Constants) == 5 && len(proto.Protos) == 0 && len(proto.Code) == 64) ||
+			(proto.MaxStack == 11 && len(proto.Constants) == 3 && len(proto.Protos) == 0 && len(proto.Code) == 22)
 	case 2:
 		return proto.NumParams == 2 && len(proto.Constants) == 24 && len(proto.Code) == 169
 	case 3:
