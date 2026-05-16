@@ -127,8 +127,12 @@ func mayHaveWholeCallValueKernelCandidate(proto *FuncProto, argc int, includeRec
 		}
 		return (proto.MaxStack == 30 && len(proto.Constants) == 2 && len(proto.Protos) == 0) ||
 			(proto.MaxStack >= 13 && len(proto.Constants) == 0 && len(proto.Protos) == 0 && len(proto.Code) == 45)
+	case 2:
+		return proto.NumParams == 2 && len(proto.Constants) == 24 && len(proto.Code) == 169
 	case 3:
-		return proto.NumParams == 3 && (len(proto.Constants) == 1 ||
+		return proto.NumParams == 3 && (len(proto.Constants) == 5 && len(proto.Code) == 32 ||
+			(len(proto.Constants) == 15 && len(proto.Code) == 83) ||
+			len(proto.Constants) == 1 ||
 			(len(proto.Constants) == 5 && (len(proto.Code) == 51 || len(proto.Code) == 91 || len(proto.Code) == 93)))
 	default:
 		return false

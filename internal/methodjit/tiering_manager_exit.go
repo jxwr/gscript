@@ -161,7 +161,7 @@ func (tm *TieringManager) executeNativeCallExit(ctx *ExecContext, callerCF *Comp
 	}
 	callerFrame := snapshotNativeCallExitFrame(ctx)
 	callerClosurePtr := callerFrame.NativeCallerClosurePtr
-	calleeProto, calleeCF, calleeBase, err := tm.nativeExitCallee(ctx, regs, callerBase)
+	calleeProto, calleeCF, calleeBase, err := tm.nativeExitCallee(ctx, regs, callerBase, callerProto, callerCF)
 	if err != nil {
 		return regs, err
 	}
@@ -308,7 +308,7 @@ func (tm *TieringManager) setTier2ResumeContext(ctx *ExecContext, cf *CompiledFu
 	}
 }
 
-func (tm *TieringManager) nativeExitCallee(ctx *ExecContext, regs []runtime.Value, callerBase int) (*vm.FuncProto, *CompiledFunction, int, error) {
+func (tm *TieringManager) nativeExitCallee(ctx *ExecContext, regs []runtime.Value, callerBase int, callerProto *vm.FuncProto, callerCF *CompiledFunction) (*vm.FuncProto, *CompiledFunction, int, error) {
 	calleeBase := callerBase + int(ctx.NativeCalleeBaseOff)/jit.ValueSize
 	callSlot := callerBase + int(ctx.CallSlot)
 	if callSlot < 0 || callSlot >= len(regs) {
@@ -324,6 +324,9 @@ func (tm *TieringManager) nativeExitCallee(ctx *ExecContext, regs []runtime.Valu
 	}
 	calleeCF, ok := tm.tier2CompiledFor(cl.Proto)
 	if !ok || calleeCF == nil {
+		if callerProto != nil && callerCF != nil && (cl.Proto == callerProto || cl.Proto.Name == callerProto.Name) {
+			return callerProto, callerCF, calleeBase, nil
+		}
 		return nil, nil, 0, fmt.Errorf("native-call-exit: callee %q is not compiled at Tier 2", cl.Proto.Name)
 	}
 	return cl.Proto, calleeCF, calleeBase, nil

@@ -104,6 +104,17 @@ func tableArrayLowerableGetTable(fn *Function, instr *Instr) bool {
 	if instr == nil || instr.Op != OpGetTable || len(instr.Args) < 2 {
 		return false
 	}
+	if !tableAccessKeyReadyForArrayLowering(fn, instr) ||
+		tableKeyKnownString(fn, instr.Args[1]) ||
+		(tableDynamicStringKeyCacheLikely(fn, instr) && !tableKeyProvenInt(instr.Args[1])) {
+		blockID := -1
+		if instr.Block != nil {
+			blockID = instr.Block.ID
+		}
+		functionRemarks(fn).Add("TableArrayLower", "missed", blockID, instr.ID, instr.Op,
+			"string-key table access cannot use table-array lowering")
+		return false
+	}
 	if !tableArrayLowerableKind(instr.Aux2) {
 		kind, ok := inferredArrayKindForIntKeyTableLoad(instr)
 		if !ok {
@@ -111,16 +122,25 @@ func tableArrayLowerableGetTable(fn *Function, instr *Instr) bool {
 		}
 		instr.Aux2 = kind
 	}
-	if tableDynamicStringKeyCacheLikely(fn, instr) && !tableKeyProvenInt(instr.Args[1]) {
-		blockID := -1
-		if instr.Block != nil {
-			blockID = instr.Block.ID
-		}
-		functionRemarks(fn).Add("TableArrayLower", "missed", blockID, instr.ID, instr.Op,
-			"dynamic string-key cache feedback")
+	return true
+}
+
+func tableAccessKeyReadyForArrayLowering(fn *Function, instr *Instr) bool {
+	if instr == nil || !instr.HasSource || instr.SourcePC < 0 {
+		return true
+	}
+	proto := instrSourceProto(fn, instr)
+	if proto == nil || instr.SourcePC >= len(proto.Feedback) {
+		return true
+	}
+	right := proto.Feedback[instr.SourcePC].Right
+	if right == vm.FBInt {
+		return true
+	}
+	if right != vm.FBUnobserved {
 		return false
 	}
-	return true
+	return len(instr.Args) >= 2 && tableKeyProvenInt(instr.Args[1])
 }
 
 func inferredArrayKindForIntKeyTableLoad(instr *Instr) (int64, bool) {
@@ -139,6 +159,23 @@ func inferredArrayKindForIntKeyTableLoad(instr *Instr) (int64, bool) {
 
 func tableKeyProvenInt(key *Value) bool {
 	return key != nil && key.Def != nil && (key.Def.Type == TypeInt || key.Def.Op == OpConstInt)
+}
+
+func tableKeyKnownString(fn *Function, key *Value) bool {
+	if key == nil || key.Def == nil {
+		return false
+	}
+	if key.Def.Type == TypeString {
+		return true
+	}
+	if !key.Def.HasSource || key.Def.SourcePC < 0 {
+		return false
+	}
+	proto := instrSourceProto(fn, key.Def)
+	if proto == nil || key.Def.SourcePC >= len(proto.Feedback) {
+		return false
+	}
+	return proto.Feedback[key.Def.SourcePC].Result == vm.FBString
 }
 
 func tableDynamicStringKeyCacheLikely(fn *Function, instr *Instr) bool {

@@ -3,6 +3,7 @@ package methodjit
 import "github.com/gscript/gscript/internal/vm"
 
 const callResultRangeGuardMinCount uint32 = 4
+const observedParamRangeGuardMinCount uint32 = 2
 const callFloorSpecRangeMin int64 = -1 << 31
 const callFloorSpecRangeMax int64 = 1<<31 - 1
 

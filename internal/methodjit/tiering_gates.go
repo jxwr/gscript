@@ -112,8 +112,8 @@ func (tm *TieringManager) osrRestartSafetyGate(proto *vm.FuncProto, profile Func
 	if proto == nil || !profile.HasLoop {
 		return blockGate("OSRRestartSafety", "function has no restartable loop")
 	}
-	if profile.HasClosure || profile.HasUpval || profile.HasVararg {
-		return blockGate("OSRRestartSafety", "function contains closure/upvalue/vararg state")
+	if profile.HasVararg {
+		return blockGate("OSRRestartSafety", "function contains vararg state")
 	}
 
 	fn := BuildGraph(proto)
@@ -142,6 +142,9 @@ func (tm *TieringManager) osrRestartSafetyGate(proto *vm.FuncProto, profile Func
 		return blockGate("OSRRestartSafety", err.Error())
 	}
 	if op, ok := firstExitResumeInLoop(fn, loopCallGlobals); ok {
+		if op == OpCall && hasStaticCallInLoop(proto) {
+			return allowGate("OSRRestartSafety", "loop call may specialize from runtime call feedback")
+		}
 		return blockGateOp("OSRRestartSafety", "optimized loop still needs exit/resume", op)
 	}
 	if hasRestartVisibleSideEffect(fn) {
@@ -263,6 +266,9 @@ func (tm *TieringManager) shouldPromoteNativeLoopDriver(proto *vm.FuncProto, pro
 		return false
 	}
 	globals := tm.buildLoopCallGlobals(proto)
+	if proto.Name == "<main>" && !mainNativeLoopDriverCallsTableLoopCallee(proto, globals) {
+		return false
+	}
 	if proto.Name == "<main>" && mainNativeLoopDriverCallsAllocatingCallee(proto, globals) {
 		return false
 	}
@@ -273,6 +279,27 @@ func (tm *TieringManager) shouldPromoteNativeLoopDriver(proto *vm.FuncProto, pro
 		}
 	}
 	return canPromoteWithNativeLoopCalls(proto, globals)
+}
+
+func mainNativeLoopDriverCallsTableLoopCallee(proto *vm.FuncProto, globals map[string]*vm.FuncProto) bool {
+	if proto == nil || proto.Name != "<main>" || len(globals) == 0 {
+		return false
+	}
+	inLoop := staticLoopPCs(proto)
+	for pc, inst := range proto.Code {
+		if !inLoop[pc] || vm.DecodeOp(inst) != vm.OP_CALL {
+			continue
+		}
+		callee, ok := findGetGlobalCallee(proto, pc, vm.DecodeA(inst), globals)
+		if !ok || callee == nil {
+			continue
+		}
+		profile := analyzeFuncProfile(callee)
+		if profile.HasLoop && profile.TableOpCount > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func mainNativeLoopDriverCallsAllocatingCallee(proto *vm.FuncProto, globals map[string]*vm.FuncProto) bool {

@@ -105,13 +105,19 @@ func (ec *emitContext) emitGuardType(instr *Instr) {
 		}
 	}
 
+	guardType := Type(instr.Aux)
+	if guardType == TypeString && instr.Args[0].Def != nil && instr.Args[0].Def.Type == TypeString {
+		srcReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+		ec.storeResultNB(srcReg, instr.ID)
+		return
+	}
+
 	// Load the value to check.
 	srcReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
 	if srcReg != jit.X0 {
 		asm.MOVreg(jit.X0, srcReg)
 	}
 
-	guardType := Type(instr.Aux)
 	switch guardType {
 	case TypeInt:
 		// Check NaN-box int tag: top 16 bits must be 0xFFFE.

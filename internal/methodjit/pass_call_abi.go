@@ -253,9 +253,6 @@ func callABITypedPeerDescriptorFor(fn *Function, instr *Instr, callee *vm.FuncPr
 	if fn == nil || instr == nil || callee == nil {
 		return CallABIDescriptor{}, false, ""
 	}
-	if protoHasNativeCallUnsafeTableBytecode(callee) {
-		return CallABIDescriptor{}, false, "callee uses table/object bytecode; typed-peer native call exit is not safe"
-	}
 	argFacts := callABITypedPeerArgFacts(fn, instr, callee)
 	arrayElementArgFacts := profiledFixedShapeArrayElementArgFactsForProto(callee)
 	arrayElementArgFacts = mergeFixedShapeTableFacts(arrayElementArgFacts,
@@ -263,6 +260,10 @@ func callABITypedPeerDescriptorFor(fn *Function, instr *Instr, callee *vm.FuncPr
 	if len(config.Globals) > 0 {
 		arrayElementArgFacts = mergeFixedShapeTableFacts(arrayElementArgFacts,
 			inferGuardedFixedShapeArrayElementArgFactsForProto(callee, config.Globals))
+	}
+	if protoHasNativeCallUnsafeTableBytecode(callee) &&
+		len(argFacts) == 0 && len(arrayElementArgFacts) == 0 && len(config.GlobalArrayElementFacts) == 0 {
+		return CallABIDescriptor{}, false, "callee uses table/object bytecode without typed table facts"
 	}
 	abi := AnalyzeTypedPeerABIWithFactsAndGlobals(callee, argFacts, arrayElementArgFacts, config.NumericGlobalValues, config.GlobalArrayElementFacts)
 	if !abi.Eligible {

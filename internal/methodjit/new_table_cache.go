@@ -21,7 +21,7 @@ const (
 	// monomorphic fixed-record site has fired once, future refills hand back
 	// a larger slab so refill-driven Tier 2 exits become rare.
 	fixedTableCacheBatch          = 1024
-	fixedTableCacheRefillBatch    = 65536
+	fixedTableCacheRefillBatch    = 8192
 	newTableCacheMaxBatch         = 512
 	newTableCacheTargetBytes      = 4 << 20
 	newTableCacheLargeTargetBytes = 8 << 20

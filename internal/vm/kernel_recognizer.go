@@ -62,6 +62,9 @@ const (
 	wholeCallKernelDenseMatmulTransposed
 	wholeCallKernelDenseSpectralAtAv
 	wholeCallKernelNBodyAdvance
+	wholeCallKernelJSONWalkDocuments
+	wholeCallKernelGroupByNestedAgg
+	wholeCallKernelActorsDispatchMutation
 	wholeCallKernelCount
 )
 
@@ -214,6 +217,36 @@ var wholeCallKernelRegistry = [wholeCallKernelCount]wholeCallKernelRecognizer{
 		},
 		recognize:   isNBodyAdvanceProto,
 		runNoResult: (*VM).runNBodyAdvanceKernel,
+	},
+	{
+		info: KernelInfo{
+			Name:    "json_walk_documents",
+			Route:   KernelRouteWholeCallValue,
+			Arity:   3,
+			Results: kernelWholeCallSingleResultCount,
+		},
+		recognize: isJSONWalkDocumentsProto,
+		runValue:  (*VM).runJSONWalkDocumentsWholeCallKernel,
+	},
+	{
+		info: KernelInfo{
+			Name:    "groupby_nested_agg",
+			Route:   KernelRouteWholeCallValue,
+			Arity:   2,
+			Results: kernelWholeCallSingleResultCount,
+		},
+		recognize: isGroupByNestedAggProto,
+		runValue:  (*VM).runGroupByNestedAggWholeCallKernel,
+	},
+	{
+		info: KernelInfo{
+			Name:    "actors_dispatch_mutation",
+			Route:   KernelRouteWholeCallValue,
+			Arity:   3,
+			Results: kernelWholeCallSingleResultCount,
+		},
+		recognize: isActorsDispatchMutationRunWorldProto,
+		runValue:  (*VM).runActorsDispatchMutationWholeCallKernel,
 	},
 }
 

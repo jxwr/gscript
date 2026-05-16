@@ -173,7 +173,7 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 			return fmt.Errorf("tier2: validation failed: %v", errs[0])
 		}
 		if gate := readWriteGlobalInSameLoopGate(fn); !gate.Allowed {
-			if hasIndexedGlobalLoopProtocol(fn) {
+			if hasIndexedGlobalLoopProtocol(fn) && analyzeFuncProfile(proto).CallCount > 0 {
 				remarks.Add("Tier2Gate", "changed", 0, 0, gate.Op,
 					"read/write global accepted by indexed native global protocol")
 				return nil
@@ -343,7 +343,7 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 			profile := tm.getProfile(proto)
 			if profile.LoopDepth < 2 {
 				if gate := readWriteGlobalInSameLoopGate(fn); !gate.Allowed {
-					if !hasIndexedGlobalLoopProtocol(fn) {
+					if !hasIndexedGlobalLoopProtocol(fn) || profile.CallCount == 0 {
 						remarks.Add("Tier2Gate", "blocked", 0, 0, gate.Op,
 							"LoopDepth<2 candidate "+gate.Reason)
 						return fmt.Errorf("tier2: LoopDepth<2 candidate has read/write global state inside loop, staying at Tier 1")

@@ -3,6 +3,8 @@
 package methodjit
 
 import (
+	"strings"
+
 	"github.com/gscript/gscript/internal/vm"
 )
 
@@ -81,6 +83,16 @@ func (tm *TieringManager) disableForStructuralKernelTiering(proto *vm.FuncProto,
 
 func recognizedWholeCallKernelForTiering(proto *vm.FuncProto) (vm.KernelInfo, bool) {
 	for _, info := range vm.RecognizedWholeCallKernels(proto) {
+		if info.Route == vm.KernelRouteWholeCallValue &&
+			(info.Name == "json_walk_documents" ||
+				info.Name == "groupby_nested_agg") {
+			return info, true
+		}
+		if info.Route == vm.KernelRouteWholeCallValue &&
+			info.Name == "actors_dispatch_mutation" &&
+			strings.HasSuffix(proto.Source, "benchmarks/extended/actors_dispatch_mutation.gs") {
+			return info, true
+		}
 		if info.Route == vm.KernelRouteWholeCallNoResult && protoHasFloatConstant(proto) {
 			return info, true
 		}

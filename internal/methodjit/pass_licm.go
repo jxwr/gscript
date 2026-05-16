@@ -199,6 +199,7 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 	shapeMutatingTables := make(map[int]bool)
 	arrayElementWrites := make(map[loadKey]bool)
 	setGlobals := make(map[int64]bool) // Aux (constant pool index) of in-loop SetGlobal
+	setUpvals := make(map[upvalueKey]bool)
 	var loopCalls []*Instr
 	hasEffectfulLoopCall := false
 	for _, b := range bodyList {
@@ -239,6 +240,10 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 				}
 			case OpSetGlobal:
 				setGlobals[instr.Aux] = true
+			case OpSetUpval:
+				if len(instr.Args) >= 2 {
+					setUpvals[upvalueKey{closureID: instr.Args[1].ID, upval: instr.Aux}] = true
+				}
 			case OpCall:
 				if !isPureLoopInvariantCall(fn, instr) {
 					loopCalls = append(loopCalls, instr)
@@ -421,6 +426,21 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 					continue
 				}
 			}
+			if instr.Op == OpGetUpval {
+				if hasEffectfulLoopCall {
+					functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
+						"loop contains a call that may mutate upvalues")
+					continue
+				}
+				if len(instr.Args) >= 1 {
+					key := upvalueKey{closureID: instr.Args[0].ID, upval: instr.Aux}
+					if setUpvals[key] {
+						functionRemarks(fn).Add("LICM", "missed", loc.block.ID, instr.ID, instr.Op,
+							"upvalue is written inside the loop")
+						continue
+					}
+				}
+			}
 			// Int arithmetic: require Int48Safe marking.
 			if isIntArithOp(instr.Op) {
 				if fn.Int48Safe == nil || !fn.Int48Safe[instr.ID] {
@@ -508,7 +528,6 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 			}
 		}
 	}
-
 	// ph.Preds = outside (same order), ph.Succs = [hdr].
 	ph.Preds = append(ph.Preds, outside...)
 	ph.Succs = []*Block{hdr}
@@ -836,6 +855,9 @@ func canHoistOp(op Op) bool {
 	case OpGetGlobal, OpGuardGlobalConst:
 		// Caller must also check alias info (no SetGlobal on same name, no Call in loop).
 		return true
+	case OpGetUpval:
+		// Caller must also check alias info (no SetUpval on same cell, no Call in loop).
+		return true
 	case OpSqrt:
 		// Pure single-input float op with no side effects.
 		return true
@@ -854,7 +876,7 @@ func canHoistOp(op Op) bool {
 		return true
 	case OpLtInt, OpLeInt, OpEqInt, OpModZeroInt, OpLtFloat, OpLeFloat, OpEqString, OpNot:
 		return true
-	case OpGuardType, OpGuardIntRange:
+	case OpGuardType, OpGuardIntRange, OpGuardCalleeProto:
 		// Pure guards; deopt metadata has no PC-dependent state,
 		// so hoisting is safe when the guarded value is invariant.
 		return true
@@ -893,7 +915,7 @@ func canHoistOp(op Op) bool {
 
 func isInterestingLICMMiss(op Op) bool {
 	switch op {
-	case OpGetField, OpGetTable, OpGetGlobal, OpGuardGlobalConst, OpLoadSlot,
+	case OpGetField, OpGetTable, OpGetGlobal, OpGuardGlobalConst, OpGuardCalleeProto, OpGetUpval, OpLoadSlot,
 		OpAdd, OpSub, OpMul, OpDiv, OpMod, OpUnm,
 		OpAddInt, OpSubInt, OpMulInt, OpModInt, OpDivIntExact, OpNegInt,
 		OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpFMA, OpFMSUB,

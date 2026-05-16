@@ -835,6 +835,7 @@ func (tm *TieringManager) handleOSRWithResultBuffer(regs []runtime.Value, base i
 	}
 
 	// Try to compile at Tier 2.
+	mergeBaselineCallCacheFeedback(proto, tm.tier1.compiled[proto])
 	tm.ensureNativeLoopCallees(proto)
 	tm.ensureRawIntLoopCallees(proto)
 	t2, err := tm.compileTier2(proto)

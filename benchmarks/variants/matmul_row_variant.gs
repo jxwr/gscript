@@ -43,7 +43,7 @@ for rep := 1; rep <= REPS; rep++ {
     a := matgen_attached_rows(N, rep + 2.0)
     b := matgen_attached_rows(N, rep + 6.0)
     c := matmul(a, b, N)
-    checksum = checksum + c[0][0] + c[half][half] + c[N - 1][N - 1]
+    checksum = checksum + matrix.getf(c, 0, 0) + matrix.getf(c, half, half) + matrix.getf(c, N - 1, N - 1)
 }
 elapsed := time.since(t0)
 

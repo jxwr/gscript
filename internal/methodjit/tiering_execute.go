@@ -94,6 +94,16 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			ctx.Tier2GlobalVer = 0
 		}
 	}
+	refreshTier2GlobalContextIfStale := func() {
+		if ctx.Tier2GlobalVerPtr == 0 {
+			refreshTier2GlobalContext()
+			return
+		}
+		current := *(*uint32)(unsafe.Pointer(ctx.Tier2GlobalVerPtr))
+		if uint64(current) != ctx.Tier2GlobalVer {
+			refreshTier2GlobalContext()
+		}
+	}
 	// R108: set mono call-IC cache pointer.
 	if len(cf.CallCache) > 0 {
 		ctx.Tier2CallCache = uintptr(unsafe.Pointer(&cf.CallCache[0]))
@@ -148,7 +158,6 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 		ctx.RegsEnd = ctx.RegsBase + uintptr(len(regs)*jit.ValueSize)
 		ctx.RawSelfRegsEnd = rawSelfRegsEnd(ctx.Regs, ctx.RegsEnd, cf.numRegs)
 		tm.setTier2FieldCacheContext(ctx, proto)
-		refreshTier2GlobalContext()
 		if cl := tm.callVM.CurrentClosure(); cl != nil {
 			ctx.BaselineClosurePtr = uintptr(unsafe.Pointer(cl))
 		}
@@ -401,10 +410,6 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			if err != nil {
 				return nil, err
 			}
-			if tm.shouldRestartFieldTableExit(cf, ctx) {
-				ctx.ExitCode = 0
-				return nil, fmt.Errorf("tier2: field table-exit requires boxed interpreter restart")
-			}
 			if tm.perfStatsEnabled {
 				start := time.Now()
 				err = tm.executeTableExit(ctx, regs, base, proto, cf)
@@ -461,7 +466,7 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			// op-exit only adds runtime tax to helper-heavy loops.
 			resyncRegs()
 			if Op(ctx.OpExitOp) == OpSetGlobal {
-				refreshTier2GlobalContext()
+				refreshTier2GlobalContextIfStale()
 			}
 			if err := exitCheck.checkAfter(site, before, regs, base, protoNameForCheck(proto)); err != nil {
 				return nil, err
@@ -484,17 +489,6 @@ func (tm *TieringManager) executeTier2WithResultBuffer(cf *CompiledFunction, reg
 			return nil, fmt.Errorf("tier2: unknown exit code %d", ctx.ExitCode)
 		}
 	}
-}
-
-func (tm *TieringManager) shouldRestartFieldTableExit(cf *CompiledFunction, ctx *ExecContext) bool {
-	if tm == nil || cf == nil || ctx == nil || cf.ExitSites == nil {
-		return false
-	}
-	if ctx.TableOp != TableOpGetField && ctx.TableOp != TableOpSetField {
-		return false
-	}
-	meta, ok := cf.ExitSites[int(ctx.TableExitID)]
-	return ok && meta.PC >= 0
 }
 
 func (tm *TieringManager) intOverflowDeoptRefreshAction(proto *vm.FuncProto, cf *CompiledFunction, ctx *ExecContext) (Tier2DeoptAction, bool) {

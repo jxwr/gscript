@@ -943,6 +943,28 @@ result := bench(10, 3)
 	}
 }
 
+func TestTier2_InlinedClosureFloatPhiPreservesEntryValue(t *testing.T) {
+	src := `
+func make_counter(start, delta) {
+    value := start
+    return func() {
+        value = value + delta
+        return value
+    }
+}
+func run(n) {
+    acc := make_counter(0.5, 1.25)
+    total := 0.0
+    for i := 1; i <= n; i++ {
+        total = total + acc()
+    }
+    return total
+}
+result := run(20000)
+`
+	compareTier2Result(t, src, "result")
+}
+
 // TestTier2_SqrtIntrinsic exercises the math.sqrt intrinsic recognition pass.
 // The IntrinsicPass rewrites the GetGlobal("math") + GetField("sqrt") + Call
 // sequence into a single OpSqrt, which the emitter lowers to an ARM64 FSQRT.

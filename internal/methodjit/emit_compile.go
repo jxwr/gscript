@@ -657,7 +657,22 @@ func (ec *emitContext) emitTier2CallCounter(instr *Instr, kind, outcome string) 
 }
 
 func collectNativeSetGlobals(fn *Function) map[int]bool {
-	return make(map[int]bool)
+	out := make(map[int]bool)
+	if fn == nil {
+		return out
+	}
+	for _, block := range fn.Blocks {
+		if block == nil {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpSetGlobal || instr.Aux < 0 {
+				continue
+			}
+			out[int(instr.Aux)] = true
+		}
+	}
+	return out
 }
 
 func collectGlobalGuardConsts(fn *Function) []int {

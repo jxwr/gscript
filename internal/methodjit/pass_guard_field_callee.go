@@ -1,6 +1,9 @@
 package methodjit
 
-import "fmt"
+import (
+	"fmt"
+	"unsafe"
+)
 
 // GuardFieldCalleePass fuses a fixed-shape method field load that feeds only a
 // callee-proto guard:
@@ -28,7 +31,7 @@ func GuardFieldCalleePass(fn *Function) (*Function, error) {
 			}
 			if instr.Op == OpGuardCalleeProto && len(instr.Args) == 1 && instr.Args[0] != nil {
 				load := instr.Args[0].Def
-				if aux2, ok := guardFieldCalleeLoadAux2(fn, load); ok {
+				if aux2, ok := guardFieldCalleeLoadAux2ForGuard(fn, load, instr.Aux); ok {
 					instr.Op = OpGuardFieldCalleeProto
 					instr.Args = []*Value{load.Args[0]}
 					instr.Aux2 = aux2
@@ -53,11 +56,18 @@ func GuardFieldCalleePass(fn *Function) (*Function, error) {
 }
 
 func guardFieldCalleeLoadAux2(fn *Function, instr *Instr) (int64, bool) {
+	return guardFieldCalleeLoadAux2ForGuard(fn, instr, 0)
+}
+
+func guardFieldCalleeLoadAux2ForGuard(fn *Function, instr *Instr, protoPtr int64) (int64, bool) {
 	if instr == nil || instr.Op != OpGetField || len(instr.Args) == 0 || instr.Args[0] == nil || instr.Aux2 == 0 {
 		if fn == nil || instr == nil || instr.Op != OpGetField || len(instr.Args) == 0 || instr.Args[0] == nil {
 			return 0, false
 		}
 		cases := fn.FieldPolyShapeFacts[instr.ID]
+		if protoPtr != 0 {
+			cases = guardFieldCalleeCasesForProto(cases, uintptr(protoPtr))
+		}
 		if len(cases) != 1 || cases[0].ShapeID == 0 || cases[0].FieldIdx < 0 {
 			return 0, false
 		}
@@ -69,6 +79,19 @@ func guardFieldCalleeLoadAux2(fn *Function, instr *Instr) (int64, bool) {
 		return 0, false
 	}
 	return instr.Aux2, true
+}
+
+func guardFieldCalleeCasesForProto(cases []FieldPolyShapeCase, protoPtr uintptr) []FieldPolyShapeCase {
+	if protoPtr == 0 || len(cases) == 0 {
+		return cases
+	}
+	out := make([]FieldPolyShapeCase, 0, len(cases))
+	for _, c := range cases {
+		if c.VMProto != nil && protoPtr == uintptr(unsafe.Pointer(c.VMProto)) {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 func nextGuardUsesFusedFieldLoad(fn *Function, block *Block, load *Instr) bool {

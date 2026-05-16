@@ -189,6 +189,7 @@ const (
 )
 
 const argArrayElementShapeSampleLimit = 8
+const tableKeyValueShapeSampleLimit = 16
 
 // ArgArrayElementShapeFeedback records the stable shape of table values stored
 // in an array argument's first element. It is intentionally conservative: the
@@ -698,7 +699,10 @@ func (tk *TableKeyFeedback) observeValueShape(value runtime.Value) {
 	if tk == nil || !value.IsTable() {
 		return
 	}
-	tk.ValueShape.ObserveTableValue(value.Table())
+	if tk.Count > tableKeyValueShapeSampleLimit {
+		return
+	}
+	tk.ValueShape.observeTableValueDepth(value.Table(), false, 0)
 }
 
 func (tk *TableKeyFeedback) StableValueShape() (shapeID uint32, fieldNames []string, ok bool) {

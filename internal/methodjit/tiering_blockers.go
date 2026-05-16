@@ -166,11 +166,20 @@ func firstExitResumeInLoop(fn *Function, globals map[string]*vm.FuncProto) (Op, 
 					continue
 				}
 				return instr.Op, true
+			case OpGetUpval:
+				if len(instr.Args) > 0 {
+					continue
+				}
+				return instr.Op, true
+			case OpSetUpval:
+				if len(instr.Args) > 1 {
+					continue
+				}
+				return instr.Op, true
 			case OpSelf,
 				OpNewTable, OpNewFixedTable,
 				OpGetTable, OpSetTable,
 				OpConcat, OpAppend, OpSetList,
-				OpGetUpval, OpSetUpval,
 				OpGo, OpMakeChan, OpSend, OpRecv,
 				OpClosure, OpClose,
 				OpVararg,
@@ -256,9 +265,18 @@ func firstCallBoundaryTier2BlockerInLoopGate(fn *Function, globals map[string]*v
 					continue
 				}
 				return blockGateOp("CallBoundaryLoop", "non-native OpCall remains inside loop after inlining", instr.Op)
+			case OpGetUpval:
+				if len(instr.Args) > 0 {
+					continue
+				}
+				return blockGateOp("CallBoundaryLoop", "performance-blocked op remains inside loop", instr.Op)
+			case OpSetUpval:
+				if len(instr.Args) > 1 {
+					continue
+				}
+				return blockGateOp("CallBoundaryLoop", "performance-blocked op remains inside loop", instr.Op)
 			case OpSelf,
 				OpConcat, OpAppend, OpSetList,
-				OpGetUpval, OpSetUpval,
 				OpGo, OpMakeChan, OpSend, OpRecv,
 				OpClosure, OpClose,
 				OpVararg,

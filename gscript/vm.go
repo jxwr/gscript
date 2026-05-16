@@ -101,8 +101,8 @@ func (vm *VM) exec(src, filename string) error {
 		// Persist the bytecode VM for future Call routing
 		vm.bvm = bvm
 		// Sync globals back to interpreter
-		for name, val := range globals {
-			vm.interp.SetGlobal(name, val)
+		for name := range globals {
+			vm.interp.SetGlobal(name, bvm.GetGlobal(name))
 		}
 		return nil
 	}

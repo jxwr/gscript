@@ -1,8 +1,9 @@
 package methodjit
 
 const (
-	nestedLoopParamRangeMax int64 = 1 << 20
-	singleLoopParamRangeMax int64 = 1 << 30
+	nestedLoopParamRangeMax          int64 = 1 << 20
+	nestedLoopParamObservedRangeMax  int64 = 1 << 24
+	singleLoopParamRangeMax          int64 = 1 << 30
 )
 
 // LoopBoundRangeGuardPass adds a narrow entry range guard for integer
@@ -41,7 +42,7 @@ func LoopBoundRangeGuardPass(fn *Function) (*Function, error) {
 					"observed loop-bound parameter exceeds guarded range")
 				continue
 			}
-			max = loopBoundParamObservedMax(fn, slot, max)
+			max = loopBoundParamEffectiveMax(fn, slot, max)
 			if specGuardKindSuppressed(fn, -1, "GuardIntRange") {
 				functionRemarks(fn).Add("LoopBoundRangeGuard", "missed", block.ID, instr.ID, OpGuardIntRange,
 					"skipped globally suppressed int-range guard")
@@ -138,16 +139,22 @@ func loopBoundParamObservedExceeds(fn *Function, slot int, max int64) bool {
 	return ok && observedMax > max
 }
 
-func loopBoundParamObservedMax(fn *Function, slot int, fallback int64) int64 {
+func loopBoundParamEffectiveMax(fn *Function, slot int, fallback int64) int64 {
 	if fn == nil || fn.Proto == nil || slot < 0 || slot >= len(fn.Proto.ArgIntRangeFeedback) {
 		return fallback
 	}
 	rf := fn.Proto.ArgIntRangeFeedback[slot]
-	if rf.Count < callResultRangeGuardMinCount {
+	_, observedMax, ok := rf.StableRange()
+	if !ok || observedMax < 0 {
 		return fallback
 	}
-	_, observedMax, ok := rf.StableRange()
-	if ok && observedMax >= 0 && observedMax < fallback {
+	if rf.Count >= callResultRangeGuardMinCount {
+		if observedMax < fallback {
+			return observedMax
+		}
+		return fallback
+	}
+	if observedMax > fallback && observedMax <= nestedLoopParamObservedRangeMax {
 		return observedMax
 	}
 	return fallback

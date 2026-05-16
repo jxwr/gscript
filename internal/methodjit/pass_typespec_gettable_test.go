@@ -233,6 +233,9 @@ func TestTableArrayLoadTypeSpecialize_ConstStringSetListLoad(t *testing.T) {
 	if load.Type != TypeString {
 		t.Fatalf("TableArrayLoad Type=%s, want string:\n%s", load.Type, Print(result))
 	}
+	if load.Aux2&tableArrayLoadFlagProvenString == 0 {
+		t.Fatalf("TableArrayLoad should carry proven-string flag:\n%s", Print(result))
+	}
 	if lenInstr.Type != TypeInt {
 		t.Fatalf("Len Type=%s, want int:\n%s", lenInstr.Type, Print(result))
 	}

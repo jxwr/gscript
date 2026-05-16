@@ -175,6 +175,28 @@ func TestTableArrayLower_SkipsStringKeyFeedbackSite(t *testing.T) {
 	}
 }
 
+func TestTableArrayLower_SkipsKnownStringKeyWithoutFeedback(t *testing.T) {
+	fn := &Function{NumRegs: 2}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: b}
+	key := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeString, Aux: 1, Block: b}
+	get := &Instr{ID: fn.newValueID(), Op: OpGetTable, Type: TypeAny, Aux2: int64(vm.FBKindMixed),
+		Args: []*Value{tbl.Value(), key.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{get.Value()}, Block: b}
+	b.Instrs = []*Instr{tbl, key, get, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	out, err := TableArrayLowerPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := countOps(out)
+	if counts[OpGetTable] != 1 || counts[OpTableArrayLoad] != 0 {
+		t.Fatalf("known string-key site should remain GetTable, counts=%v\n%s", counts, Print(out))
+	}
+}
+
 func TestTableArrayLower_StillLowersProvenIntKeyWithStringCache(t *testing.T) {
 	proto := &vm.FuncProto{
 		Name:                "table_array_int_key_with_string_cache",

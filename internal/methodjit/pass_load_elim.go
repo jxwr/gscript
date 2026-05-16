@@ -59,6 +59,11 @@ type tableArrayDerivedKey struct {
 	kind     int64
 }
 
+type upvalueKey struct {
+	closureID int
+	upval     int64
+}
+
 type pureCSEKey struct {
 	op   Op
 	typ  Type
@@ -112,6 +117,7 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 		tableArrayFacts := newTableArrayFactSet()
 		pureAvail := make(map[pureCSEKey]int)
 		constAvail := make(map[constCSEKey]int)
+		upvalAvail := make(map[upvalueKey]int)
 		// R93: store-to-load forwarding for dynamic-key table access.
 		// After SetTable(t, k, v), map (t.ID, k.ID) → v.ID so a
 		// subsequent GetTable(t, k) uses v directly.
@@ -327,6 +333,32 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 						"recorded SetField value for forwarding")
 				}
 
+			case OpGetUpval:
+				if len(instr.Args) < 1 {
+					continue
+				}
+				key := upvalueKey{closureID: instr.Args[0].ID, upval: instr.Aux}
+				if origID, ok := upvalAvail[key]; ok {
+					if origInstr := instrByID[origID]; origInstr != nil {
+						replaceAllUses(fn, instr.ID, origInstr)
+						functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
+							"reused earlier GetUpval result")
+					}
+				} else {
+					upvalAvail[key] = instr.ID
+				}
+
+			case OpSetUpval:
+				if len(instr.Args) < 2 {
+					upvalAvail = make(map[upvalueKey]int)
+					continue
+				}
+				key := upvalueKey{closureID: instr.Args[1].ID, upval: instr.Aux}
+				delete(upvalAvail, key)
+				upvalAvail[key] = instr.Args[0].ID
+				functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
+					"recorded SetUpval value for forwarding")
+
 			case OpGetTable:
 				// R93: forward stored value if same (tbl, key) was just set.
 				if len(instr.Args) < 2 {
@@ -451,7 +483,7 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 
 			case OpCall, OpResume, OpSelf:
 				// Conservative: a call could mutate any table or change types.
-				if len(available) > 0 || len(guardAvail) > 0 || len(globalConstGuardAvail) > 0 || len(globalAvail) > 0 ||
+				if len(available) > 0 || len(guardAvail) > 0 || len(globalConstGuardAvail) > 0 || len(globalAvail) > 0 || len(upvalAvail) > 0 ||
 					len(matrixFlatAvail) > 0 || len(matrixStrideAvail) > 0 || len(tableAvail) > 0 ||
 					!tableArrayFacts.Empty() {
 					functionRemarks(fn).Add("LoadElim", "missed", block.ID, instr.ID, instr.Op,
@@ -461,6 +493,7 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 				guardAvail = make(map[guardKey]int)
 				globalConstGuardAvail = make(map[globalConstGuardKey]bool)
 				globalAvail = make(map[int64]int)
+				upvalAvail = make(map[upvalueKey]int)
 				matrixFlatAvail = make(map[int]int)
 				matrixStrideAvail = make(map[int]int)
 				tableArrayFacts.Reset()
@@ -473,11 +506,155 @@ func LoadEliminationPass(fn *Function) (*Function, error) {
 		}
 	}
 
+	changedCrossBlock := false
 	if crossBlockFieldLoadElimination(fn, instrByID) {
+		changedCrossBlock = true
+	}
+	if crossBlockTableShapeIDCSE(fn, instrByID) {
+		changedCrossBlock = true
+	}
+	if changedCrossBlock {
 		cleanupProducerProvenGuards(fn)
 	}
 
 	return fn, nil
+}
+
+func crossBlockTableShapeIDCSE(fn *Function, instrByID map[int]*Instr) bool {
+	if fn == nil || len(fn.Blocks) <= 1 {
+		return false
+	}
+
+	in := make(map[int]map[int]int, len(fn.Blocks))
+	out := make(map[int]map[int]int, len(fn.Blocks))
+	changed := true
+	for changed {
+		changed = false
+		for _, block := range fn.Blocks {
+			nextIn := meetPredShapeFacts(block, out)
+			if !shapeFactMapsEqual(in[block.ID], nextIn) {
+				in[block.ID] = nextIn
+				changed = true
+			}
+			nextOut := transferShapeFacts(cloneShapeFactMap(nextIn), block)
+			if !shapeFactMapsEqual(out[block.ID], nextOut) {
+				out[block.ID] = nextOut
+				changed = true
+			}
+		}
+	}
+
+	rewrote := false
+	for _, block := range fn.Blocks {
+		available := cloneShapeFactMap(in[block.ID])
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			if instr.Op == OpTableShapeID && len(instr.Args) >= 1 && instr.Args[0] != nil {
+				objID := instr.Args[0].ID
+				if origID, ok := available[objID]; ok && origID != instr.ID {
+					if origInstr := instrByID[origID]; origInstr != nil {
+						replaceAllUses(fn, instr.ID, origInstr)
+						functionRemarks(fn).Add("LoadElim", "changed", block.ID, instr.ID, instr.Op,
+							"forwarded table shape id from dominating predecessor")
+						rewrote = true
+					}
+				}
+			}
+			available = transferShapeFactInstr(available, instr)
+		}
+	}
+	return rewrote
+}
+
+func meetPredShapeFacts(block *Block, out map[int]map[int]int) map[int]int {
+	if block == nil || len(block.Preds) == 0 {
+		return nil
+	}
+	var result map[int]int
+	for i, pred := range block.Preds {
+		var predFacts map[int]int
+		if pred != nil {
+			predFacts = out[pred.ID]
+		}
+		if i == 0 {
+			result = cloneShapeFactMap(predFacts)
+			continue
+		}
+		for objID, valueID := range result {
+			if predFacts == nil || predFacts[objID] != valueID {
+				delete(result, objID)
+			}
+		}
+		if len(result) == 0 {
+			return nil
+		}
+	}
+	return result
+}
+
+func transferShapeFacts(facts map[int]int, block *Block) map[int]int {
+	for _, instr := range block.Instrs {
+		facts = transferShapeFactInstr(facts, instr)
+	}
+	if len(facts) == 0 {
+		return nil
+	}
+	return facts
+}
+
+func transferShapeFactInstr(facts map[int]int, instr *Instr) map[int]int {
+	if instr == nil {
+		return facts
+	}
+	delete(facts, instr.ID)
+	switch instr.Op {
+	case OpTableShapeID:
+		if len(instr.Args) < 1 || instr.Args[0] == nil {
+			return facts
+		}
+		if facts == nil {
+			facts = make(map[int]int)
+		}
+		if _, ok := facts[instr.Args[0].ID]; !ok {
+			facts[instr.Args[0].ID] = instr.ID
+		}
+	case OpSetField, OpSetTable, OpTableArrayStore, OpTableArraySwap, OpTableArraySwapPairs,
+		OpTableBoolArrayFill, OpTableIntArrayReversePrefix, OpTableIntArrayCopyPrefix,
+		OpAppend, OpSetList, OpCall, OpResume, OpSelf:
+		clearShapeFacts(facts)
+	}
+	return facts
+}
+
+func clearShapeFacts(facts map[int]int) {
+	for key := range facts {
+		delete(facts, key)
+	}
+}
+
+func cloneShapeFactMap(in map[int]int) map[int]int {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[int]int, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func shapeFactMapsEqual(a, b map[int]int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key, value := range a {
+		if b[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 func crossBlockFieldLoadElimination(fn *Function, instrByID map[int]*Instr) bool {

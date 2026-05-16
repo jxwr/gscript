@@ -102,6 +102,7 @@ func tier2LoopKernelModules() []Tier2OptimizerModule {
 	modules = append(modules, tier2TableLoopKernelModules()...)
 	modules = append(modules,
 		tier2PassModule("FieldNumToFloatFusion (post-LICM)", Tier2PhaseLoopKernel, FieldNumToFloatFusionPass),
+		tier2PassModule("ClosureUpvalueScalar", Tier2PhaseLoopKernel, ClosureUpvalueScalarPass),
 		tier2PassModule("LoadElimination (post-LICM)", Tier2PhaseLoopKernel, LoadEliminationPass),
 	)
 	modules = append(modules, tier2TableLoopPostLoadElimModules()...)

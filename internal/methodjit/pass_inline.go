@@ -174,13 +174,15 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 
 		calleeName, calleeProto := resolveCallee(instr, fn, config)
 		guardedFeedbackCallee := false
+		var guardedFeedbackClosure uintptr
 		var fieldShapeCase FieldPolyShapeCase
 		hasFieldShapeCase := false
 		if calleeProto == nil {
-			if feedbackCallee, ok := inlineFeedbackCalleeProto(fn, instr); ok {
+			if feedbackCallee, closure, ok := inlineFeedbackCallee(fn, instr); ok {
 				calleeName = feedbackCallee.Name
 				calleeProto = feedbackCallee
 				guardedFeedbackCallee = true
+				guardedFeedbackClosure = closure
 				if c, ok := inlineFeedbackFieldShapeCase(fn, instr); ok {
 					fieldShapeCase = c
 					hasFieldShapeCase = true
@@ -233,6 +235,7 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 				Type:      instr.Args[0].Def.Type,
 				Args:      []*Value{instr.Args[0]},
 				Aux:       int64(uintptr(unsafe.Pointer(calleeProto))),
+				Aux2:      int64(guardedFeedbackClosure),
 				Block:     block,
 				HasSource: instr.HasSource,
 				SourcePC:  instr.SourcePC,
@@ -254,6 +257,14 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 
 		// Build the callee's IR.
 		calleeFn := BuildGraph(calleeProto)
+		if irHasOp(calleeFn, OpClosure) {
+			functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
+				fmt.Sprintf("callee %s creates closures; keep closure allocation at call boundary", calleeName))
+			continue
+		}
+		if guardedFeedbackClosure != 0 {
+			calleeFn = applyInlineClosureUpvalueFacts(calleeFn, guardedFeedbackClosure)
+		}
 		if hasFieldShapeCase {
 			if callArgs, ok := inlineCallArgumentValues(instr); ok {
 				calleeFn = applyInlineArgTypeFacts(calleeFn, callArgs)
@@ -354,6 +365,23 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 	return inlined
 }
 
+func irHasOp(fn *Function, op Op) bool {
+	if fn == nil {
+		return false
+	}
+	for _, block := range fn.Blocks {
+		if block == nil {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr != nil && instr.Op == op {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func recordTier2SpecDependency(fn *Function, callee *vm.FuncProto) {
 	if fn == nil || callee == nil || callee == fn.Proto {
 		return
@@ -365,13 +393,29 @@ func recordTier2SpecDependency(fn *Function, callee *vm.FuncProto) {
 }
 
 func inlineFeedbackCalleeProto(fn *Function, instr *Instr) (*vm.FuncProto, bool) {
+	proto, _, ok := inlineFeedbackCallee(fn, instr)
+	return proto, ok
+}
+
+func inlineFeedbackCallee(fn *Function, instr *Instr) (*vm.FuncProto, uintptr, bool) {
 	if proto, ok := callABIFeedbackCalleeProto(fn, instr); ok && proto != nil {
-		return proto, true
+		if closure, closureProto, closureOK := inlineFeedbackVMClosure(fn, instr); closureOK && closureProto == proto {
+			return proto, closure, true
+		}
+		return proto, 0, true
 	}
 	if c, ok := inlineFeedbackFieldShapeCase(fn, instr); ok && c.VMProto != nil {
-		return c.VMProto, true
+		return c.VMProto, 0, true
 	}
-	return nil, false
+	return nil, 0, false
+}
+
+func inlineFeedbackVMClosure(fn *Function, instr *Instr) (uintptr, *vm.FuncProto, bool) {
+	if fn == nil || fn.Proto == nil || instr == nil || !instr.HasSource ||
+		instr.SourcePC < 0 || instr.SourcePC >= len(fn.Proto.CallSiteFeedback) {
+		return 0, nil, false
+	}
+	return fn.Proto.CallSiteFeedback[instr.SourcePC].StableCalleeVMClosure()
 }
 
 func inlineFeedbackFieldShapeCase(fn *Function, instr *Instr) (FieldPolyShapeCase, bool) {
@@ -513,6 +557,55 @@ func applyInlineArgTypeFacts(calleeFn *Function, callArgs []*Value) *Function {
 		}
 	}
 	return calleeFn
+}
+
+func applyInlineClosureUpvalueFacts(calleeFn *Function, closurePtr uintptr) *Function {
+	if calleeFn == nil || closurePtr == 0 {
+		return calleeFn
+	}
+	cl := (*vm.Closure)(unsafe.Pointer(closurePtr))
+	if cl == nil {
+		return calleeFn
+	}
+	for _, block := range calleeFn.Blocks {
+		if block == nil {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpGetUpval {
+				continue
+			}
+			idx := int(instr.Aux)
+			if idx < 0 || idx >= len(cl.Upvalues) || cl.Upvalues[idx] == nil {
+				continue
+			}
+			if typ, ok := inlineRuntimeValueType(cl.Upvalues[idx].Get()); ok {
+				instr.Type = typ
+			}
+		}
+	}
+	return calleeFn
+}
+
+func inlineRuntimeValueType(v runtime.Value) (Type, bool) {
+	switch {
+	case v.IsInt():
+		return TypeInt, true
+	case v.IsFloat():
+		return TypeFloat, true
+	case v.IsBool():
+		return TypeBool, true
+	case v.IsString():
+		return TypeString, true
+	case v.IsTable():
+		return TypeTable, true
+	case v.IsFunction():
+		return TypeFunction, true
+	case v.IsNil():
+		return TypeNil, true
+	default:
+		return TypeUnknown, false
+	}
 }
 
 func inlineArgValueType(v *Value) (Type, bool) {
@@ -1160,6 +1253,14 @@ func inlineTrivial(fn *Function, block *Block, callInstr *Instr, idx int, callee
 		for j, arg := range ci.Args {
 			newInstr.Args[j] = remapValue(arg, idMap, paramValues)
 		}
+		if calleeClosure := inlineCallCalleeValue(callInstr); calleeClosure != nil {
+			switch ci.Op {
+			case OpGetUpval:
+				newInstr.Args = []*Value{calleeClosure}
+			case OpSetUpval:
+				newInstr.Args = append(newInstr.Args, calleeClosure)
+			}
+		}
 		inlinedInstrs = append(inlinedInstrs, newInstr)
 	}
 
@@ -1200,6 +1301,13 @@ func inlineTrivial(fn *Function, block *Block, callInstr *Instr, idx int, callee
 	// We leave it for DCE to clean up — don't complicate inlining with dead code removal.
 
 	return newInstrs
+}
+
+func inlineCallCalleeValue(callInstr *Instr) *Value {
+	if callInstr == nil || len(callInstr.Args) == 0 {
+		return nil
+	}
+	return callInstr.Args[0]
 }
 
 // inlineMultiBlock inlines a multi-block callee by splicing the callee's
@@ -1664,6 +1772,19 @@ func remapAux(ci *Instr, callerFn *Function, calleeFn *Function) int64 {
 		newIdx := len(callerFn.Proto.Constants)
 		callerFn.Proto.Constants = append(callerFn.Proto.Constants, calleeConst)
 		return int64(newIdx)
+	case OpClosure:
+		calleeIdx := int(ci.Aux)
+		if calleeFn.Proto == nil || callerFn.Proto == nil || calleeIdx < 0 || calleeIdx >= len(calleeFn.Proto.Protos) {
+			return ci.Aux
+		}
+		nested := calleeFn.Proto.Protos[calleeIdx]
+		for i, p := range callerFn.Proto.Protos {
+			if p == nested {
+				return int64(i)
+			}
+		}
+		callerFn.Proto.Protos = append(callerFn.Proto.Protos, nested)
+		return int64(len(callerFn.Proto.Protos) - 1)
 
 	default:
 		return ci.Aux

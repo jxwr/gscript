@@ -69,6 +69,7 @@ func tier2TableFieldNativeLoweringModules(globals map[string]*vm.FuncProto) []Ti
 				})(fn)
 			},
 		},
+		tier2PassModule("GuardFieldCallee (post-FieldSvalsLower)", Tier2PhaseTableFieldLower, GuardFieldCalleePass),
 		tier2PassModule("TableArrayLower (post-FieldSvalsLower)", Tier2PhaseTableFieldLower, TableArrayLowerPass),
 		tier2PassModule("TableArrayLoadTypeSpecialize (post-FieldSvalsLower)", Tier2PhaseTableFieldLower, TableArrayLoadTypeSpecializePass),
 		tier2PassModule("TableArrayStoreLower (post-FieldSvalsLower)", Tier2PhaseTableFieldLower, TableArrayStoreLowerPass),

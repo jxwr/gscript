@@ -14,7 +14,8 @@ import (
 )
 
 const (
-	tableArrayHeaderFlagHoisted int64 = 1 << 8
+	tableArrayHeaderFlagHoisted    int64 = 1 << 8
+	tableArrayLoadFlagProvenString int64 = 1 << 0
 
 	// tableArrayStoreFlagAllowGrow lets OpTableArrayStore use the same
 	// capacity-only append/sparse typed-array path as OpSetTable. Misses still
@@ -416,6 +417,14 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 
 	dataReg := ec.resolveRawDataPtr(instr.Args[0].ID, jit.X2)
 	lenReg := ec.resolveRawInt(instr.Args[1].ID, jit.X3)
+	if tableArrayLoadScratchClobbers(dataReg) {
+		asm.MOVreg(jit.X16, dataReg)
+		dataReg = jit.X16
+	}
+	if tableArrayLoadScratchClobbers(lenReg) || lenReg == dataReg {
+		asm.MOVreg(jit.X17, lenReg)
+		lenReg = jit.X17
+	}
 	keyID := instr.Args[2].ID
 	if kv, isConst := ec.constInts[keyID]; isConst {
 		asm.LoadImm64(jit.X1, kv)
@@ -471,7 +480,9 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 			jit.EmitExtractPtr(asm, jit.X0, jit.X0)
 			ec.storeRawTablePtr(jit.X0, instr.ID)
 		case TypeString:
-			jit.EmitCheckIsString(asm, jit.X0, jit.X2, jit.X3, deoptLabel)
+			if instr.Aux2&tableArrayLoadFlagProvenString == 0 {
+				jit.EmitCheckIsString(asm, jit.X0, jit.X2, jit.X3, deoptLabel)
+			}
 			ec.storeResultNB(jit.X0, instr.ID)
 		default:
 			ec.storeResultNB(jit.X0, instr.ID)
@@ -911,6 +922,15 @@ func (ec *emitContext) emitTableArrayNestedLoad(instr *Instr) {
 	asm.Label(deoptLabel)
 	ec.emitPreciseDeopt(instr)
 	asm.Label(doneLabel)
+}
+
+func tableArrayLoadScratchClobbers(reg jit.Reg) bool {
+	switch reg {
+	case jit.X1, jit.X4, jit.X5:
+		return true
+	default:
+		return false
+	}
 }
 
 func (ec *emitContext) emitTableArrayKeyToReg(key *Value, deoptLabel string) bool {

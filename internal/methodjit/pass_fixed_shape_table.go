@@ -161,8 +161,10 @@ func FixedShapeTableFactsPassWith(config FixedShapeTableFactsConfig) PassFunc {
 		}
 		fn.FixedShapeTables = facts
 		annotateFixedShapeStringValueAccesses(fn, facts)
+		propagateFixedShapePhiFacts(fn, facts)
 		annotateFixedShapeGetFields(fn, facts)
 		annotateFixedShapeStringValueAccesses(fn, facts)
+		propagateFixedShapePhiFacts(fn, facts)
 		annotateFixedShapeGetFields(fn, facts)
 		annotateFixedShapeSetFields(fn, facts)
 		annotateFixedShapeArrayElementAccesses(fn, facts)
@@ -361,6 +363,16 @@ func recordFieldPolyShapeCatalog(fn *Function, cases []FieldPolyShapeCase) {
 		}
 		fn.FieldPolyShapeCatalog[c.ShapeID] = cloneFixedShapeTableFact(c.ReceiverFact)
 	}
+}
+
+func recordFixedShapeCatalogFact(fn *Function, fact FixedShapeTableFact) {
+	if fn == nil || fact.ShapeID == 0 || len(fact.FieldNames) == 0 {
+		return
+	}
+	if fn.FieldPolyShapeCatalog == nil {
+		fn.FieldPolyShapeCatalog = make(map[uint32]FixedShapeTableFact, 1)
+	}
+	fn.FieldPolyShapeCatalog[fact.ShapeID] = cloneFixedShapeTableFact(fact)
 }
 
 func guardedFixedShapePolyFacts(facts []FixedShapeTableFact) []FixedShapeTableFact {
@@ -714,7 +726,7 @@ func seedLocalFieldTableFacts(fn *Function, facts map[int]FixedShapeTableFact) {
 			if !ok || !fixedShapeTableFactHasUsableTableFact(valueFact) {
 				continue
 			}
-			name := fieldNameFromAux(fn, instr.Aux)
+			name := fixedShapeFieldNameFromAux(fn, instr)
 			if name == "" {
 				continue
 			}
@@ -1966,7 +1978,7 @@ func annotateFixedShapeGetFields(fn *Function, facts map[int]FixedShapeTableFact
 			if !ok || fact.ShapeID == 0 {
 				continue
 			}
-			name := fieldNameFromAux(fn, instr.Aux)
+			name := fixedShapeFieldNameFromAux(fn, instr)
 			if name == "" {
 				continue
 			}
@@ -2042,6 +2054,7 @@ func annotateFixedShapeStringValueAccesses(fn *Function, facts map[int]FixedShap
 			}
 			valueFact := cloneFixedShapeTableFact(*fact.StringValueFact)
 			facts[instr.ID] = valueFact
+			recordFixedShapeCatalogFact(fn, valueFact)
 			if instr.Type == TypeAny || instr.Type == TypeUnknown {
 				instr.Type = TypeTable
 			}
@@ -2164,7 +2177,7 @@ func annotateFixedShapeSetFields(fn *Function, facts map[int]FixedShapeTableFact
 			if !ok || fact.ShapeID == 0 {
 				continue
 			}
-			name := fieldNameFromAux(fn, instr.Aux)
+			name := fixedShapeFieldNameFromAux(fn, instr)
 			if name == "" {
 				continue
 			}
@@ -2181,6 +2194,21 @@ func annotateFixedShapeSetFields(fn *Function, facts map[int]FixedShapeTableFact
 
 func fixedShapeTableFactHasUsableTableFact(fact FixedShapeTableFact) bool {
 	return fact.ShapeID != 0 || fact.ArrayElementType != TypeUnknown || fact.ArrayElementRange.known || fact.StringValueFact != nil
+}
+
+func fixedShapeFieldNameFromAux(fn *Function, instr *Instr) string {
+	if instr == nil {
+		return ""
+	}
+	proto := instrSourceProto(fn, instr)
+	if proto == nil || instr.Aux < 0 || int(instr.Aux) >= len(proto.Constants) {
+		return fieldNameFromAux(fn, instr.Aux)
+	}
+	k := proto.Constants[instr.Aux]
+	if !k.IsString() {
+		return fieldNameFromAux(fn, instr.Aux)
+	}
+	return k.Str()
 }
 
 func annotateFixedShapeArrayElementAccesses(fn *Function, facts map[int]FixedShapeTableFact) {

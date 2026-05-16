@@ -331,8 +331,21 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitStringSplitSubstrNumberNative(instr)
 		ec.clearTableArrayBoundedKeys()
 
-	case OpGetUpval, OpSetUpval,
-		OpAppend,
+	case OpGetUpval:
+		if len(instr.Args) > 0 {
+			ec.emitInlinedGetUpval(instr)
+		} else {
+			ec.emitOpExit(instr)
+		}
+		ec.clearTableArrayBoundedKeys()
+	case OpSetUpval:
+		if len(instr.Args) > 1 {
+			ec.emitInlinedSetUpval(instr)
+		} else {
+			ec.emitOpExit(instr)
+		}
+		ec.clearTableArrayBoundedKeys()
+	case OpAppend,
 		OpPow,
 		OpClosure, OpClose,
 		OpForPrep, OpForLoop,
@@ -900,7 +913,22 @@ func (ec *emitContext) emitFPRPhiMovesOrdered(to *Block, predIdx int) {
 	}
 
 	// Emit in dependency-aware order. A move is safe if its destination FPR
-	// is NOT a source FPR of another un-emitted move.
+	// is NOT a source FPR of another un-emitted move. This has to be checked
+	// even for moves whose own source is memory: a memory-to-FPR phi can still
+	// clobber a register source needed by a later phi on the same edge.
+	isBlocked := func(i int, emitted []bool) bool {
+		m := &moves[i]
+		for j := range moves {
+			if j == i || emitted[j] || !moves[j].hasSrcFPR {
+				continue
+			}
+			if moves[j].srcFPR == m.dstFPR {
+				return true
+			}
+		}
+		return false
+	}
+
 	emitted := make([]bool, len(moves))
 	totalEmitted := 0
 
@@ -911,26 +939,8 @@ func (ec *emitContext) emitFPRPhiMovesOrdered(to *Block, predIdx int) {
 			if emitted[i] {
 				continue
 			}
-			m := &moves[i]
-			if !m.hasSrcFPR || m.srcFPR == m.dstFPR {
-				ec.emitPhiMoveRawFloat(m.srcArg, m.phiInstr, m.dstPR)
-				emitted[i] = true
-				totalEmitted++
-				progress = true
-				continue
-			}
-			blocked := false
-			for j := range moves {
-				if j == i || emitted[j] || !moves[j].hasSrcFPR {
-					continue
-				}
-				if moves[j].srcFPR == m.dstFPR {
-					blocked = true
-					break
-				}
-			}
-			if !blocked {
-				ec.emitPhiMoveRawFloat(m.srcArg, m.phiInstr, m.dstPR)
+			if !isBlocked(i, emitted) {
+				ec.emitPhiMoveRawFloat(moves[i].srcArg, moves[i].phiInstr, moves[i].dstPR)
 				emitted[i] = true
 				totalEmitted++
 				progress = true

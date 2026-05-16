@@ -215,6 +215,22 @@ func f(n) {
 	}
 }
 
+func TestObservedParamRangeGuard_UsesTwoStableObservations(t *testing.T) {
+	fn := buildForLoopBoundRangeGuardTest(t, `
+func f(n) {
+    return n + 1
+}
+`)
+	fn.Proto.ArgIntRangeFeedback = []vm.IntRangeFeedback{{Count: observedParamRangeGuardMinCount, Min: 45, Max: 45}}
+	out, err := ObservedParamRangeGuardPass(fn)
+	if err != nil {
+		t.Fatalf("ObservedParamRangeGuardPass: %v", err)
+	}
+	if countOps(out)[OpGuardIntRange] != 1 {
+		t.Fatalf("two stable observations should emit parameter range guard\nIR:\n%s", Print(out))
+	}
+}
+
 func TestLoopBoundRangeGuard_GuardsOnlyLoopBoundParams(t *testing.T) {
 	fn := buildForLoopBoundRangeGuardTest(t, `
 func f(n, offset) {

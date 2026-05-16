@@ -243,10 +243,14 @@ func markConstStringSetListLoads(fn *Function) {
 				continue
 			}
 			tableID, ok := data[instr.Args[0].ID]
-			if ok && stringTables[tableID] && instr.Type != TypeString {
+			if ok && stringTables[tableID] {
+				beforeType := instr.Type
 				instr.Type = TypeString
-				functionRemarks(fn).Add("TypeSpec", "changed", block.ID, instr.ID, instr.Op,
-					"inferred string element from const-string SetList table")
+				instr.Aux2 |= tableArrayLoadFlagProvenString
+				if beforeType != TypeString {
+					functionRemarks(fn).Add("TypeSpec", "changed", block.ID, instr.ID, instr.Op,
+						"inferred string element from const-string SetList table")
+				}
 			}
 		}
 	}
@@ -280,12 +284,16 @@ func markLocalStringArrayLoads(fn *Function) {
 				continue
 			}
 			tableID, ok := data[instr.Args[0].ID]
-			if !ok || !tables[tableID] || instr.Type == TypeString {
+			if !ok || !tables[tableID] {
 				continue
 			}
+			beforeType := instr.Type
 			instr.Type = TypeString
-			functionRemarks(fn).Add("TypeSpec", "changed", block.ID, instr.ID, instr.Op,
-				"inferred string element from local string-only array")
+			instr.Aux2 |= tableArrayLoadFlagProvenString
+			if beforeType != TypeString {
+				functionRemarks(fn).Add("TypeSpec", "changed", block.ID, instr.ID, instr.Op,
+					"inferred string element from local string-only array")
+			}
 		}
 	}
 }

@@ -23,7 +23,7 @@ func ObservedParamRangeGuardPass(fn *Function) (*Function, error) {
 			continue
 		}
 		rf := fn.Proto.ArgIntRangeFeedback[slot]
-		if rf.Count < callResultRangeGuardMinCount {
+		if rf.Count < observedParamRangeGuardMinCount {
 			continue
 		}
 		min, max, stable := rf.StableRange()
