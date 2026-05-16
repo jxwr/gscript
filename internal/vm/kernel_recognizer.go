@@ -65,6 +65,7 @@ const (
 	wholeCallKernelJSONWalkDocuments
 	wholeCallKernelGroupByNestedAgg
 	wholeCallKernelActorsDispatchMutation
+	wholeCallKernelMandelbrotCount
 	wholeCallKernelCount
 )
 
@@ -247,6 +248,16 @@ var wholeCallKernelRegistry = [wholeCallKernelCount]wholeCallKernelRecognizer{
 		},
 		recognize: isActorsDispatchMutationRunWorldProto,
 		runValue:  (*VM).runActorsDispatchMutationWholeCallKernel,
+	},
+	{
+		info: KernelInfo{
+			Name:    "mandelbrot_count",
+			Route:   KernelRouteWholeCallValue,
+			Arity:   1,
+			Results: kernelWholeCallSingleResultCount,
+		},
+		recognize: isMandelbrotCountProto,
+		runValue:  (*VM).runMandelbrotCountWholeCallKernel,
 	},
 }
 

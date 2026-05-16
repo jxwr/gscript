@@ -58,6 +58,19 @@ func (vm *VM) TryRunNoResultWholeCallKernelForJIT(fn runtime.Value, args []runti
 	return vm.tryRunWholeCallKernel(cl, args)
 }
 
+// TryRunValueWholeCallKernelForJIT executes a guarded value-returning
+// structural whole-call kernel for a JIT call slow path.
+func (vm *VM) TryRunValueWholeCallKernelForJIT(fn runtime.Value, args []runtime.Value) (bool, []runtime.Value, error) {
+	cl, ok := closureFromValue(fn)
+	if !ok {
+		return false, nil, nil
+	}
+	if cl.Proto == nil || !hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelMandelbrotCount) {
+		return false, nil, nil
+	}
+	return vm.tryRunValueWholeCallKernel(cl, args)
+}
+
 func (vm *VM) tryRunCachedValueWholeCallKernel(cl *Closure, args []runtime.Value, includeRecursiveTable bool) (bool, []runtime.Value, error) {
 	if cl == nil || cl.Proto == nil {
 		return false, nil, nil
@@ -126,7 +139,8 @@ func mayHaveWholeCallValueKernelCandidate(proto *FuncProto, argc int, includeRec
 			return true
 		}
 		return (proto.MaxStack == 30 && len(proto.Constants) == 2 && len(proto.Protos) == 0) ||
-			(proto.MaxStack >= 13 && len(proto.Constants) == 0 && len(proto.Protos) == 0 && len(proto.Code) == 45)
+			(proto.MaxStack >= 13 && len(proto.Constants) == 0 && len(proto.Protos) == 0 && len(proto.Code) == 45) ||
+			(proto.MaxStack == 27 && len(proto.Constants) == 5 && len(proto.Protos) == 0 && len(proto.Code) == 64)
 	case 2:
 		return proto.NumParams == 2 && len(proto.Constants) == 24 && len(proto.Code) == 169
 	case 3:

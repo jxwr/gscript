@@ -407,6 +407,27 @@ func (e *BaselineJITEngine) handleCall(ctx *ExecContext, regs []runtime.Value, b
 		argsStart := absSlot + 1
 		argsEnd := argsStart + nArgs
 		if argsStart >= 0 && argsEnd >= argsStart && argsEnd <= len(regs) {
+			if rawC > 1 {
+				if handled, results, err := e.callVM.TryRunValueWholeCallKernelForJIT(fnVal, regs[argsStart:argsEnd]); handled {
+					if err != nil {
+						return err
+					}
+					currentRegs := e.callVM.Regs()
+					nResults := rawC - 1
+					for i := 0; i < nResults; i++ {
+						idx := absSlot + i
+						if idx >= len(currentRegs) {
+							break
+						}
+						if i < len(results) {
+							currentRegs[idx] = results[i]
+						} else {
+							currentRegs[idx] = runtime.NilValue()
+						}
+					}
+					return nil
+				}
+			}
 			if handled, err := e.callVM.TryRunNoResultWholeCallKernelForJIT(fnVal, regs[argsStart:argsEnd]); handled {
 				if err != nil {
 					return err
