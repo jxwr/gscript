@@ -212,6 +212,56 @@ func TestScalarPromotion_FloatField_HoistsAcrossBackEdge(t *testing.T) {
 	}
 }
 
+func TestScalarPromotion_LoweredFloatField_HoistsAcrossBackEdge(t *testing.T) {
+	fn := &Function{NumRegs: 4}
+	b0, b1, b2, b3 := buildSimpleLoop(fn)
+
+	obj := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Block: b0, Aux: 0}
+	svals := &Instr{ID: fn.newValueID(), Op: OpFieldSvals, Type: TypeInt, Args: []*Value{obj.Value()}, Aux: 42, Block: b0}
+	zero := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Block: b0, Aux: 0}
+	one := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Block: b0, Aux: 1}
+	b0Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b0, Aux: int64(b1.ID)}
+	b0.Instrs = []*Instr{obj, svals, zero, one, b0Term}
+
+	iphi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: b1}
+	cond := &Instr{ID: fn.newValueID(), Op: OpConstBool, Type: TypeBool, Block: b1, Aux: 1}
+	b1Term := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Block: b1,
+		Args: []*Value{cond.Value()}, Aux: int64(b2.ID), Aux2: int64(b3.ID)}
+	b1.Instrs = []*Instr{iphi, cond, b1Term}
+
+	load := &Instr{ID: fn.newValueID(), Op: OpFieldLoad, Type: TypeFloat, Args: []*Value{svals.Value()}, Aux: 4, Block: b2}
+	delta := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Block: b2, Aux: 0}
+	nextValue := &Instr{ID: fn.newValueID(), Op: OpSubFloat, Type: TypeFloat, Args: []*Value{load.Value(), delta.Value()}, Block: b2}
+	store := &Instr{ID: fn.newValueID(), Op: OpFieldStore, Type: TypeUnknown, Args: []*Value{svals.Value(), nextValue.Value()}, Aux: 4, Block: b2}
+	inext := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Args: []*Value{iphi.Value(), one.Value()}, Block: b2}
+	b2Term := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: b2, Aux: int64(b1.ID)}
+	b2.Instrs = []*Instr{load, delta, nextValue, store, inext, b2Term}
+	iphi.Args = []*Value{zero.Value(), inext.Value()}
+
+	b3Term := &Instr{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Args: []*Value{obj.Value()}, Block: b3}
+	b3.Instrs = []*Instr{b3Term}
+	assertValidates(t, fn, "lowered fixture input")
+
+	if _, err := ScalarPromotionPass(fn); err != nil {
+		t.Fatalf("ScalarPromotionPass: %v", err)
+	}
+	assertValidates(t, fn, "after lowered ScalarPromotion")
+
+	field4 := int64(4)
+	if n := countOpInBlock(b2, OpFieldLoad, &field4); n != 0 {
+		t.Fatalf("body still has %d OpFieldLoad(svals,4); expected 0", n)
+	}
+	if n := countOpInBlock(b2, OpFieldStore, &field4); n != 0 {
+		t.Fatalf("body still has %d OpFieldStore(svals,4); expected 0", n)
+	}
+	if n := countOpInBlock(b0, OpFieldLoad, &field4); n != 1 {
+		t.Fatalf("pre-header has %d OpFieldLoad(svals,4); expected 1", n)
+	}
+	if n := countOpInBlock(b3, OpFieldStore, &field4); n != 1 {
+		t.Fatalf("exit block has %d OpFieldStore(svals,4); expected 1", n)
+	}
+}
+
 func TestScalarPromotion_IntField_HoistsAcrossBackEdge(t *testing.T) {
 	fn := &Function{NumRegs: 4}
 	b0, b1, b2, b3 := buildSimpleLoop(fn)

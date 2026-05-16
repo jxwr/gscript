@@ -36,6 +36,26 @@ func multiplyAtAv(n, v, u, atav) {
 
 N := 1500
 
+WARM_N := 64
+warm_u := matrix.dense(WARM_N, 1)
+warm_v := matrix.dense(WARM_N, 1)
+warm_tmp := matrix.dense(WARM_N, 1)
+for i := 0; i < WARM_N; i++ {
+    matrix.setf(warm_u, i, 0, 1.0)
+    matrix.setf(warm_v, i, 0, 0.0)
+}
+multiplyAtAv(WARM_N, warm_u, warm_tmp, warm_v)
+multiplyAtAv(WARM_N, warm_v, warm_tmp, warm_u)
+
+warm_big_u := matrix.dense(N, 1)
+warm_big_v := matrix.dense(N, 1)
+warm_big_tmp := matrix.dense(N, 1)
+for i := 0; i < N; i++ {
+    matrix.setf(warm_big_u, i, 0, 1.0)
+    matrix.setf(warm_big_v, i, 0, 0.0)
+}
+multiplyAtAv(N, warm_big_u, warm_big_tmp, warm_big_v)
+
 t0 := time.now()
 
 u := matrix.dense(N, 1)

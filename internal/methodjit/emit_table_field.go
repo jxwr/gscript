@@ -36,10 +36,11 @@ func (ec *emitContext) invalidateFieldSvalsCache() {
 }
 
 // emitPrepareFieldTablePtr leaves the raw *Table pointer in X0 and returns
-// true when the field shape was already verified in this block. TypeTable
-// producers, such as TableArrayLoad, have already proved the NaN-boxed value is
-// a non-string table pointer, so the first field access can skip the full tag
-// and pointer-subtype check and go straight to the shape guard.
+// true when the field shape was already verified in this block. Raw table
+// pointer values have already proved the receiver is a non-string table.
+// Speculative IR TypeTable alone is not enough: recursive arguments can be
+// warmed as tables and later receive non-table values, so boxed values still
+// need a tag check until this block verifies them.
 func (ec *emitContext) emitPrepareFieldTablePtr(tblValueID int, shapeID uint32, deoptLabel string) bool {
 	asm := ec.asm
 	if ec.hasReg(tblValueID) && ec.valueReprOf(tblValueID) == valueReprRawTablePtr {
@@ -50,10 +51,8 @@ func (ec *emitContext) emitPrepareFieldTablePtr(tblValueID int, shapeID uint32, 
 		if prevShape, ok := ec.shapeVerified[tblValueID]; ok && prevShape == shapeID {
 			return true
 		}
-		asm.CBZ(jit.X0, deoptLabel)
 		asm.LDRW(jit.X1, jit.X0, jit.TableOffShapeID)
-		asm.LoadImm64(jit.X2, int64(shapeID))
-		asm.CMPreg(jit.X1, jit.X2)
+		emitCMPWConst(asm, jit.X1, jit.X2, int64(shapeID))
 		asm.BCond(jit.CondNE, deoptLabel)
 		ec.shapeVerified[tblValueID] = shapeID
 		return false
@@ -66,14 +65,14 @@ func (ec *emitContext) emitPrepareFieldTablePtr(tblValueID int, shapeID uint32, 
 		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
 		return true
 	}
-	if ec.irTypes[tblValueID] != TypeTable {
+	if !ec.tableVerified[tblValueID] {
 		jit.EmitCheckIsTableFull(asm, jit.X0, jit.X1, jit.X2, deoptLabel)
+		ec.tableVerified[tblValueID] = true
 	}
 	jit.EmitExtractPtr(asm, jit.X0, jit.X0)
 	asm.CBZ(jit.X0, deoptLabel)
 	asm.LDRW(jit.X1, jit.X0, jit.TableOffShapeID)
-	asm.LoadImm64(jit.X2, int64(shapeID))
-	asm.CMPreg(jit.X1, jit.X2)
+	emitCMPWConst(asm, jit.X1, jit.X2, int64(shapeID))
 	asm.BCond(jit.CondNE, deoptLabel)
 	ec.shapeVerified[tblValueID] = shapeID
 	return false
@@ -235,8 +234,7 @@ func (ec *emitContext) emitGetFieldFixedRecordFastPath(instr *Instr, tblValueID 
 	asm.LDR(jit.X1, jit.X3, jit.FixedRecordOffMaterialized)
 	asm.CBNZ(jit.X1, deoptLabel)
 	asm.LDRW(jit.X1, jit.X3, jit.FixedRecordOffShapeID)
-	asm.LoadImm64(jit.X2, int64(shapeID))
-	asm.CMPreg(jit.X1, jit.X2)
+	emitCMPWConst(asm, jit.X1, jit.X2, int64(shapeID))
 	asm.BCond(jit.CondNE, deoptLabel)
 	asm.LDRB(jit.X1, jit.X3, jit.FixedRecordOffN)
 	asm.LoadImm64(jit.X2, int64(fieldIdx))
@@ -741,8 +739,7 @@ func (ec *emitContext) emitFieldSvals(instr *Instr) {
 		asm.LDR(jit.X0, jit.X3, jit.FixedRecordOffMaterialized)
 		asm.CBNZ(jit.X0, tablePtrLabel)
 		asm.LDRW(jit.X1, jit.X3, jit.FixedRecordOffShapeID)
-		asm.LoadImm64(jit.X2, int64(shapeID))
-		asm.CMPreg(jit.X1, jit.X2)
+		emitCMPWConst(asm, jit.X1, jit.X2, int64(shapeID))
 		asm.BCond(jit.CondNE, deoptLabel)
 		asm.LDRB(jit.X1, jit.X3, jit.FixedRecordOffN)
 		asm.CBZ(jit.X1, deoptLabel)
@@ -790,6 +787,15 @@ func (ec *emitContext) emitFieldLoad(instr *Instr) {
 		return
 	}
 	svals := ec.resolveRawFieldSvalsPtr(instr.Args[0].ID, jit.X1)
+	if instr.Type == TypeFloat && ec.fieldLoadTypeCheckElided(instr) {
+		dstF := jit.D0
+		if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && pr.IsFloat {
+			dstF = jit.FReg(pr.Reg)
+		}
+		ec.asm.FLDRd(dstF, svals, fieldIdx*jit.ValueSize)
+		ec.storeRawFloat(dstF, instr.ID)
+		return
+	}
 	ec.asm.LDR(jit.X0, svals, fieldIdx*jit.ValueSize)
 	if instr.Type == TypeFloat || instr.Type == TypeInt {
 		typeDeoptLabel := ec.uniqueLabel("field_load_type_deopt")
@@ -952,8 +958,10 @@ func (ec *emitContext) emitStoreNumericFieldLoad(instr *Instr, valReg jit.Reg, d
 }
 
 func (ec *emitContext) fieldLoadTypeCheckElided(instr *Instr) bool {
-	return ec != nil && ec.fn != nil && ec.fn.ShapeFieldTypeElidedLoads != nil &&
-		instr != nil && ec.fn.ShapeFieldTypeElidedLoads[instr.ID]
+	if ec == nil || ec.fn == nil || instr == nil || ec.fn.ShapeFieldTypeElidedLoads == nil {
+		return false
+	}
+	return ec.fn.ShapeFieldTypeElidedLoads[instr.ID]
 }
 
 func (ec *emitContext) emitGuardShapeFieldType(instr *Instr) {

@@ -3,6 +3,7 @@ package methodjit
 func tier2NumericModules() []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
 		tier2PassModule("LoopBoundRangeGuard", Tier2PhaseNumeric, LoopBoundRangeGuardPass),
+		tier2PassModule("ObservedParamRangeGuard", Tier2PhaseNumeric, ObservedParamRangeGuardPass),
 		tier2PassModule("RangeAnalysis", Tier2PhaseNumeric, RangeAnalysisPass),
 		{
 			Name:  "OverflowBoxing",
@@ -124,8 +125,11 @@ func tier2LoopPostModules() []Tier2OptimizerModule {
 		},
 		tier2PassModule("QuadraticStepStrengthReduction", Tier2PhaseLoopPost, QuadraticStepStrengthReductionPass),
 		tier2PassModule("RangeAnalysis (post-UnrollAndJam)", Tier2PhaseLoopPost, RangeAnalysisPass),
+		tier2PassModule("IntAlgebraSimplify", Tier2PhaseLoopPost, IntAlgebraSimplifyPass),
+		tier2PassModule("TableArrayStaticBounds (post-RangeAnalysis)", Tier2PhaseLoopPost, TableArrayStaticBoundsPass),
 		tier2PassModule("DCE (post-UnrollAndJam)", Tier2PhaseLoopPost, DCEPass),
 		tier2PassModule("LoopRegionVersioning", Tier2PhaseLoopPost, LoopRegionVersioningPass),
+		tier2PassModule("TableArrayStaticBounds (post-LoopRegionVersioning)", Tier2PhaseLoopPost, TableArrayStaticBoundsPass),
 		tier2PassModule("ScalarPromotion", Tier2PhaseLoopPost, ScalarPromotionPass),
 		tier2PassModule("TableArrayDataPtrFact", Tier2PhaseLoopPost, TableArrayDataPtrFactPass),
 	}

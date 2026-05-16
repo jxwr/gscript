@@ -30,6 +30,7 @@ func TestTier2TableObjectPreparationModuleOrder(t *testing.T) {
 		"FixedShapeTableFacts",
 		"LoadElimination",
 		"FieldLenFold",
+		"StaticTableLenFold",
 		"EscapeAnalysis",
 		"FixedTableConstructorLowering",
 		"TablePreallocHint (post-fixed-table-lowering)",
@@ -115,6 +116,7 @@ func TestTier2CallLoweringModuleOrder(t *testing.T) {
 	assertTier2ModuleOrder(t, tier2CallLoweringModules(nil), Tier2PhaseCallLower, []string{
 		"CallABI",
 		"CallReturnProjection",
+		"ModularCallFloorReduce",
 		"CallResultRangeGuard",
 		"ConstProp",
 		"ProtocolConstCallFold",
@@ -131,6 +133,7 @@ func TestTier2StringNativeModuleOrder(t *testing.T) {
 func TestTier2PostRewriteModuleOrder(t *testing.T) {
 	assertTier2ModuleOrder(t, tier2PostRewriteModules(), Tier2PhasePostRewrite, []string{
 		"CallReturnProjection (post-rewrite)",
+		"ModularCallFloorReduce (post-rewrite)",
 		"CallResultRangeGuard (post-rewrite)",
 		"DCE",
 		"TypeSpecialize (post-escape)",
@@ -140,6 +143,7 @@ func TestTier2PostRewriteModuleOrder(t *testing.T) {
 func TestTier2NumericModuleOrder(t *testing.T) {
 	assertTier2ModuleOrder(t, tier2NumericModules(), Tier2PhaseNumeric, []string{
 		"LoopBoundRangeGuard",
+		"ObservedParamRangeGuard",
 		"RangeAnalysis",
 		"OverflowBoxing",
 		"IntExactDivision",
@@ -162,11 +166,11 @@ func TestTier2TableNativeLoweringModuleOrder(t *testing.T) {
 			"FieldSvalsLower",
 			"FieldSvalsCSE",
 			"FixedShapeTableFacts (post-FieldSvalsLower)",
-			"ShapeFieldTypeGuard",
 			"TableArrayLower (post-FieldSvalsLower)",
 			"TableArrayLoadTypeSpecialize (post-FieldSvalsLower)",
 			"TableArrayStoreLower (post-FieldSvalsLower)",
 			"TypeSpecialize (post-FieldSvalsLower)",
+			"ShapeFieldTypeGuard",
 			"LateModuloMultiplyOverflowBoxing",
 			"ProfiledStringLenFold",
 			"RangeAnalysis (post-TableFieldLower)",
@@ -220,8 +224,11 @@ func TestTier2LoopPostModuleOrder(t *testing.T) {
 		"LICM (post-MatrixRowPtrFactoring)",
 		"QuadraticStepStrengthReduction",
 		"RangeAnalysis (post-UnrollAndJam)",
+		"IntAlgebraSimplify",
+		"TableArrayStaticBounds (post-RangeAnalysis)",
 		"DCE (post-UnrollAndJam)",
 		"LoopRegionVersioning",
+		"TableArrayStaticBounds (post-LoopRegionVersioning)",
 		"ScalarPromotion",
 		"TableArrayDataPtrFact",
 	})
@@ -229,6 +236,7 @@ func TestTier2LoopPostModuleOrder(t *testing.T) {
 
 func TestTier2FinalCallModuleOrder(t *testing.T) {
 	assertTier2ModuleOrder(t, tier2FinalCallModules(nil), Tier2PhaseFinalCall, []string{
+		"CallABI (final)",
 		"WholeCallKernelExit (final)",
 		"CallReturnProjection (final)",
 		"ModularCallFloorReduce (final)",
@@ -241,6 +249,7 @@ func TestTier2FinalCallModuleOrder(t *testing.T) {
 func TestTier2FinalCallModuleOrderExperimentalFieldShapeSplit(t *testing.T) {
 	t.Setenv("GSCRIPT_FIELD_SHAPE_SPLIT", "1")
 	assertTier2ModuleOrder(t, tier2FinalCallModules(nil), Tier2PhaseFinalCall, []string{
+		"CallABI (final)",
 		"WholeCallKernelExit (final)",
 		"CallReturnProjection (final)",
 		"ModularCallFloorReduce (final)",
@@ -254,6 +263,7 @@ func TestTier2FinalCallModuleOrderExperimentalFieldShapeSplit(t *testing.T) {
 func TestTier2FinalCallModuleOrderIgnoresOtherFieldShapeSplitValues(t *testing.T) {
 	t.Setenv("GSCRIPT_FIELD_SHAPE_SPLIT", "0")
 	assertTier2ModuleOrder(t, tier2FinalCallModules(nil), Tier2PhaseFinalCall, []string{
+		"CallABI (final)",
 		"WholeCallKernelExit (final)",
 		"CallReturnProjection (final)",
 		"ModularCallFloorReduce (final)",

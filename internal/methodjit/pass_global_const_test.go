@@ -56,6 +56,27 @@ func f() {
 	}
 }
 
+func TestGlobalConstSpecializationGuardsGlobalsWrittenInFunction(t *testing.T) {
+	proto := compileTop(t, `
+N := 1000
+return N
+`)
+	fn := BuildGraph(proto)
+	constIdx := findConstStringIndex(t, proto, "N")
+	got, err := globalConstSpecializationPass(fn, map[int]runtime.Value{
+		constIdx: runtime.IntValue(1000),
+	})
+	if err != nil {
+		t.Fatalf("globalConstSpecializationPass: %v", err)
+	}
+	if countOpHelper(got, OpGuardGlobalConst) != 1 {
+		t.Fatalf("global written in same function should be guarded:\n%s", Print(got))
+	}
+	if countOpHelper(got, OpGetGlobal) != 0 {
+		t.Fatalf("expected same-function global read to be rewritten:\n%s", Print(got))
+	}
+}
+
 func TestBuildProtoNumericStableGlobals(t *testing.T) {
 	proto := compileTop(t, `
 N := 1000

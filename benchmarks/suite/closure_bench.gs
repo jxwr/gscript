@@ -7,7 +7,7 @@ func test_closure_call() {
         return func(y) { return x + y }
     }
     sum := 0
-    for i := 1; i <= 100000; i++ {
+    for i := 1; i <= 500000; i++ {
         add5 := make_adder(5)
         sum = sum + add5(i)
     }
@@ -25,7 +25,7 @@ func test_accumulator() {
     }
     total := 0
     counter := make_counter()
-    for i := 1; i <= 1000000; i++ {
+    for i := 1; i <= 5000000; i++ {
         total = total + counter()
     }
     return total
@@ -46,7 +46,7 @@ func test_map() {
         return result
     }
     total := 0
-    for rep := 1; rep <= 100; rep++ {
+    for rep := 1; rep <= 500; rep++ {
         mapped := map_array(arr, func(x) { return x * 2 + 1 })
         total = total + mapped[500]
     }

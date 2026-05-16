@@ -17,23 +17,50 @@ local function vec3_length_sq(v)
     return v.x * v.x + v.y * v.y + v.z * v.z
 end
 
+local SINK_SIZE = 4096
+local sink = {}
+for i = 1, SINK_SIZE do
+    sink[i] = new_vec3(0.0, 0.0, 0.0)
+end
+
+local function remember_object(i, obj)
+    local slot = (i % SINK_SIZE) + 1
+    sink[slot] = obj
+    local mirror = sink[slot]
+    local checksum = mirror.x
+    local weight = 0.25
+    for _ = 1, 4 do
+        checksum = checksum + mirror.y * weight
+        checksum = checksum + mirror.z * (weight * 0.5)
+        checksum = checksum - mirror.x * (weight * 0.25)
+        weight = weight * 0.5
+    end
+    return checksum
+end
+
 local function create_and_sum(n)
     local total = new_vec3(0.0, 0.0, 0.0)
     for i = 1, n do
         local v = new_vec3(1.0 * i, 2.0 * i, 3.0 * i)
+        if i % 128 == 0 then
+            remember_object(i, v)
+        end
         total = vec3_add(total, v)
     end
-    return vec3_length_sq(total)
+    return vec3_length_sq(total) + sink[1].x
 end
 
 local function transform_chain(n)
     local v = new_vec3(1.0, 0.0, 0.0)
     for i = 1, n do
         local offset = new_vec3(0.001, 0.002, 0.003)
+        if i % 256 == 0 then
+            remember_object(i, offset)
+        end
         v = vec3_add(v, offset)
         v = vec3_scale(v, 0.9999)
     end
-    return vec3_length_sq(v)
+    return vec3_length_sq(v) + sink[2].y
 end
 
 local function complex_objects(n)
@@ -51,14 +78,21 @@ local function complex_objects(n)
             mass = 1.0,
             active = true,
         }
+        if i % 64 == 0 then
+            remember_object(i, obj)
+        end
         total = total + obj.x + obj.y + obj.z + obj.mass
     end
-    return total
+    return total + sink[3].z
 end
 
-local N1 = 200000
-local N2 = 500000
-local N3 = 100000
+local N1 = 1000000
+local N2 = 2500000
+local N3 = 500000
+
+local warm1 = create_and_sum(50000)
+local warm2 = transform_chain(125000)
+local warm3 = complex_objects(25000)
 
 local t0 = os.clock()
 local r1 = create_and_sum(N1)

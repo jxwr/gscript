@@ -33,5 +33,10 @@ t0 := time.now()
 result := mandelbrot(N)
 elapsed := time.since(t0)
 
+if result != 396940 {
+    print(string.format("mandelbrot invalid: got %d, expected 396940", result))
+    elapsed = 999.0
+}
+
 print(string.format("mandelbrot(%d) = %d pixels in set", N, result))
 print(string.format("Time: %.3fs", elapsed))

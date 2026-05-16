@@ -267,6 +267,11 @@ func inlineCallsInBlock(fn *Function, block *Block, config InlineConfig, recursi
 				continue
 			}
 		}
+		if fn.Proto != nil && fn.Proto.Name == "<main>" && calleeHasAllocationIR(calleeFn) {
+			functionRemarks(fn).Add("Inline", "missed", block.ID, instr.ID, instr.Op,
+				fmt.Sprintf("callee %s allocates; keep <main> call boundary", calleeName))
+			continue
+		}
 
 		// Multi-block inlining rewires predecessor lists and phi args. General
 		// loop-bearing callees inside caller loops are still too broad, but
@@ -849,9 +854,6 @@ func prepareNativeEffectLoopInlineCallee(calleeFn *Function, config InlineConfig
 	})(out); err == nil && fixed != nil {
 		out = fixed
 	}
-	if guarded, err := ShapeFieldTypeGuardPass(out); err == nil && guarded != nil {
-		out = guarded
-	}
 	if lowered, err := TableArrayLowerPass(out); err == nil && lowered != nil {
 		out = lowered
 	}
@@ -983,6 +985,24 @@ func nativeEffectLoopInlineRejectReason(calleeFn *Function) string {
 		}
 	}
 	return ""
+}
+
+func calleeHasAllocationIR(calleeFn *Function) bool {
+	if calleeFn == nil {
+		return false
+	}
+	for _, block := range calleeFn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			switch instr.Op {
+			case OpNewTable, OpNewFixedTable, OpSetList:
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func nativeEffectLoopInlineOp(op Op) bool {

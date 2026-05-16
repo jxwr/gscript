@@ -40,6 +40,7 @@ func tier2EarlyCanonicalModules(globals map[string]*vm.FuncProto) []Tier2Optimiz
 				return FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{
 					Globals:               globals,
 					ArgFacts:              optsFixedShapeArgFacts(opts),
+					ArgPolyFacts:          optsFixedShapeArgPolyFacts(opts),
 					ArrayElementArgFacts:  optsFixedShapeArrayElementArgFacts(opts),
 					ArrayElementPolyFacts: optsFixedShapeArrayElementPolyFacts(opts),
 					EntryGuardedArgs:      optsFixedShapeEntryGuards(opts),
@@ -108,6 +109,7 @@ func tier2InlineCallModules(globals map[string]*vm.FuncProto, maxSize int) []Tie
 				return FixedShapeTableFactsPassWith(FixedShapeTableFactsConfig{
 					Globals:               globals,
 					ArgFacts:              optsFixedShapeArgFacts(opts),
+					ArgPolyFacts:          optsFixedShapeArgPolyFacts(opts),
 					ArrayElementArgFacts:  optsFixedShapeArrayElementArgFacts(opts),
 					ArrayElementPolyFacts: optsFixedShapeArrayElementPolyFacts(opts),
 					EntryGuardedArgs:      optsFixedShapeEntryGuards(opts),
@@ -206,6 +208,19 @@ func tier2PostRewriteModules() []Tier2OptimizerModule {
 
 func tier2FinalCallModules(protocolGlobals map[string]*vm.FuncProto) []Tier2OptimizerModule {
 	modules := []Tier2OptimizerModule{
+		{
+			Name:  "CallABI (final)",
+			Phase: Tier2PhaseFinalCall,
+			RunWithContext: func(fn *Function, opts *Tier2PipelineOpts, ctx *Tier2OptimizerContext) (*Function, error) {
+				globalArrayFacts := mergeGlobalArrayElementFacts(fn.GlobalArrayElementFacts, collectStableGlobalArrayElementFacts(fn))
+				fn.GlobalArrayElementFacts = cloneFixedShapeTableFactMap(globalArrayFacts)
+				return AnnotateCallABIsPass(CallABIAnnotationConfig{
+					Globals:                 ctxGlobals(ctx),
+					NumericGlobalValues:     fn.NumericGlobalValues,
+					GlobalArrayElementFacts: globalArrayFacts,
+				})(fn)
+			},
+		},
 		{
 			Name:  "WholeCallKernelExit (final)",
 			Phase: Tier2PhaseFinalCall,

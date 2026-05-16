@@ -39,9 +39,8 @@ func (ec *emitContext) emitNewFixedTableN(instr *Instr, resultSlot int) {
 	}
 	doneLabel := ec.uniqueLabel("newfixedn_done")
 	missLabel := ec.uniqueLabel("newfixedn_miss")
-	if ec.emitNewFixedTableNCacheFastPath(instr, doneLabel, missLabel) {
-		ec.asm.Label(missLabel)
-	}
+	ec.emitNewFixedTableNCacheFastPath(instr, doneLabel, missLabel)
+	ec.asm.Label(missLabel)
 	ec.emitNewFixedTableNExit(instr, resultSlot)
 	ec.asm.Label(doneLabel)
 }
@@ -207,7 +206,7 @@ func (ec *emitContext) emitNewFixedTableNCacheFastPath(instr *Instr, doneLabel, 
 	if ctor != nil && ctor.Shape != nil {
 		shapeID = ctor.Shape.ID
 	}
-	useFixedRecord := fixedRecordCtorNCacheableForProto(ec.fn.Proto, ctor)
+	useFixedRecord := fixedRecordCtorNCacheableForFunction(ec.fn, instr, ctor)
 	slots := fixedTableArgSlots(ec, instr)
 	if len(slots) != len(instr.Args) {
 		return false
@@ -260,9 +259,21 @@ func (ec *emitContext) emitNewFixedTableNCacheFastPath(instr *Instr, doneLabel, 
 
 	jit.EmitExtractPtr(asm, jit.X1, jit.X0)
 	if useFixedRecord {
+		notRecordLabel := ec.uniqueLabel("newfixedn_not_record")
+		valuesReadyLabel := ec.uniqueLabel("newfixedn_values_ready")
+		asm.LSRimm(jit.X2, jit.X0, uint8(jit.NB_PtrSubShift))
+		asm.LoadImm64(jit.X3, 0xF)
+		asm.ANDreg(jit.X2, jit.X2, jit.X3)
+		asm.CMPimm(jit.X2, jit.NB_PtrSubFixedRecord)
+		asm.BCond(jit.CondNE, notRecordLabel)
 		asm.LoadImm64(jit.X2, 0)
 		asm.STR(jit.X2, jit.X1, jit.FixedRecordOffMaterialized)
 		asm.ADDimm(jit.X2, jit.X1, jit.FixedRecordOffValues)
+		asm.B(valuesReadyLabel)
+
+		asm.Label(notRecordLabel)
+		asm.LDR(jit.X2, jit.X1, jit.TableOffSvals)
+		asm.Label(valuesReadyLabel)
 	} else {
 		asm.LDR(jit.X2, jit.X1, jit.TableOffSvals)
 	}

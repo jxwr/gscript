@@ -286,6 +286,32 @@ func firstCallBoundaryTier2BlockerInLoopGate(fn *Function, globals map[string]*v
 	return allowGate("CallBoundaryLoop", "no call-boundary loop blocker")
 }
 
+func firstLoopAllocationBlockerGate(fn *Function) GateResult {
+	li := computeLoopInfo(fn)
+	for _, block := range fn.Blocks {
+		if !li.loopBlocks[block.ID] {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			switch instr.Op {
+			case OpNewTable:
+				if tier2LoopNewTableDirectEntryIsSafe(instr) {
+					continue
+				}
+				return blockGateOp("LoopAllocation", "table allocation remains inside loop", instr.Op)
+			case OpNewFixedTable:
+				return blockGateOp("LoopAllocation", "fixed-table allocation remains inside loop", instr.Op)
+			case OpSetList:
+				return blockGateOp("LoopAllocation", "setlist allocation-style initialization remains inside loop", instr.Op)
+			}
+		}
+	}
+	return allowGate("LoopAllocation", "no loop allocation blocker")
+}
+
 func hasReadWriteGlobalInSameLoop(fn *Function) bool {
 	return !readWriteGlobalInSameLoopGate(fn).Allowed
 }
@@ -318,12 +344,15 @@ func readWriteGlobalInSameLoopGate(fn *Function) GateResult {
 }
 
 func tier2NewTableLoopCandidateIsSafe(instr *Instr) bool {
-	// Direct-entry Tier 2 can execute cache-backed NEWTABLE sites in loops:
-	// the hot path pops a fresh table from the compiled function cache, while
-	// cache misses use the precise table-exit continuation and mark the result
-	// slot as modified. Restart-style OSR still rejects OpNewTable via
-	// firstExitResumeInLoop/hasRestartVisibleSideEffect.
-	return newTableCacheBatchSize(instr) > 1
+	return false
+}
+
+func tier2LoopNewTableDirectEntryIsSafe(instr *Instr) bool {
+	if instr == nil || instr.Op != OpNewTable || newTableCacheBatchSize(instr) <= 1 {
+		return false
+	}
+	_, kind := unpackNewTableAux2(instr.Aux2)
+	return kind != runtime.ArrayBool
 }
 
 func tier2NewFixedTableLoopCandidateIsSafe(fn *Function, instr *Instr) bool {

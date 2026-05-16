@@ -259,10 +259,111 @@ func (tm *TieringManager) shouldPromoteNativeLoopDriver(proto *vm.FuncProto, pro
 	if !profile.HasLoop || profile.LoopDepth != 1 {
 		return false
 	}
-	if profile.HasClosure || profile.HasUpval || profile.HasVararg {
+	if proto.Name != "<main>" && (profile.HasClosure || profile.HasUpval || profile.HasVararg) {
 		return false
 	}
-	return canPromoteWithNativeLoopCalls(proto, tm.buildLoopCallGlobals(proto))
+	globals := tm.buildLoopCallGlobals(proto)
+	if proto.Name == "<main>" && mainNativeLoopDriverCallsAllocatingCallee(proto, globals) {
+		return false
+	}
+	if proto.Name == "<main>" && mainProtoHasRecursiveChild(proto) {
+		trip, ok := mainMaxConstantForLoopTrip(proto)
+		if ok && trip < 10000 {
+			return false
+		}
+	}
+	return canPromoteWithNativeLoopCalls(proto, globals)
+}
+
+func mainNativeLoopDriverCallsAllocatingCallee(proto *vm.FuncProto, globals map[string]*vm.FuncProto) bool {
+	if proto == nil || proto.Name != "<main>" || len(globals) == 0 {
+		return false
+	}
+	inLoop := staticLoopPCs(proto)
+	callSites := 0
+	allocatingSites := 0
+	for pc, inst := range proto.Code {
+		if !inLoop[pc] || vm.DecodeOp(inst) != vm.OP_CALL {
+			continue
+		}
+		callSites++
+		callee, ok := findGetGlobalCallee(proto, pc, vm.DecodeA(inst), globals)
+		if !ok || callee == nil {
+			continue
+		}
+		if protoHasAllocationBytecode(callee) {
+			allocatingSites++
+		}
+	}
+	return callSites == 1 && allocatingSites == 1
+}
+
+func protoHasAllocationBytecode(proto *vm.FuncProto) bool {
+	if proto == nil {
+		return false
+	}
+	for _, inst := range proto.Code {
+		switch vm.DecodeOp(inst) {
+		case vm.OP_NEWTABLE, vm.OP_SETLIST:
+			return true
+		}
+	}
+	return false
+}
+
+func protoHasNativeCallUnsafeTableBytecode(proto *vm.FuncProto) bool {
+	if proto == nil {
+		return false
+	}
+	for _, inst := range proto.Code {
+		switch vm.DecodeOp(inst) {
+		case vm.OP_NEWTABLE, vm.OP_NEWOBJECT2, vm.OP_NEWOBJECTN, vm.OP_SETLIST,
+			vm.OP_GETTABLE, vm.OP_SETTABLE, vm.OP_GETFIELD, vm.OP_SETFIELD,
+			vm.OP_APPEND:
+			return true
+		}
+	}
+	return false
+}
+
+func protoHasAllocationBytecodeInLoop(proto *vm.FuncProto) bool {
+	if proto == nil {
+		return false
+	}
+	inLoop := staticLoopPCs(proto)
+	for pc, inst := range proto.Code {
+		if !inLoop[pc] {
+			continue
+		}
+		switch vm.DecodeOp(inst) {
+		case vm.OP_NEWTABLE, vm.OP_NEWOBJECT2, vm.OP_NEWOBJECTN, vm.OP_SETLIST:
+			return true
+		}
+	}
+	return false
+}
+
+func protoHasAllocationIRInLoop(proto *vm.FuncProto) bool {
+	fn := BuildGraph(proto)
+	if fn == nil || fn.Entry == nil {
+		return true
+	}
+	li := computeLoopInfo(fn)
+	for _, block := range fn.Blocks {
+		if !li.loopBlocks[block.ID] {
+			continue
+		}
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			switch instr.Op {
+			case OpNewTable, OpNewFixedTable, OpSetList:
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (tm *TieringManager) shouldSuppressMainLoopCallTier2(proto *vm.FuncProto, profile FuncProfile) bool {

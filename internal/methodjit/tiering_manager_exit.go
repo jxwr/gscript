@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"unsafe"
 
 	"github.com/gscript/gscript/internal/jit"
@@ -73,6 +74,7 @@ func (tm *TieringManager) executeCallExit(ctx *ExecContext, regs []runtime.Value
 	}
 
 	callArgs := collectCallExitArgs(regs, absSlot, nArgs)
+	observeTier2CallExitCalleeArgShapes(fnVal, callArgs)
 	if gf := fnVal.GoFunction(); gf != nil && gf.Fast1 != nil {
 		result, err := gf.Fast1(callArgs)
 		if err != nil {
@@ -110,6 +112,15 @@ func (tm *TieringManager) executeCallExit(ctx *ExecContext, regs []runtime.Value
 	}
 
 	return nil
+}
+
+func observeTier2CallExitCalleeArgShapes(fnVal runtime.Value, args []runtime.Value) {
+	cl, ok := vmClosureFromValue(fnVal)
+	if !ok || cl == nil || cl.Proto == nil || cl.Proto.IsVarArg || cl.Proto.NumParams == 0 {
+		return
+	}
+	cl.Proto.ObserveArgShapes(args)
+	cl.Proto.ObserveArgArrayElementShapes(args)
 }
 
 func (tm *TieringManager) callValueForTier2Exit(fnVal runtime.Value, args []runtime.Value, callerProto *vm.FuncProto) ([]runtime.Value, error) {
@@ -153,6 +164,13 @@ func (tm *TieringManager) executeNativeCallExit(ctx *ExecContext, callerCF *Comp
 	calleeProto, calleeCF, calleeBase, err := tm.nativeExitCallee(ctx, regs, callerBase)
 	if err != nil {
 		return regs, err
+	}
+	observeTier2NativeCalleeArgShapes(calleeProto, regs, calleeBase)
+	if tm.envR154Trace {
+		fmt.Fprintf(os.Stderr, "[R154] tier2 native-call execute caller=%q instr=%d source_pc=%d path=call-exit callee=%q callee_ops=%s native_exit_code=%d native_resume_pc=%d tier2_only=%d abi=resume\n",
+			traceProtoName(callerProto), ctx.CallID, tier2CallExitSourcePC(callerCF, ctx),
+			traceProtoName(calleeProto), protoNativeCallRiskSummary(calleeProto),
+			ctx.NativeCalleeExitCode, ctx.NativeCalleeResumePC, ctx.NativeCalleeTier2Only)
 	}
 
 	if !calleeCF.DirectEntrySafe {
@@ -311,10 +329,37 @@ func (tm *TieringManager) nativeExitCallee(ctx *ExecContext, regs []runtime.Valu
 	return cl.Proto, calleeCF, calleeBase, nil
 }
 
+func observeTier2NativeCalleeArgShapes(proto *vm.FuncProto, regs []runtime.Value, base int) {
+	if proto == nil || proto.NumParams <= 0 || base < 0 || base >= len(regs) {
+		return
+	}
+	end := base + proto.NumParams
+	if end > len(regs) {
+		end = len(regs)
+	}
+	if end <= base {
+		return
+	}
+	args := regs[base:end]
+	proto.ObserveArgShapes(args)
+	proto.ObserveArgArrayElementShapes(args)
+}
+
 func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *CompiledFunction, regs []runtime.Value, base int, proto *vm.FuncProto) (runtime.Value, error) {
 	tm.recordTier2NativeCalleeExit(proto, cf, ctx)
+	observeTier2NativeCalleeArgShapes(proto, regs, base)
 	codePtr := uintptr(0)
 	resumeClosurePtr := ctx.NativeCalleeClosurePtr
+	refreshCallee := func(resumeOff int) int {
+		nextCF, nextResumeOff, switched := tm.tryMidRunTier2Refresh(proto, cf, ctx)
+		if !switched {
+			tm.retireStaleTier2AfterFeedback(proto, cf)
+			return resumeOff
+		}
+		cf = nextCF
+		tm.setTier2ResumeContext(ctx, cf, proto, base)
+		return nextResumeOff
+	}
 	switch ctx.NativeCalleeExitCode {
 	case ExitTableExit:
 		handlerMark := tm.tier2PerfStart()
@@ -327,6 +372,7 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 		if !ok {
 			return runtime.NilValue(), fmt.Errorf("callee table-exit: no resume for %d", ctx.TableExitID)
 		}
+		resumeOff = refreshCallee(resumeOff)
 		codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 	case ExitGlobalExit:
 		if err := tm.executeGlobalExit(ctx, regs, base, proto, cf); err != nil {
@@ -415,6 +461,7 @@ func (tm *TieringManager) resumeNativeTier2CalleeExit(ctx *ExecContext, cf *Comp
 			if !ok {
 				return runtime.NilValue(), fmt.Errorf("callee table-exit: no resume for %d", ctx.TableExitID)
 			}
+			resumeOff = refreshCallee(resumeOff)
 			codePtr = uintptr(cf.Code.Ptr()) + uintptr(resumeOff)
 			ctx.ExitCode = 0
 			ctx.ResumeNumericPass = 0

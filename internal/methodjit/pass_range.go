@@ -358,11 +358,54 @@ func RangeAnalysisPass(fn *Function) (*Function, error) {
 		}
 	}
 	markConvergingInductionSafe(fn, safe)
+	markGuardedForwardInductionUpdatesSafe(fn, ranges, safe)
 	fn.Int48Safe = safe
 	fn.IntRanges = ranges
 	fn.IntNonNegative = collectIntNonNegativeFacts(intInstrs, ranges)
 	populateIntModFacts(fn, ranges)
 	return fn, nil
+}
+
+func markGuardedForwardInductionUpdatesSafe(fn *Function, ranges map[int]intRange, safe map[int]bool) {
+	if fn == nil || ranges == nil || safe == nil {
+		return
+	}
+	li := computeLoopInfo(fn)
+	if !li.hasLoops() {
+		return
+	}
+	for _, header := range fn.Blocks {
+		if !li.loopHeaders[header.ID] {
+			continue
+		}
+		cond := loopHeaderBranchCond(header)
+		if cond == nil {
+			continue
+		}
+		for _, phi := range header.Instrs {
+			if phi == nil || phi.Op != OpPhi {
+				break
+			}
+			if !phi.Type.isIntegerLike() {
+				continue
+			}
+			ind, ok := analyzeForwardInduction(phi, li, ranges)
+			if !ok || ind.update == nil || !ind.init.fitsInt48() {
+				continue
+			}
+			trueMax, ok := guardedUpperBound(cond, phi, ranges)
+			if !ok {
+				continue
+			}
+			updateRange := intRange{min: satAdd(ind.init.min, ind.step), max: satAdd(trueMax, ind.step), known: true}
+			if existing, ok := ranges[ind.update.ID]; !ok || !existing.known {
+				ranges[ind.update.ID] = updateRange
+			}
+			if updateRange.fitsInt48() {
+				safe[ind.update.ID] = true
+			}
+		}
+	}
 }
 
 func rangeAnalysisIntInstrs(fn *Function) []*Instr {

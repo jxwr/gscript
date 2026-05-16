@@ -7,7 +7,7 @@ local function test_closure_call()
         return function(y) return x + y end
     end
     local sum = 0
-    for i = 1, 100000 do
+    for i = 1, 500000 do
         local add5 = make_adder(5)
         sum = sum + add5(i)
     end
@@ -25,7 +25,7 @@ local function test_accumulator()
     end
     local total = 0
     local counter = make_counter()
-    for i = 1, 1000000 do
+    for i = 1, 5000000 do
         total = total + counter()
     end
     return total
@@ -46,7 +46,7 @@ local function test_map()
         return result
     end
     local total = 0
-    for rep = 1, 100 do
+    for rep = 1, 500 do
         local mapped = map_array(arr, function(x) return x * 2 + 1 end)
         total = total + mapped[500]
     end

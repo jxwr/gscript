@@ -119,6 +119,7 @@ func (ec *emitContext) emitCallNative(instr *Instr) {
 	asm := ec.asm
 
 	desc := callExitDescriptorFromInstr(instr)
+	ec.traceNativeCallEmit(instr, "generic native", nil, nil)
 	funcSlot := desc.slot
 	nArgs := desc.nArgs
 	nRets := desc.nRets
@@ -608,6 +609,7 @@ func (ec *emitContext) emitCallNativeStaticSelfFast(instr *Instr) {
 		ec.emitCallNative(instr)
 		return
 	}
+	ec.traceNativeCallEmit(instr, "generic native", ec.fn.Proto, nil)
 
 	asm := ec.asm
 	desc := callExitDescriptorFromInstr(instr)
@@ -726,6 +728,7 @@ func (ec *emitContext) emitCallNativeRawIntSelf(instr *Instr) {
 		ec.emitCallNativeStaticSelfFast(instr)
 		return
 	}
+	ec.traceNativeCallEmit(instr, "raw-int self", ec.fn.Proto, nil)
 
 	asm := ec.asm
 	funcSlot := int(instr.Aux)
@@ -1048,6 +1051,15 @@ func (ec *emitContext) emitCallNativeRawIntPeerIfEligible(instr *Instr) bool {
 	if nRets != 1 || nArgs != callee.NumParams || nArgs < 1 || nArgs > 4 {
 		return false
 	}
+	if ec.fn != nil && ec.fn.CallABIs != nil {
+		if desc, ok := ec.fn.CallABIs[instr.ID]; ok {
+			ec.traceNativeCallEmit(instr, "raw-int peer", callee, &desc)
+		} else {
+			ec.traceNativeCallEmit(instr, "raw-int peer", callee, nil)
+		}
+	} else {
+		ec.traceNativeCallEmit(instr, "raw-int peer", callee, nil)
+	}
 
 	asm := ec.asm
 	funcSlot := int(instr.Aux)
@@ -1211,6 +1223,7 @@ func (ec *emitContext) emitCallNativeTypedPeerIfEligible(instr *Instr) bool {
 	default:
 		return false
 	}
+	ec.traceNativeCallEmit(instr, "typed peer", callee, &desc)
 
 	asm := ec.asm
 	funcSlot := int(instr.Aux)
@@ -1559,6 +1572,7 @@ func (ec *emitContext) emitCallNativeFieldShapeTypedPeerIfEligible(instr *Instr)
 	calleeBaseOff := ec.nextSlot * jit.ValueSize
 	argDesc := cases[0].desc
 	argDesc.ArgFacts = nil
+	ec.traceNativeCallEmit(instr, "typed peer", argDesc.Callee, &argDesc)
 	allLeafCallees := fieldShapeTypedPeerCasesAllLeaf(cases)
 	restoreConstsOnSuccess := ec.fnUsesConstPool()
 
@@ -1747,6 +1761,7 @@ func (ec *emitContext) emitFieldShapeMethodCallFloorNative(instr *Instr) bool {
 	calleeBaseOff := ec.nextSlot * jit.ValueSize
 	argDesc := cases[0].desc
 	argDesc.ArgFacts = nil
+	ec.traceNativeCallEmit(instr, "typed peer", argDesc.Callee, &argDesc)
 	allLeafCallees := fieldShapeTypedPeerCasesAllLeaf(cases)
 	restoreConstsOnSuccess := ec.fnUsesConstPool()
 	useClobberEntry := ec.shouldUseTypedPeerClobberEntry(liveGPRs, liveFPRs)
@@ -2314,13 +2329,25 @@ func (ec *emitContext) emitCallNativeTypedSelfIfEligible(instr *Instr) bool {
 	nArgs := len(instr.Args) - 1
 	nRets := callResultCountFromAux2(instr.Aux2)
 	abi := ec.typedSelfABI
-	wantRets := 1
 	if abi.Return == SpecializedABIReturnNone {
-		wantRets = 0
+		// Zero-result typed self recursion is side-effect-only. The native BL
+		// path has no return value to validate before restoring the caller
+		// frame, and it is not yet safe for mutating double-recursive kernels
+		// such as quicksort. Keep those calls on the boxed call-exit path.
+		return false
 	}
+	wantRets := 1
 	if nRets != wantRets || nArgs != abi.NumParams || len(abi.Params) != nArgs {
 		return false
 	}
+	desc := CallABIDescriptor{
+		Callee:    ec.fn.Proto,
+		NumArgs:   nArgs,
+		NumRets:   nRets,
+		ParamReps: append([]SpecializedABIParamRep(nil), abi.Params...),
+		ReturnRep: abi.Return,
+	}
+	ec.traceNativeCallEmit(instr, "typed self", ec.fn.Proto, &desc)
 
 	liveGPRs, liveFPRs := ec.computeLiveAcrossCall(instr)
 	preReprs := ec.snapshotValueReprs()
@@ -2572,6 +2599,28 @@ func (ec *emitContext) staticNoDepthCallee(instr *Instr) *vm.FuncProto {
 	return callee
 }
 
+func (ec *emitContext) staticNativeCallUnsafeCallee(instr *Instr) *vm.FuncProto {
+	if ec == nil || instr == nil || ec.fn == nil {
+		return nil
+	}
+	if ec.tailCallInstrs[instr.ID] || ec.isStaticSelfCall(instr) {
+		return nil
+	}
+	_, callee := resolveCallee(instr, ec.fn, InlineConfig{Globals: ec.fn.Globals})
+	if callee == nil {
+		if feedbackCallee, ok := callABIFeedbackCalleeProto(ec.fn, instr); ok {
+			callee = feedbackCallee
+		}
+	}
+	if callee == nil || !protoHasNativeCallUnsafeTableBytecode(callee) {
+		return nil
+	}
+	if callee.Tier2Promoted && callee.Tier2DirectEntryPtr != 0 {
+		return nil
+	}
+	return callee
+}
+
 func (ec *emitContext) callCalleeFlagSpec(instr *Instr) callCalleeFlagSpec {
 	protos := ec.callCalleeFeedbackProtos(instr)
 	if len(protos) == 0 {
@@ -2677,6 +2726,9 @@ func (ec *emitContext) rawIntPeerCallee(instr *Instr) *vm.FuncProto {
 		return nil
 	}
 	callee := desc.Callee
+	if protoHasNativeCallUnsafeTableBytecode(callee) {
+		return nil
+	}
 	ok, numParams := qualifyForNumeric(callee)
 	if !ok || desc.NumArgs != numParams || len(desc.RawIntParams) != numParams || len(instr.Args) != 1+numParams {
 		return nil
@@ -2846,7 +2898,7 @@ func instrUsesConstPool(instr *Instr) bool {
 		return false
 	}
 	switch instr.Op {
-	case OpConstString, OpStringConstLookup, OpStringFormatInt, OpStringFormatConst,
+	case OpConstString, OpStringConstLookup, OpStringFormatInt, OpStringFormatConst, OpStringFormatConstLen,
 		OpStringSplitPart, OpStringSplitSubstr, OpStringSplitSubstrNumber,
 		OpGuardConstString:
 		return true
@@ -3060,6 +3112,7 @@ func (ec *emitContext) emitOpCall(instr *Instr) {
 	} else if ec.emitCallNativeTypedPeerIfEligible(instr) {
 	} else if ec.emitCallNativeTypedSelfIfEligible(instr) {
 	} else if ec.isStaticSelfCall(instr) && !ec.tailCallInstrs[instr.ID] && callResultCountFromAux2(instr.Aux2) > 0 && !ec.nativeCallReplaySafe {
+		ec.traceNativeCallEmit(instr, "call-exit", ec.fn.Proto, nil)
 		ec.emitCallExit(instr)
 	} else if ec.tailCallInstrs[instr.ID] && ec.isStaticSelfCall(instr) && !ec.hasEntryShapeGuards() {
 		ec.emitStaticSelfTailLoop(instr)

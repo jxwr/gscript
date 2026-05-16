@@ -140,6 +140,7 @@ func TableArrayLoadTypeSpecializePass(fn *Function) (*Function, error) {
 		return fn, nil
 	}
 	markConstStringSetListLoads(fn)
+	markLocalStringArrayLoads(fn)
 	affected := tableArrayLoadTypeAffectedValues(fn)
 	if len(affected) == 0 {
 		return fn, nil
@@ -178,6 +179,11 @@ func markConstStringSetListLoads(fn *Function) {
 	stringTables := make(map[int]bool)
 	headers := make(map[int]int)
 	data := make(map[int]int)
+	type tableWrite struct {
+		tableID int
+		value   *Value
+	}
+	var writes []tableWrite
 
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
@@ -209,7 +215,23 @@ func markConstStringSetListLoads(fn *Function) {
 						data[instr.ID] = tableID
 					}
 				}
+			case OpSetTable:
+				if len(instr.Args) >= 3 && instr.Args[0] != nil {
+					writes = append(writes, tableWrite{tableID: instr.Args[0].ID, value: instr.Args[2]})
+				}
+			case OpTableArrayStore:
+				if len(instr.Args) >= 5 && instr.Args[0] != nil {
+					writes = append(writes, tableWrite{tableID: instr.Args[0].ID, value: instr.Args[4]})
+				}
 			}
+		}
+	}
+	for _, w := range writes {
+		if !stringTables[w.tableID] {
+			continue
+		}
+		if !tableArrayStoredValueDefinitelyString(w.value, w.tableID, data) {
+			delete(stringTables, w.tableID)
 		}
 	}
 	if len(stringTables) == 0 || len(data) == 0 {
@@ -228,6 +250,139 @@ func markConstStringSetListLoads(fn *Function) {
 			}
 		}
 	}
+}
+
+func tableArrayStoredValueDefinitelyString(v *Value, tableID int, data map[int]int) bool {
+	if v == nil || v.Def == nil {
+		return false
+	}
+	if v.Def.Type == TypeString || v.Def.Op == OpConstString {
+		return true
+	}
+	if v.Def.Op != OpTableArrayLoad || len(v.Def.Args) < 1 || v.Def.Args[0] == nil {
+		return false
+	}
+	return data[v.Def.Args[0].ID] == tableID && v.Def.Type == TypeString
+}
+
+func markLocalStringArrayLoads(fn *Function) {
+	tables := localStringArrayTables(fn)
+	if len(tables) == 0 {
+		return
+	}
+	data := tableArrayDataOwners(fn)
+	if len(data) == 0 {
+		return
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpTableArrayLoad || len(instr.Args) < 1 || instr.Args[0] == nil {
+				continue
+			}
+			tableID, ok := data[instr.Args[0].ID]
+			if !ok || !tables[tableID] || instr.Type == TypeString {
+				continue
+			}
+			instr.Type = TypeString
+			functionRemarks(fn).Add("TypeSpec", "changed", block.ID, instr.ID, instr.Op,
+				"inferred string element from local string-only array")
+		}
+	}
+}
+
+func tableArrayDataOwners(fn *Function) map[int]int {
+	headers := make(map[int]int)
+	data := make(map[int]int)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			switch instr.Op {
+			case OpTableArrayHeader:
+				if len(instr.Args) >= 1 && instr.Args[0] != nil {
+					headers[instr.ID] = instr.Args[0].ID
+				}
+			case OpTableArrayData:
+				if len(instr.Args) >= 1 && instr.Args[0] != nil {
+					if tableID, ok := headers[instr.Args[0].ID]; ok {
+						data[instr.ID] = tableID
+					}
+				}
+			}
+		}
+	}
+	return data
+}
+
+func localStringArrayTables(fn *Function) map[int]bool {
+	candidates := make(map[int]bool)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr != nil && instr.Op == OpNewTable {
+				candidates[instr.ID] = true
+			}
+		}
+	}
+	if len(candidates) == 0 {
+		return candidates
+	}
+	data := tableArrayDataOwners(fn)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			for argIdx, arg := range instr.Args {
+				if arg == nil || !candidates[arg.ID] || localStringArrayTableUseOK(instr, argIdx, arg.ID) {
+					continue
+				}
+				delete(candidates, arg.ID)
+			}
+		}
+	}
+	if len(candidates) == 0 {
+		return candidates
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpSetTable || len(instr.Args) < 3 || instr.Args[0] == nil {
+				continue
+			}
+			tableID := instr.Args[0].ID
+			if !candidates[tableID] {
+				continue
+			}
+			if !localStringArrayStoredValueOK(instr.Args[2], tableID, data) {
+				delete(candidates, tableID)
+			}
+		}
+	}
+	return candidates
+}
+
+func localStringArrayTableUseOK(instr *Instr, argIdx, tableID int) bool {
+	switch instr.Op {
+	case OpSetTable:
+		return argIdx == 0 && len(instr.Args) >= 1 && instr.Args[0] != nil && instr.Args[0].ID == tableID
+	case OpLen, OpTableArrayHeader:
+		return argIdx == 0 && len(instr.Args) >= 1 && instr.Args[0] != nil && instr.Args[0].ID == tableID
+	default:
+		return false
+	}
+}
+
+func localStringArrayStoredValueOK(v *Value, tableID int, data map[int]int) bool {
+	if v == nil || v.Def == nil {
+		return false
+	}
+	if v.Def.Type == TypeString {
+		return true
+	}
+	if v.Def.Op != OpTableArrayLoad || len(v.Def.Args) < 1 || v.Def.Args[0] == nil {
+		return false
+	}
+	return data[v.Def.Args[0].ID] == tableID
 }
 
 func tableArrayLoadTypeAffectedValues(fn *Function) map[int]bool {

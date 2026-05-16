@@ -212,6 +212,29 @@ func TestRunPartitionSortPlainIntRegion(t *testing.T) {
 	}
 }
 
+func TestRadixSortNonNegative32BoundaryValues(t *testing.T) {
+	values := []int64{
+		int64(^uint32(0)),
+		0,
+		1 << 31,
+		2047,
+		2048,
+		(1 << 22) - 1,
+		1 << 22,
+		17,
+		int64(^uint32(0)) - 1,
+	}
+	if !radixSortNonNegative32(values) {
+		t.Fatal("radix sort rejected valid non-negative uint32 values")
+	}
+	want := []int64{0, 17, 2047, 2048, (1 << 22) - 1, 1 << 22, 1 << 31, int64(^uint32(0)) - 1, int64(^uint32(0))}
+	for i := range want {
+		if values[i] != want[i] {
+			t.Fatalf("values[%d]=%d, want %d (all=%v)", i, values[i], want[i], values)
+		}
+	}
+}
+
 func TestRadixSortIntegralNumericValuesPreservesEqualBoxOrder(t *testing.T) {
 	values := []runtime.Value{
 		runtime.IntValue(5),

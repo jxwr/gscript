@@ -220,14 +220,7 @@ func TestRawIntSelfABI_NumericEntryUsesThinFrame(t *testing.T) {
 		t.Fatal("function \"ack\" not found")
 	}
 
-	tm := NewTieringManager()
-	if err := tm.CompileTier2(ack); err != nil {
-		t.Fatalf("CompileTier2(ack): %v", err)
-	}
-	cf := tm.tier2Compiled[ack]
-	if cf == nil {
-		t.Fatal("ack did not compile to Tier 2")
-	}
+	cf := compileRawSelfTier2ForTest(t, ack)
 	if cf.NumericParamCount != 2 {
 		t.Fatalf("NumericParamCount=%d, want 2", cf.NumericParamCount)
 	}
@@ -267,14 +260,7 @@ func TestRawIntSelfABI_FastPathKeepsCtxRegsLazyOnSuccess(t *testing.T) {
 		t.Fatal("function \"fib\" not found")
 	}
 
-	tm := NewTieringManager()
-	if err := tm.CompileTier2(fib); err != nil {
-		t.Fatalf("CompileTier2(fib): %v", err)
-	}
-	cf := tm.tier2Compiled[fib]
-	if cf == nil {
-		t.Fatal("fib did not compile to Tier 2")
-	}
+	cf := compileRawSelfTier2ForTest(t, fib)
 	assertCompiledRawIntSelfABI(t, cf.RawIntSelfABI, 1)
 
 	code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
@@ -310,14 +296,7 @@ func TestRawIntSelfABI_FastPathLeavesCallModeUntouched(t *testing.T) {
 		t.Fatal("function \"ack\" not found")
 	}
 
-	tm := NewTieringManager()
-	if err := tm.CompileTier2(ack); err != nil {
-		t.Fatalf("CompileTier2(ack): %v", err)
-	}
-	cf := tm.tier2Compiled[ack]
-	if cf == nil {
-		t.Fatal("ack did not compile to Tier 2")
-	}
+	cf := compileRawSelfTier2ForTest(t, ack)
 
 	code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
 	rawSelfShims := rawSelfNumericBLOffsets(code, cf.NumericEntryOffset)
@@ -349,14 +328,7 @@ func TestRawIntSelfABI_FastPathUsesRegisterStatus(t *testing.T) {
 		t.Fatal("function \"fib\" not found")
 	}
 
-	tm := NewTieringManager()
-	if err := tm.CompileTier2(fib); err != nil {
-		t.Fatalf("CompileTier2(fib): %v", err)
-	}
-	cf := tm.tier2Compiled[fib]
-	if cf == nil {
-		t.Fatal("fib did not compile to Tier 2")
-	}
+	cf := compileRawSelfTier2ForTest(t, fib)
 
 	code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
 	rawSelfShims := rawSelfNumericBLOffsets(code, cf.NumericEntryOffset)
@@ -398,14 +370,7 @@ func TestRawIntSelfABI_FastPathAvoidsNativeCallDepthTraffic(t *testing.T) {
 		t.Fatal("function \"ack\" not found")
 	}
 
-	tm := NewTieringManager()
-	if err := tm.CompileTier2(ack); err != nil {
-		t.Fatalf("CompileTier2(ack): %v", err)
-	}
-	cf := tm.tier2Compiled[ack]
-	if cf == nil {
-		t.Fatal("ack did not compile to Tier 2")
-	}
+	cf := compileRawSelfTier2ForTest(t, ack)
 
 	code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
 	rawSelfShims := rawSelfNumericBLOffsets(code, cf.NumericEntryOffset)
@@ -493,14 +458,7 @@ func TestRawIntSelfABI_FastPathKeepsRawArgsRegisterOnly(t *testing.T) {
 			}
 			assertRawIntSpecializedABI(t, AnalyzeSpecializedABI(proto), tt.wantParams)
 
-			tm := NewTieringManager()
-			if err := tm.CompileTier2(proto); err != nil {
-				t.Fatalf("CompileTier2(%s): %v", tt.fnName, err)
-			}
-			cf := tm.tier2Compiled[proto]
-			if cf == nil {
-				t.Fatalf("%s did not compile to Tier 2", tt.fnName)
-			}
+			cf := compileRawSelfTier2ForTest(t, proto)
 
 			code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
 			rawSelfShims := rawSelfNumericBLOffsets(code, cf.NumericEntryOffset)
@@ -1231,4 +1189,20 @@ func assertCompiledRawIntSelfABI(t *testing.T, abi RawIntSelfABI, wantParams int
 			t.Fatalf("compiled raw-int self ABI ParamSlots[%d]=%d, want %d", i, slot, i)
 		}
 	}
+}
+
+func compileRawSelfTier2ForTest(t *testing.T, proto *vm.FuncProto) *CompiledFunction {
+	t.Helper()
+	tm := NewTieringManager()
+	if proto.Feedback == nil {
+		proto.EnsureFeedback()
+	}
+	cf, err := tm.compileTier2(proto)
+	if err != nil {
+		t.Fatalf("compileTier2(%s): %v", proto.Name, err)
+	}
+	if cf == nil {
+		t.Fatalf("%s did not compile to Tier 2", proto.Name)
+	}
+	return cf
 }

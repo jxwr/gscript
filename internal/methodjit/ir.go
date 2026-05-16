@@ -222,6 +222,12 @@ type Function struct {
 	// field index for that static field name.
 	FieldPolyShapeFacts map[int][]FieldPolyShapeCase
 
+	// FieldPolyShapeReceivers records table SSA values known to carry guarded
+	// polymorphic shape facts. Monomorphic fixed-shape lowering must not turn
+	// reads from these receivers into a single-shape FieldSvals path before
+	// FieldPolyShapeFacts can be attached to each field access.
+	FieldPolyShapeReceivers map[int]bool
+
 	// FieldPolyShapeCatalog records the receiver facts behind polymorphic
 	// field caches keyed by shape ID. Unlike FieldPolyShapeFacts, it is not
 	// tied to a specific IR value ID, so later split/inline/lowering passes can
@@ -248,6 +254,12 @@ type Function struct {
 	// can still see ordinary field stores; late lowering may combine surviving
 	// constructors into OpNewFixedTable for native codegen.
 	FixedTableConstructors map[int]FixedTableConstructorFact
+
+	// FixedRecordNewTableSites records OpNewFixedTable values that remain local
+	// to fixed-record-aware field reads. Constructors that escape through calls,
+	// stores, returns, or generic table operations must materialize ordinary
+	// tables so downstream code observes normal table semantics.
+	FixedRecordNewTableSites map[int]bool
 
 	// FixedShapeEntryGuards records parameter shape guards that codegen must
 	// execute before entering the optimized body. Once these guards have run,

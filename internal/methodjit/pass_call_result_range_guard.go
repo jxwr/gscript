@@ -29,6 +29,12 @@ func CallResultRangeGuardPass(fn *Function) (*Function, error) {
 			if !instr.HasSource || instr.SourcePC < 0 || instr.SourcePC >= len(fn.Proto.CallSiteFeedback) {
 				continue
 			}
+			fb := fn.Proto.CallSiteFeedback[instr.SourcePC]
+			if instr.Type != TypeInt {
+				if _, _, ok := stableCallResultRange(fb); !ok && !callSpeculativeIntUseRangeCandidate(fn, instr, fb, uses) {
+					continue
+				}
+			}
 			if specGuardKindSuppressed(fn, instr.SourcePC, "GuardIntRange") {
 				functionRemarks(fn).Add("CallResultRangeGuard", "missed", block.ID, instr.ID, instr.Op,
 					"skipped suppressed int-range guard")
@@ -39,8 +45,7 @@ func CallResultRangeGuardPass(fn *Function) (*Function, error) {
 					"skipped int-range guard for modulo-reduced floor-call result")
 				continue
 			}
-			fb := fn.Proto.CallSiteFeedback[instr.SourcePC]
-			min, max, reason, ok := callResultGuardRange(fn, instr, fb)
+			min, max, reason, ok := callResultGuardRange(fn, instr, fb, uses)
 			if !ok || nextInstrIsSameIntRangeGuard(block, i, instr.ID, min, max) {
 				continue
 			}
@@ -83,7 +88,7 @@ func callFloorResultModuloReduced(fn *Function, instr *Instr, uses map[int]int) 
 func callResultRangeGuardCandidate(instr *Instr) bool {
 	switch instr.Op {
 	case OpCall, OpCallFloor, OpFieldCallFloor:
-		return instr.Type == TypeInt
+		return true
 	default:
 		return false
 	}
@@ -97,12 +102,15 @@ func stableCallResultRange(fb vm.CallSiteFeedback) (int64, int64, bool) {
 	return fb.ResultRange.StableRange()
 }
 
-func callResultGuardRange(fn *Function, instr *Instr, fb vm.CallSiteFeedback) (int64, int64, string, bool) {
+func callResultGuardRange(fn *Function, instr *Instr, fb vm.CallSiteFeedback, uses map[int]int) (int64, int64, string, bool) {
 	if min, max, ok := stableCallResultRange(fb); ok {
 		return min, max, "guarded profiled call result range", true
 	}
 	if callFloorSpeculativeNarrowRangeCandidate(fn, instr, fb) {
 		return callFloorSpecRangeMin, callFloorSpecRangeMax, "guarded speculative floor-call int32 result range", true
+	}
+	if callSpeculativeIntUseRangeCandidate(fn, instr, fb, uses) {
+		return callFloorSpecRangeMin, callFloorSpecRangeMax, "guarded speculative call int32 result for integer use", true
 	}
 	return 0, 0, "", false
 }
@@ -126,6 +134,69 @@ func callFloorSpeculativeNarrowRangeCandidate(fn *Function, instr *Instr, fb vm.
 	default:
 		return false
 	}
+}
+
+func callSpeculativeIntUseRangeCandidate(fn *Function, instr *Instr, fb vm.CallSiteFeedback, uses map[int]int) bool {
+	if fn == nil || instr == nil || instr.Op != OpCall || instr.Type == TypeInt ||
+		fb.Flags&vm.CallSiteArityPolymorphic != 0 || uses[instr.ID] == 0 {
+		return false
+	}
+	if !callResultHasStableCallee(fn, instr, fb) {
+		return false
+	}
+	return callResultHasIntegerUse(fn, instr.ID)
+}
+
+func callResultHasStableCallee(fn *Function, instr *Instr, fb vm.CallSiteFeedback) bool {
+	if _, _, ok := fb.StableCalleeNativeIdentity(); ok {
+		return true
+	}
+	if _, ok := fb.StableCalleeVMProto(); ok {
+		return true
+	}
+	if _, callee := resolveCallee(instr, fn, InlineConfig{Globals: fn.Globals}); callee != nil {
+		return true
+	}
+	return false
+}
+
+func callResultHasIntegerUse(fn *Function, valueID int) bool {
+	for _, block := range fn.Blocks {
+		if block == nil {
+			continue
+		}
+		for _, user := range block.Instrs {
+			if user == nil {
+				continue
+			}
+			switch user.Op {
+			case OpAdd, OpSub, OpMul, OpMod, OpLt, OpLe:
+			default:
+				continue
+			}
+			for _, arg := range user.Args {
+				if arg == nil || arg.ID != valueID {
+					continue
+				}
+				if genericNumericUseHasIntPeer(user, valueID) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func genericNumericUseHasIntPeer(user *Instr, valueID int) bool {
+	for _, arg := range user.Args {
+		if arg == nil || arg.ID == valueID || arg.Def == nil {
+			continue
+		}
+		if arg.Def.Type == TypeInt || arg.Def.Op == OpConstInt || arg.Def.Op == OpGuardIntRange {
+			return true
+		}
+	}
+	return false
 }
 
 func newCallResultRangeGuard(fn *Function, block *Block, instr *Instr, min, max int64) *Instr {

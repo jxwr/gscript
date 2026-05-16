@@ -21,7 +21,7 @@ const (
 	// monomorphic fixed-record site has fired once, future refills hand back
 	// a larger slab so refill-driven Tier 2 exits become rare.
 	fixedTableCacheBatch          = 1024
-	fixedTableCacheRefillBatch    = 8192
+	fixedTableCacheRefillBatch    = 65536
 	newTableCacheMaxBatch         = 512
 	newTableCacheTargetBytes      = 4 << 20
 	newTableCacheLargeTargetBytes = 8 << 20
@@ -83,14 +83,14 @@ func prewarmNewTableCachesForFunction(fn *Function, caches []newTableCacheEntry)
 				prewarmNewTableCacheEntry(&caches[instr.ID], int(instr.Aux), hashHint, kind, unpackNewTableDenseMixed(instr.Aux2), batch)
 			case OpNewFixedTable:
 				if ctor, ok := fixedTableCtor2ForInstr(fn.Proto, instr); ok && cacheableSmallCtor2(ctor) {
-					prewarmFixedTable2CacheEntry(&caches[instr.ID], ctor, fixedTableCacheBatch)
+					prewarmFixedTable2CacheEntry(&caches[instr.ID], ctor, fixedTableCacheBatch, fixedTableSeedValuesForInstr(instr))
 					continue
 				}
 				if ctor, ok := fixedTableCtorNForInstr(fn.Proto, instr); ok && cacheableSmallCtorN(ctor) {
-					if fixedRecordCtorNCacheableForProto(fn.Proto, ctor) {
-						prewarmFixedRecordNCacheEntry(&caches[instr.ID], ctor, fixedTableCacheBatch)
+					if fixedRecordCtorNCacheableForFunction(fn, instr, ctor) {
+						prewarmFixedRecordNCacheEntry(&caches[instr.ID], ctor, fixedTableCacheBatch, fixedTableSeedValuesForInstr(instr))
 					} else {
-						prewarmFixedTableNCacheEntry(&caches[instr.ID], ctor, fixedTableCacheBatch)
+						prewarmFixedTableNCacheEntry(&caches[instr.ID], ctor, fixedTableCacheBatch, fixedTableSeedValuesForInstr(instr))
 					}
 				}
 			}
@@ -98,9 +98,12 @@ func prewarmNewTableCachesForFunction(fn *Function, caches []newTableCacheEntry)
 	}
 }
 
-func prewarmFixedTable2CacheEntry(entry *newTableCacheEntry, ctor *runtime.SmallTableCtor2, batch int) {
+func prewarmFixedTable2CacheEntry(entry *newTableCacheEntry, ctor *runtime.SmallTableCtor2, batch int, seed []runtime.Value) {
 	if entry == nil || ctor == nil || batch <= 1 || len(entry.Values) > 0 {
 		return
+	}
+	if len(seed) != 2 {
+		seed = []runtime.Value{runtime.IntValue(0), runtime.IntValue(0)}
 	}
 	entry.Values = make([]runtime.Value, batch)
 	if entry.Roots == nil {
@@ -108,28 +111,24 @@ func prewarmFixedTable2CacheEntry(entry *newTableCacheEntry, ctor *runtime.Small
 	} else {
 		entry.Roots = entry.Roots[:0]
 	}
-	seed := runtime.IntValue(0)
 	for i := range entry.Values {
-		t := runtime.NewTableFromCtor2NonNil(ctor, seed, seed)
+		t := runtime.NewTableFromCtor2NonNil(ctor, seed[0], seed[1])
 		entry.addRoot(t)
 		entry.Values[i] = runtime.FreshTableValue(t)
 	}
 	entry.Pos = 0
 }
 
-func prewarmFixedTableNCacheEntry(entry *newTableCacheEntry, ctor *runtime.SmallTableCtorN, batch int) {
+func prewarmFixedTableNCacheEntry(entry *newTableCacheEntry, ctor *runtime.SmallTableCtorN, batch int, seed []runtime.Value) {
 	if entry == nil || ctor == nil || batch <= 1 || len(entry.Values) > 0 {
 		return
 	}
+	seed = normalizeFixedTableSeed(seed, len(ctor.Keys))
 	entry.Values = make([]runtime.Value, batch)
 	if entry.Roots == nil {
 		entry.Roots = make([]unsafe.Pointer, 0, 4)
 	} else {
 		entry.Roots = entry.Roots[:0]
-	}
-	seed := make([]runtime.Value, len(ctor.Keys))
-	for i := range seed {
-		seed[i] = runtime.IntValue(0)
 	}
 	for i := range entry.Values {
 		t := runtime.NewTableFromCtorNNonNilCache(ctor, seed)
@@ -139,15 +138,12 @@ func prewarmFixedTableNCacheEntry(entry *newTableCacheEntry, ctor *runtime.Small
 	entry.Pos = 0
 }
 
-func prewarmFixedRecordNCacheEntry(entry *newTableCacheEntry, ctor *runtime.SmallTableCtorN, batch int) {
+func prewarmFixedRecordNCacheEntry(entry *newTableCacheEntry, ctor *runtime.SmallTableCtorN, batch int, seed []runtime.Value) {
 	if entry == nil || ctor == nil || batch <= 1 || len(entry.Values) > 0 {
 		return
 	}
+	seed = normalizeFixedTableSeed(seed, len(ctor.Keys))
 	entry.Values = make([]runtime.Value, batch)
-	seed := make([]runtime.Value, len(ctor.Keys))
-	for i := range seed {
-		seed[i] = runtime.IntValue(0)
-	}
 	for i := range entry.Values {
 		if v, ok := runtime.NewFixedRecordValue(ctor, seed); ok {
 			entry.Values[i] = v
@@ -158,6 +154,47 @@ func prewarmFixedRecordNCacheEntry(entry *newTableCacheEntry, ctor *runtime.Smal
 		}
 	}
 	entry.Pos = 0
+}
+
+func fixedTableSeedValuesForInstr(instr *Instr) []runtime.Value {
+	if instr == nil || len(instr.Args) == 0 {
+		return nil
+	}
+	seed := make([]runtime.Value, len(instr.Args))
+	for i, arg := range instr.Args {
+		seed[i] = fixedTableSeedValueForArg(arg)
+	}
+	return seed
+}
+
+func fixedTableSeedValueForArg(arg *Value) runtime.Value {
+	if arg == nil || arg.Def == nil {
+		return runtime.IntValue(0)
+	}
+	switch arg.Def.Type {
+	case TypeFloat:
+		return runtime.FloatValue(0)
+	case TypeBool:
+		return runtime.BoolValue(false)
+	case TypeString:
+		return runtime.StringValue("")
+	default:
+		return runtime.IntValue(0)
+	}
+}
+
+func normalizeFixedTableSeed(seed []runtime.Value, n int) []runtime.Value {
+	if n <= 0 {
+		return nil
+	}
+	if len(seed) == n {
+		return seed
+	}
+	out := make([]runtime.Value, n)
+	for i := range out {
+		out[i] = runtime.IntValue(0)
+	}
+	return out
 }
 
 func prewarmNewTableCacheEntry(entry *newTableCacheEntry, arrayHint, hashHint int, kind runtime.ArrayKind, denseMixed bool, batch int) {
@@ -213,9 +250,6 @@ func denseMixedNewTableCacheBatchSizeForHints(arrayHint int64, hashHint int) int
 
 func newTableCacheBatchSizeForHints(arrayHint int64, hashHint int, kind runtime.ArrayKind) int {
 	if arrayHint == 0 && hashHint == 0 && kind == runtime.ArrayMixed {
-		return 64
-	}
-	if kind == runtime.ArrayMixed && arrayHint == 0 && hashHint > 0 && hashHint <= runtime.SmallFieldCap {
 		return 64
 	}
 	if arrayHint <= 0 || hashHint != 0 || arrayHint > tier2NewTableCacheMaxArrayHint {
@@ -290,6 +324,66 @@ func fixedRecordCtorNCacheableForProto(proto *vm.FuncProto, ctor *runtime.SmallT
 		return true
 	}
 	return !protoUsesShapeForStringKeyAccess(proto, ctor.Shape.ID)
+}
+
+func fixedRecordCtorNCacheableForFunction(fn *Function, instr *Instr, ctor *runtime.SmallTableCtorN) bool {
+	if fn == nil || instr == nil || !fixedRecordCtorNCacheableForProto(fn.Proto, ctor) {
+		return false
+	}
+	if fn.FixedRecordNewTableSites == nil {
+		fn.FixedRecordNewTableSites = computeFixedRecordNewTableSites(fn)
+	}
+	return fn.FixedRecordNewTableSites[instr.ID]
+}
+
+func computeFixedRecordNewTableSites(fn *Function) map[int]bool {
+	out := make(map[int]bool)
+	if fn == nil {
+		return out
+	}
+	candidates := make(map[int]bool)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpNewFixedTable || instr.Aux2 <= 2 {
+				continue
+			}
+			if ctor, ok := fixedTableCtorNForInstr(fn.Proto, instr); ok && fixedRecordCtorNCacheableForProto(fn.Proto, ctor) {
+				candidates[instr.ID] = true
+				out[instr.ID] = true
+			}
+		}
+	}
+	if len(candidates) == 0 {
+		return out
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			for argIdx, arg := range instr.Args {
+				if arg == nil || !candidates[arg.ID] {
+					continue
+				}
+				if !fixedRecordUseIsLocalFieldRead(instr, argIdx) {
+					out[arg.ID] = false
+				}
+			}
+		}
+	}
+	return out
+}
+
+func fixedRecordUseIsLocalFieldRead(instr *Instr, argIdx int) bool {
+	if instr == nil || argIdx != 0 {
+		return false
+	}
+	switch instr.Op {
+	case OpGetField, OpFieldSvals:
+		return true
+	default:
+		return false
+	}
 }
 
 func protoUsesShapeForStringKeyAccess(proto *vm.FuncProto, shapeID uint32) bool {
@@ -374,7 +468,7 @@ func (cf *CompiledFunction) allocateFixedTableNForExit(instrID int, ctor *runtim
 func (cf *CompiledFunction) allocateFixedTableNValueForExit(instrID int, ctor *runtime.SmallTableCtorN, vals []runtime.Value) runtime.Value {
 	useFixedRecord := fixedRecordCtorNCacheableForProto(nil, ctor)
 	if cf != nil {
-		useFixedRecord = fixedRecordCtorNCacheableForProto(cf.Proto, ctor)
+		useFixedRecord = cf.FixedRecordNewTableSites[instrID]
 	}
 	if cf == nil {
 		if useFixedRecord {
@@ -554,12 +648,8 @@ func allocateFixedTableNFullWithCache(caches []newTableCacheEntry, instrID int, 
 	} else {
 		entry.Roots = entry.Roots[:0]
 	}
-	seed := make([]runtime.Value, len(ctor.Keys))
-	for i := range seed {
-		seed[i] = runtime.IntValue(0)
-	}
 	for i := range entry.Values {
-		t := runtime.NewTableFromCtorNNonNil(ctor, seed)
+		t := runtime.NewTableFromCtorNNonNil(ctor, vals)
 		entry.addRoot(t)
 		entry.Values[i] = runtime.FreshTableValue(t)
 	}
@@ -582,15 +672,11 @@ func allocateFixedRecordNFullWithCache(caches []newTableCacheEntry, instrID int,
 	} else {
 		entry.Values = entry.Values[:keep]
 	}
-	seed := make([]runtime.Value, len(ctor.Keys))
-	for i := range seed {
-		seed[i] = runtime.IntValue(0)
-	}
 	for i := range entry.Values {
-		if cached, ok := runtime.NewFixedRecordCacheValue(ctor, seed); ok {
+		if cached, ok := runtime.NewFixedRecordCacheValue(ctor, vals); ok {
 			entry.Values[i] = cached
 		} else {
-			t := runtime.NewTableFromCtorNNonNilCache(ctor, seed)
+			t := runtime.NewTableFromCtorNNonNilCache(ctor, vals)
 			entry.addRoot(t)
 			entry.Values[i] = runtime.FreshTableValue(t)
 		}

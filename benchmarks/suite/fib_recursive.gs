@@ -8,7 +8,9 @@ func fib(n) {
 }
 
 N := 35
-REPS := 10
+REPS := 72
+
+warm := fib(N)
 
 result := 0
 t0 := time.now()

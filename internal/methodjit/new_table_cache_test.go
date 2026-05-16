@@ -269,8 +269,8 @@ func TestNewTableExitReasonCarriesPreallocAndCacheMetadata(t *testing.T) {
 }
 
 func TestNewTableCacheBatchScalesByPayloadBudget(t *testing.T) {
-	if got := newTableCacheBatchSizeForHints(0, runtime.SmallFieldCap, runtime.ArrayMixed); got != 64 {
-		t.Fatalf("small hash-only mixed table cache batch = %d, want 64", got)
+	if got := newTableCacheBatchSizeForHints(0, runtime.SmallFieldCap, runtime.ArrayMixed); got != 0 {
+		t.Fatalf("small hash-only mixed table cache batch = %d, want disabled", got)
 	}
 	if got := newTableCacheBatchSizeForHints(1024, 0, runtime.ArrayFloat); got <= 32 {
 		t.Fatalf("float row cache batch = %d, want larger than old fixed batch", got)

@@ -26,7 +26,9 @@ func sieve(n) {
 }
 
 N := 1000000
-REPS := 3
+REPS := 30
+
+warm := sieve(N)
 
 t0 := time.now()
 result := 0

@@ -198,7 +198,36 @@ func AllocateRegisters(fn *Function) *RegAllocation {
 		blockOutGPRs[block.ID] = allocateBlock(block, alloc, lastUse, carried, temporaryCarried, nestedFloatPhiOverride && loopNestMap[block.ID] >= 0)
 	}
 
+	coalesceTableArrayLoadFieldSvalsRegs(fn, alloc)
+
 	return alloc
+}
+
+func coalesceTableArrayLoadFieldSvalsRegs(fn *Function, alloc *RegAllocation) {
+	if fn == nil || alloc == nil {
+		return
+	}
+	uses := computeUseCounts(fn)
+	for _, block := range fn.Blocks {
+		for i, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpTableArrayLoad || instr.Type != TypeTable || uses[instr.ID] != 1 {
+				continue
+			}
+			if i+1 >= len(block.Instrs) {
+				continue
+			}
+			next := block.Instrs[i+1]
+			if next == nil || next.Op != OpFieldSvals || len(next.Args) == 0 || next.Args[0] == nil || next.Args[0].ID != instr.ID {
+				continue
+			}
+			pr, ok := alloc.ValueRegs[next.ID]
+			if !ok || pr.IsFloat {
+				continue
+			}
+			alloc.ValueRegs[instr.ID] = pr
+			delete(alloc.SpillSlots, instr.ID)
+		}
+	}
 }
 
 func carriedRegTaken(carried map[int]PhysReg, pr PhysReg) bool {
@@ -253,14 +282,18 @@ func computeValueDefs(fn *Function) map[int]*Instr {
 }
 
 func isRawIntCarryValue(instr *Instr) bool {
-	if instr == nil || instr.Type != TypeInt {
+	if instr == nil {
+		return false
+	}
+	if instr.Type != TypeInt {
 		return false
 	}
 	if isRawIntOp(instr.Op) {
 		return true
 	}
 	switch instr.Op {
-	case OpConstInt, OpLoadSlot, OpGuardType, OpGuardIntRange, OpCall, OpCallFloor, OpFieldCallFloor, OpPhi:
+	case OpConstInt, OpLoadSlot, OpGuardType, OpGuardIntRange, OpCall, OpCallFloor, OpFieldCallFloor, OpPhi,
+		OpTableArrayHeader, OpTableArrayLen, OpTableArrayData:
 		return true
 	default:
 		return false

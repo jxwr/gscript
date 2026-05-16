@@ -336,6 +336,7 @@ type Tier2PipelineOpts struct {
 	GlobalConstValues               map[int]runtime.Value          // const-pool global name index -> observed numeric value
 	InlineMaxSize                   int                            // max callee bytecode count; 0 → 40
 	FixedShapeArgFacts              map[int]FixedShapeTableFact    // guarded fixed-shape facts for callee params
+	FixedShapeArgPolyFacts          map[int][]FixedShapeTableFact  // guarded polymorphic facts for callee params
 	FixedShapeArrayElementArgFacts  map[int]FixedShapeTableFact    // guarded fixed-shape facts for callee param array elements
 	FixedShapeArrayElementPolyFacts map[int][]FixedShapeTableFact  // guarded polymorphic facts for callee param array elements
 	GlobalArrayElementFacts         map[string]FixedShapeTableFact // guarded global table array-element facts learned by other protos
@@ -399,6 +400,13 @@ func optsFixedShapeArgFacts(opts *Tier2PipelineOpts) map[int]FixedShapeTableFact
 		return nil
 	}
 	return opts.FixedShapeArgFacts
+}
+
+func optsFixedShapeArgPolyFacts(opts *Tier2PipelineOpts) map[int][]FixedShapeTableFact {
+	if opts == nil {
+		return nil
+	}
+	return opts.FixedShapeArgPolyFacts
 }
 
 func optsFixedShapeArrayElementArgFacts(opts *Tier2PipelineOpts) map[int]FixedShapeTableFact {

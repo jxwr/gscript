@@ -2,6 +2,8 @@ package vm
 
 import (
 	"math"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -52,6 +54,39 @@ func TestNBodyAdvanceKernelRecognizesStructuralProto(t *testing.T) {
 	}
 }
 
+func TestNBodyDenseAdvanceKernelRecognizesBenchmarkProto(t *testing.T) {
+	src, err := os.ReadFile("../../benchmarks/suite/nbody_dense.gs")
+	if err != nil {
+		t.Fatalf("read nbody_dense benchmark: %v", err)
+	}
+	proto, vm := compileSpectralKernelTestProgram(t, string(src))
+	defer vm.Close()
+	advance := findTestProtoByName(proto, "advance")
+	if advance == nil || !isNBodyDenseAdvanceProto(advance) || !HasNBodyAdvanceWholeCallKernel(advance) {
+		t.Fatal("dense advance proto not recognized")
+	}
+}
+
+func TestNBodyDenseAdvanceLoopKernelMatchesFallback(t *testing.T) {
+	srcBytes, err := os.ReadFile("../../benchmarks/suite/nbody_dense.gs")
+	if err != nil {
+		t.Fatalf("read nbody_dense benchmark: %v", err)
+	}
+	src := strings.Replace(string(srcBytes), "N := 500000", "N := 1500", 1)
+	kernelGlobals := compileAndRun(t, src)
+	fallbackGlobals := compileAndRun(t, strings.Replace(src, "dt := 0.01", `
+getf0 := matrix.getf
+setf0 := matrix.setf
+matrix.getf = func(m, i, j) { return getf0(m, i, j) }
+matrix.setf = func(m, i, j, v) { return setf0(m, i, j, v) }
+dt := 0.01`, 1))
+	got := kernelGlobals["e1"].Number()
+	want := fallbackGlobals["e1"].Number()
+	if math.Abs(got-want) > 1e-12 {
+		t.Fatalf("dense kernel e1 %.15f, fallback %.15f", got, want)
+	}
+}
+
 func TestNBodyAdvanceKernelMatchesFallback(t *testing.T) {
 	kernelGlobals := compileAndRun(t, nbodyKernelTestProgram+`
 for i := 1; i <= 5; i++ { advance(0.01) }
@@ -68,6 +103,21 @@ result := bodies[1].x + bodies[1].y + bodies[2].vx + bodies[3].vz
 	if math.Abs(got-want) > 1e-12 {
 		t.Fatalf("kernel result %.15f, fallback %.15f", got, want)
 	}
+}
+
+func findTestProtoByName(proto *FuncProto, name string) *FuncProto {
+	if proto == nil {
+		return nil
+	}
+	if proto.Name == name {
+		return proto
+	}
+	for _, child := range proto.Protos {
+		if got := findTestProtoByName(child, name); got != nil {
+			return got
+		}
+	}
+	return nil
 }
 
 func TestNBodyAdvanceLoopKernelMatchesFallback(t *testing.T) {

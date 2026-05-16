@@ -68,7 +68,15 @@ func detectBoolTableCountLoop(fn *Function, header *Block) (boolCountLoopCandida
 	}
 	loadTerm := loadBlock.Instrs[len(loadBlock.Instrs)-1]
 	if loadTerm == nil || loadTerm.Op != OpBranch || len(loadTerm.Args) != 1 || loadTerm.Args[0] == nil ||
-		loadTerm.Args[0].Def == nil || loadTerm.Args[0].Def.Op != OpGuardTruthy {
+		loadTerm.Args[0].Def == nil {
+		return zero, false
+	}
+	branchCond := loadTerm.Args[0].Def
+	branchLoad := branchCond
+	if branchCond.Op == OpGuardTruthy && len(branchCond.Args) > 0 && branchCond.Args[0] != nil {
+		branchLoad = branchCond.Args[0].Def
+	}
+	if branchLoad == nil || branchLoad.Op != OpTableArrayLoad {
 		return zero, false
 	}
 	incBlock := loadBlock.Succs[0]
@@ -108,7 +116,7 @@ func detectBoolTableCountLoop(fn *Function, header *Block) (boolCountLoopCandida
 	start := (&Instr{Op: OpConstInt, Type: TypeInt, Aux: init.Def.Aux + 1}).Value()
 
 	load, table, ok := boolCountLoopLoad(loadBlock, key)
-	if !ok || loadTerm.Args[0].Def.Args[0] == nil || loadTerm.Args[0].Def.Args[0].ID != load.ID {
+	if !ok || branchLoad.ID != load.ID {
 		return zero, false
 	}
 	incAdd := singleBoolCountIncrement(incBlock)

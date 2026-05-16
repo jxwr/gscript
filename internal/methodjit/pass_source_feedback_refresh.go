@@ -42,6 +42,15 @@ func SourceFeedbackRefreshPass(fn *Function) (*Function, error) {
 }
 
 func sourceFeedbackRefreshGetField(fn *Function, block *Block, instr *Instr) {
+	if len(fn.FieldPolyShapeFacts[instr.ID]) > 0 {
+		if typ, ok := sourceFeedbackFieldValueType(instr.SourceProto, instr.SourcePC); ok &&
+			(instr.Type == TypeAny || instr.Type == TypeUnknown) {
+			instr.Type = typ
+			functionRemarks(fn).Add("SourceFeedbackRefresh", "changed", block.ID, instr.ID, instr.Op,
+				"restored source field type "+typ.String())
+		}
+		return
+	}
 	if aux2 := sourceFeedbackFieldShapeAux2(instr.SourceProto, instr.SourcePC); aux2 != 0 && instr.Aux2 == 0 {
 		instr.Aux2 = aux2
 		functionRemarks(fn).Add("SourceFeedbackRefresh", "changed", block.ID, instr.ID, instr.Op,

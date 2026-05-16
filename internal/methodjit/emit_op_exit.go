@@ -73,6 +73,13 @@ func (ec *emitContext) emitOpExit(instr *Instr) {
 	// handler can read correct values from the register file.
 	ec.recordExitResumeCheckSite(instr, ExitOpExit, []int{resultSlot}, exitResumeCheckOptions{})
 	ec.emitStoreAllActiveRegs()
+	if instr.Op == OpSetGlobal && len(instr.Args) > 0 {
+		if argSlot, ok := ec.slotMap[instr.Args[0].ID]; ok {
+			reg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+			ec.asm.STR(reg, mRegRegs, slotOffset(argSlot))
+			ec.emitExitResumeCheckShadowStoreGPR(argSlot, reg)
+		}
+	}
 
 	// Write op descriptor to ExecContext.
 	asm.LoadImm64(jit.X0, int64(instr.Op))

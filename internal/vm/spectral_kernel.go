@@ -37,12 +37,15 @@ func (vm *VM) tryRunSpectralWholeCallKernel(cl *Closure, args []runtime.Value) (
 }
 
 func (vm *VM) runSpectralWholeCallKernel(cl *Closure, args []runtime.Value) (bool, error) {
-	if cl == nil || cl.Proto == nil || len(args) != 3 || !vm.noGlobalLock {
+	if cl == nil || cl.Proto == nil || !vm.noGlobalLock {
 		return false, nil
 	}
 	proto := cl.Proto
 	switch classifySpectralMultiplyProto(proto) {
 	case spectralAv:
+		if len(args) != 3 {
+			return false, nil
+		}
 		if !vm.guardSpectralMultiplyCallee(proto) {
 			return false, nil
 		}
@@ -51,6 +54,9 @@ func (vm *VM) runSpectralWholeCallKernel(cl *Closure, args []runtime.Value) (boo
 		}
 		return true, nil
 	case spectralAtv:
+		if len(args) != 3 {
+			return false, nil
+		}
 		if !vm.guardSpectralMultiplyCallee(proto) {
 			return false, nil
 		}
@@ -59,6 +65,15 @@ func (vm *VM) runSpectralWholeCallKernel(cl *Closure, args []runtime.Value) (boo
 		}
 		return true, nil
 	default:
+		if len(args) == 4 && isDenseSpectralAtAvProto(proto) && vm.guardDenseSpectralAtAvCallees(proto) {
+			if !vm.runDenseSpectralAtAv(args) {
+				return false, nil
+			}
+			return true, nil
+		}
+		if len(args) != 3 {
+			return false, nil
+		}
 		if !isSpectralAtAvProto(proto) || !vm.guardSpectralAtAvCallees(proto) {
 			return false, nil
 		}
@@ -87,6 +102,22 @@ func (vm *VM) runSpectralAtAv(args []runtime.Value) bool {
 	} else {
 		spectralAtvInto(n, tmp, atav)
 	}
+	return true
+}
+
+func (vm *VM) runDenseSpectralAtAv(args []runtime.Value) bool {
+	n, v, tmp, atav, ok := denseSpectralAtAvKernelArgs(args)
+	if !ok {
+		return false
+	}
+	a, at, cached := vm.spectralKernel.coefficients(n)
+	if cached {
+		spectralMatrixVector(a, n, v, tmp)
+		spectralMatrixVector(at, n, tmp, atav)
+		return true
+	}
+	spectralAvInto(n, v, tmp)
+	spectralAtvInto(n, tmp, atav)
 	return true
 }
 
@@ -288,6 +319,31 @@ func spectralKernelArgs(args []runtime.Value) (int, []float64, []float64, bool) 
 	return n, v, out, true
 }
 
+func denseSpectralAtAvKernelArgs(args []runtime.Value) (int, []float64, []float64, []float64, bool) {
+	if len(args) != 4 || !args[0].IsNumber() || !args[1].IsTable() || !args[2].IsTable() || !args[3].IsTable() {
+		return 0, nil, nil, nil, false
+	}
+	nn := args[0].Number()
+	n64 := int64(nn)
+	if float64(n64) != nn || n64 < 0 || int64(int(n64)) != n64 {
+		return 0, nil, nil, nil, false
+	}
+	n := int(n64)
+	v, stride, ok := args[1].Table().DenseFloatMatrixForNumericKernel(n, 1)
+	if !ok || stride != 1 {
+		return 0, nil, nil, nil, false
+	}
+	tmp, stride, ok := args[2].Table().DenseFloatMatrixForNumericKernel(n, 1)
+	if !ok || stride != 1 {
+		return 0, nil, nil, nil, false
+	}
+	atav, stride, ok := args[3].Table().DenseFloatMatrixForNumericKernel(n, 1)
+	if !ok || stride != 1 {
+		return 0, nil, nil, nil, false
+	}
+	return n, v, tmp, atav, true
+}
+
 func spectralA(i, j int) float64 {
 	ij := i + j
 	return 1.0 / (float64(ij*(ij+1)/2 + i + 1))
@@ -328,6 +384,29 @@ func (vm *VM) guardSpectralAtAvCallees(proto *FuncProto) bool {
 	return true
 }
 
+func (vm *VM) guardDenseSpectralAtAvCallees(proto *FuncProto) bool {
+	if len(proto.Constants) < 5 || !proto.Constants[3].IsString() || !proto.Constants[4].IsString() {
+		return false
+	}
+	avVal, ok := vm.globalValue(proto.Constants[3].Str())
+	if !ok {
+		return false
+	}
+	atvVal, ok := vm.globalValue(proto.Constants[4].Str())
+	if !ok {
+		return false
+	}
+	av, ok := closureFromValue(avVal)
+	if !ok || classifyDenseSpectralMultiplyProto(av.Proto) != spectralAv || !vm.guardSpectralMultiplyCallee(av.Proto) {
+		return false
+	}
+	atv, ok := closureFromValue(atvVal)
+	if !ok || classifyDenseSpectralMultiplyProto(atv.Proto) != spectralAtv || !vm.guardSpectralMultiplyCallee(atv.Proto) {
+		return false
+	}
+	return true
+}
+
 func (vm *VM) globalValue(name string) (runtime.Value, bool) {
 	if vm.globalOverrides != nil {
 		if v, ok := vm.globalOverrides[name]; ok {
@@ -336,6 +415,66 @@ func (vm *VM) globalValue(name string) (runtime.Value, bool) {
 	}
 	v, ok := vm.globals[name]
 	return v, ok
+}
+
+func classifyDenseSpectralMultiplyProto(p *FuncProto) spectralMultiplyKind {
+	if p == nil || p.NumParams != 3 || p.IsVarArg || len(p.Constants) != 5 ||
+		len(p.Code) != 36 || !numberConst(p.Constants[0], 0.0) ||
+		!valueStringConst(p.Constants[1], "A") ||
+		!valueStringConst(p.Constants[2], "matrix") ||
+		!valueStringConst(p.Constants[3], "getf") ||
+		!valueStringConst(p.Constants[4], "setf") {
+		return spectralNotMultiply
+	}
+	prefix := []uint32{
+		EncodeAsBx(OP_LOADINT, 3, 0),
+		EncodeABC(OP_MOVE, 7, 0, 0),
+		EncodeAsBx(OP_LOADINT, 8, 1),
+		EncodeABC(OP_SUB, 4, 7, 8),
+		EncodeAsBx(OP_LOADINT, 5, 1),
+		EncodeAsBx(OP_FORPREP, 3, 28),
+		EncodeABx(OP_LOADK, 7, 0),
+		EncodeAsBx(OP_LOADINT, 8, 0),
+		EncodeABC(OP_MOVE, 12, 0, 0),
+		EncodeAsBx(OP_LOADINT, 13, 1),
+		EncodeABC(OP_SUB, 9, 12, 13),
+		EncodeAsBx(OP_LOADINT, 10, 1),
+		EncodeAsBx(OP_FORPREP, 8, 13),
+		EncodeABx(OP_GETGLOBAL, 14, 1),
+	}
+	suffix := []uint32{
+		EncodeABC(OP_CALL, 14, 3, 2),
+		EncodeABx(OP_GETGLOBAL, 16, 2),
+		EncodeABC(OP_GETFIELD, 15, 16, 3),
+		EncodeABC(OP_MOVE, 16, 1, 0),
+		EncodeABC(OP_MOVE, 17, 11, 0),
+		EncodeAsBx(OP_LOADINT, 18, 0),
+		EncodeABC(OP_CALL, 15, 4, 2),
+		EncodeABC(OP_MUL, 13, 14, 15),
+		EncodeABC(OP_ADD, 12, 7, 13),
+		EncodeABC(OP_MOVE, 7, 12, 0),
+		EncodeAsBx(OP_FORLOOP, 8, -14),
+		EncodeABx(OP_GETGLOBAL, 12, 2),
+		EncodeABC(OP_GETFIELD, 11, 12, 4),
+		EncodeABC(OP_MOVE, 12, 2, 0),
+		EncodeABC(OP_MOVE, 13, 6, 0),
+		EncodeAsBx(OP_LOADINT, 14, 0),
+		EncodeABC(OP_MOVE, 15, 7, 0),
+		EncodeABC(OP_CALL, 11, 5, 1),
+		EncodeAsBx(OP_FORLOOP, 3, -29),
+		EncodeABC(OP_RETURN, 0, 1, 0),
+	}
+	av := append(append([]uint32{}, prefix...), EncodeABC(OP_MOVE, 15, 6, 0), EncodeABC(OP_MOVE, 16, 11, 0))
+	av = append(av, suffix...)
+	if codeEquals(p.Code, av) {
+		return spectralAv
+	}
+	atv := append(append([]uint32{}, prefix...), EncodeABC(OP_MOVE, 15, 11, 0), EncodeABC(OP_MOVE, 16, 6, 0))
+	atv = append(atv, suffix...)
+	if codeEquals(p.Code, atv) {
+		return spectralAtv
+	}
+	return spectralNotMultiply
 }
 
 func isSpectralAProto(p *FuncProto) bool {
@@ -357,6 +496,48 @@ func isSpectralAProto(p *FuncProto) bool {
 		EncodeABC(OP_DIV, 2, 3, 4),
 		EncodeABC(OP_RETURN, 2, 2, 0),
 	})
+}
+
+func isDenseSpectralAtAvProto(p *FuncProto) bool {
+	if p == nil || p.NumParams != 4 || p.IsVarArg || len(p.Constants) != 5 ||
+		!valueStringConst(p.Constants[0], "matrix") ||
+		!valueStringConst(p.Constants[1], "setf") ||
+		!numberConst(p.Constants[2], 0.0) ||
+		!valueStringConst(p.Constants[3], "multiplyAv") ||
+		!valueStringConst(p.Constants[4], "multiplyAtv") {
+		return false
+	}
+	return codeEquals(p.Code, []uint32{
+		EncodeAsBx(OP_LOADINT, 4, 0),
+		EncodeABC(OP_MOVE, 8, 0, 0),
+		EncodeAsBx(OP_LOADINT, 9, 1),
+		EncodeABC(OP_SUB, 5, 8, 9),
+		EncodeAsBx(OP_LOADINT, 6, 1),
+		EncodeAsBx(OP_FORPREP, 4, 7),
+		EncodeABx(OP_GETGLOBAL, 9, 0),
+		EncodeABC(OP_GETFIELD, 8, 9, 1),
+		EncodeABC(OP_MOVE, 9, 2, 0),
+		EncodeABC(OP_MOVE, 10, 7, 0),
+		EncodeAsBx(OP_LOADINT, 11, 0),
+		EncodeABx(OP_LOADK, 12, 2),
+		EncodeABC(OP_CALL, 8, 5, 1),
+		EncodeAsBx(OP_FORLOOP, 4, -8),
+		EncodeABx(OP_GETGLOBAL, 7, 3),
+		EncodeABC(OP_MOVE, 8, 0, 0),
+		EncodeABC(OP_MOVE, 9, 1, 0),
+		EncodeABC(OP_MOVE, 10, 2, 0),
+		EncodeABC(OP_CALL, 7, 4, 1),
+		EncodeABx(OP_GETGLOBAL, 7, 4),
+		EncodeABC(OP_MOVE, 8, 0, 0),
+		EncodeABC(OP_MOVE, 9, 2, 0),
+		EncodeABC(OP_MOVE, 10, 3, 0),
+		EncodeABC(OP_CALL, 7, 4, 1),
+		EncodeABC(OP_RETURN, 0, 1, 0),
+	})
+}
+
+func valueStringConst(v runtime.Value, want string) bool {
+	return v.IsString() && v.Str() == want
 }
 
 func classifySpectralMultiplyProto(p *FuncProto) spectralMultiplyKind {

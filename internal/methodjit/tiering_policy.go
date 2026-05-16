@@ -99,19 +99,27 @@ func (p PromotionPolicy) Decide(proto *vm.FuncProto, profile FuncProfile, state 
 	if tm.shouldSuppressRecursivePartitionTableMutationTier2(proto, profile) {
 		return tier0PolicyDecision("Tier0RecursivePartitionTableMutation", "stay_tier0_recursive_partition_table_mutation", "recursive_partition_table_mutation")
 	}
-	if proto.CallCount < BaselineCompileThreshold {
-		return PromotionDecision{
-			Action: TieringActionStayInterpreted,
-			Reason: PromotionReasonBelowTier1Threshold,
-			Gate:   blockGate("Tier1Threshold", "below baseline compile threshold"),
-		}
-	}
 	if d, ok := tm.structuralKernelTieringDecision(proto); ok {
 		return PromotionDecision{
 			Action: TieringActionStructuralKernel,
 			Reason: PromotionReasonStructuralKernel,
 			Gate:   blockGate("StructuralKernel", d.reason),
 			Kernel: d,
+		}
+	}
+	if !state.Tier2Failed && tm.shouldPromoteNativeLoopDriver(proto, profile) {
+		return PromotionDecision{
+			Action:       TieringActionPromoteTier2,
+			Reason:       PromotionReasonNativeLoopDriver,
+			Gate:         forceGate("NativeLoopDriver", "native loop driver should enter Tier 2"),
+			PromoteTier2: true,
+		}
+	}
+	if proto.CallCount < BaselineCompileThreshold {
+		return PromotionDecision{
+			Action: TieringActionStayInterpreted,
+			Reason: PromotionReasonBelowTier1Threshold,
+			Gate:   blockGate("Tier1Threshold", "below baseline compile threshold"),
 		}
 	}
 	if !state.Tier2Failed && qualifiesForFixedRecursiveTableBuilder(proto) {
@@ -171,11 +179,6 @@ func (p PromotionPolicy) Decide(proto *vm.FuncProto, profile FuncProfile, state 
 		promoteTier2 = false
 		reason = PromotionReasonRecursivePartition
 		gate = blockGate("RecursivePartitionTableMutation", "recursive partition table mutation")
-	}
-	if !promoteTier2 && !suppressedRecursivePartition && tm.shouldPromoteNativeLoopDriver(proto, profile) {
-		promoteTier2 = true
-		reason = PromotionReasonNativeLoopDriver
-		gate = forceGate("NativeLoopDriver", "native loop driver should enter Tier 2")
 	}
 	if !promoteTier2 {
 		return PromotionDecision{

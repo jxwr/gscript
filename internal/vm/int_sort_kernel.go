@@ -114,18 +114,25 @@ func radixSortNonNegative32(values []int64) bool {
 }
 
 func radixSortNonNegative32WithScratch(values []int64, scratch func(int) []int64) bool {
-	for _, v := range values {
-		if v < 0 || v > int64(^uint32(0)) {
-			return false
-		}
-	}
 	tmp := makeIntScratch(len(values), scratch)
 	src := values
 	dst := tmp
-	for shift := uint(0); shift < 32; shift += 8 {
-		var count [256]int
-		for _, v := range src {
-			count[byte(uint64(v)>>shift)]++
+	const bits = 11
+	const radix = 1 << bits
+	const mask = radix - 1
+	for shift := uint(0); shift < 32; shift += bits {
+		var count [radix]int
+		if shift == 0 {
+			for _, v := range src {
+				if v < 0 || v > int64(^uint32(0)) {
+					return false
+				}
+				count[uint64(v)&mask]++
+			}
+		} else {
+			for _, v := range src {
+				count[(uint64(v)>>shift)&mask]++
+			}
 		}
 		sum := 0
 		for i, n := range count {
@@ -133,7 +140,7 @@ func radixSortNonNegative32WithScratch(values []int64, scratch func(int) []int64
 			sum += n
 		}
 		for _, v := range src {
-			b := byte(uint64(v) >> shift)
+			b := (uint64(v) >> shift) & mask
 			dst[count[b]] = v
 			count[b]++
 		}

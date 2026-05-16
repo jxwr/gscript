@@ -611,6 +611,9 @@ func hoistOneLoop(fn *Function, li *loopInfo, hdr *Block) {
 		kept := b.Instrs[:0]
 		for _, instr := range b.Instrs {
 			if hoistSet[instr.ID] && instr.Op != OpPhi && !instr.Op.IsTerminator() {
+				if instr.Op == OpTableArrayHeader {
+					instr.Aux2 |= tableArrayHeaderFlagHoisted
+				}
 				instr.Block = ph
 				ph.Instrs = append(ph.Instrs, instr)
 			} else {

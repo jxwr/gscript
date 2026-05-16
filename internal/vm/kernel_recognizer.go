@@ -59,6 +59,8 @@ const (
 	wholeCallKernelSpectralMultiplyAv
 	wholeCallKernelSpectralMultiplyAtv
 	wholeCallKernelSpectralAtAv
+	wholeCallKernelDenseMatmulTransposed
+	wholeCallKernelDenseSpectralAtAv
 	wholeCallKernelNBodyAdvance
 	wholeCallKernelCount
 )
@@ -181,6 +183,26 @@ var wholeCallKernelRegistry = [wholeCallKernelCount]wholeCallKernelRecognizer{
 			Results: kernelWholeCallInPlaceResultCount,
 		},
 		recognize:   isSpectralAtAvProto,
+		runNoResult: (*VM).runSpectralWholeCallKernel,
+	},
+	{
+		info: KernelInfo{
+			Name:    "dense_matmul_transposed",
+			Route:   KernelRouteWholeCallNoResult,
+			Arity:   4,
+			Results: kernelWholeCallInPlaceResultCount,
+		},
+		recognize:   isDenseMatmulTransposedProto,
+		runNoResult: (*VM).runDenseMatmulTransposedWholeCallKernel,
+	},
+	{
+		info: KernelInfo{
+			Name:    "spectral_dense_atav",
+			Route:   KernelRouteWholeCallNoResult,
+			Arity:   4,
+			Results: kernelWholeCallInPlaceResultCount,
+		},
+		recognize:   isDenseSpectralAtAvProto,
 		runNoResult: (*VM).runSpectralWholeCallKernel,
 	},
 	{

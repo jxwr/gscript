@@ -88,7 +88,7 @@ func tier2InstrHasNativeVisibleSideEffect(instr *Instr) bool {
 		return false
 	}
 	switch instr.Op {
-	case OpSetTable, OpTableArrayStore, OpTableArraySwap, OpTableArraySwapPairs, OpTableBoolArrayFill, OpTableIntArrayReversePrefix, OpTableIntArrayCopyPrefix, OpSetField, OpSetList, OpAppend:
+	case OpSetTable, OpTableArrayStore, OpTableArraySwap, OpTableArraySwapPairs, OpTableBoolArrayFill, OpTableIntArrayReversePrefix, OpTableIntArrayCopyPrefix, OpSetField, OpFieldStore, OpSetList, OpAppend:
 		if len(instr.Args) == 0 {
 			return true
 		}
@@ -138,11 +138,11 @@ func tier2OpMayExitForNativeReplay(instr *Instr) bool {
 		OpNewTable, OpNewFixedTable,
 		OpGetTable, OpSetTable,
 		OpTableArrayHeader, OpTableArrayLen, OpTableArrayData, OpTableArrayLoad, OpTableArrayStore, OpTableArraySwap, OpTableArraySwapPairs, OpTableBoolArrayFill, OpTableBoolArrayCount, OpTableIntArrayReversePrefix, OpTableIntArrayCopyPrefix, OpTableArrayNestedLoad,
-		OpGetField, OpGetFieldNumToFloat, OpFieldPolyLen, OpSetField,
+		OpGetField, OpGetFieldNumToFloat, OpFieldPolyLen, OpSetField, OpFieldStore,
 		OpSetList, OpAppend,
 		OpGetGlobal, OpSetGlobal,
 		OpGetUpval, OpSetUpval,
-		OpConstString, OpConcat, OpStringConstLookup, OpStringFormatInt, OpStringFormatConst, OpGetTableStringFormatInt, OpStringSplitPart, OpStringSplitSubstr, OpStringSplitSubstrNumber, OpLen, OpPow, OpFloor,
+		OpConstString, OpConcat, OpStringConstLookup, OpStringFormatInt, OpStringFormatConst, OpStringFormatConstLen, OpGetTableStringFormatInt, OpStringSplitPart, OpStringSplitSubstr, OpStringSplitSubstrNumber, OpLen, OpPow, OpFloor,
 		OpClosure, OpClose, OpVararg,
 		OpTForCall, OpTForLoop,
 		OpGo, OpMakeChan, OpSend, OpRecv,

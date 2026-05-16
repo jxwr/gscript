@@ -14,6 +14,8 @@ import (
 )
 
 const (
+	tableArrayHeaderFlagHoisted int64 = 1 << 8
+
 	// tableArrayStoreFlagAllowGrow lets OpTableArrayStore use the same
 	// capacity-only append/sparse typed-array path as OpSetTable. Misses still
 	// precise-deopt unless tableArrayStoreFlagExitResumeOnMiss is also set.
@@ -315,6 +317,9 @@ func (ec *emitContext) emitTableArrayHeader(instr *Instr) {
 	if tblReg != jit.X0 {
 		asm.MOVreg(jit.X0, tblReg)
 	}
+	deoptActiveRegs := cloneBoolMap(ec.activeRegs)
+	deoptActiveFPRegs := cloneBoolMap(ec.activeFPRegs)
+	deoptReprs := ec.snapshotValueReprs()
 	if ec.tableVerified[tblID] {
 		jit.EmitExtractPtr(asm, jit.X0, jit.X0)
 	} else if ec.isLocalNewTableWithoutMetatable(instr.Args[0]) {
@@ -346,10 +351,23 @@ func (ec *emitContext) emitTableArrayHeader(instr *Instr) {
 	}
 	ec.kindVerified[tblID] = uint16(instr.Aux)
 	ec.storeRawTablePtr(jit.X0, instr.ID)
+	successActiveRegs := cloneBoolMap(ec.activeRegs)
+	successActiveFPRegs := cloneBoolMap(ec.activeFPRegs)
+	successReprs := ec.snapshotValueReprs()
 	asm.B(doneLabel)
 
 	asm.Label(deoptLabel)
-	ec.emitPreciseDeopt(instr)
+	ec.activeRegs = deoptActiveRegs
+	ec.activeFPRegs = deoptActiveFPRegs
+	ec.restoreValueReprSnapshot(deoptReprs)
+	if instr.Aux2&tableArrayHeaderFlagHoisted != 0 {
+		ec.emitDeopt(instr)
+	} else {
+		ec.emitPreciseDeopt(instr)
+	}
+	ec.activeRegs = successActiveRegs
+	ec.activeFPRegs = successActiveFPRegs
+	ec.restoreValueReprSnapshot(successReprs)
 	asm.Label(doneLabel)
 }
 
@@ -452,14 +470,22 @@ func (ec *emitContext) emitTableArrayLoad(instr *Instr) {
 			jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, deoptLabel)
 			jit.EmitExtractPtr(asm, jit.X0, jit.X0)
 			ec.storeRawTablePtr(jit.X0, instr.ID)
+		case TypeString:
+			jit.EmitCheckIsString(asm, jit.X0, jit.X2, jit.X3, deoptLabel)
+			ec.storeResultNB(jit.X0, instr.ID)
 		default:
 			ec.storeResultNB(jit.X0, instr.ID)
 		}
 	case int64(vm.FBKindInt):
-		asm.LDRreg(jit.X0, dataReg, jit.X1)
 		if instr.Type == TypeInt {
-			ec.storeRawInt(jit.X0, instr.ID)
+			dst := jit.X0
+			if pr, ok := ec.alloc.ValueRegs[instr.ID]; ok && !pr.IsFloat {
+				dst = jit.Reg(pr.Reg)
+			}
+			asm.LDRreg(dst, dataReg, jit.X1)
+			ec.storeRawInt(dst, instr.ID)
 		} else {
+			asm.LDRreg(jit.X0, dataReg, jit.X1)
 			jit.EmitBoxIntFast(asm, jit.X0, jit.X0, mRegTagInt)
 			ec.storeResultNB(jit.X0, instr.ID)
 		}
@@ -545,6 +571,10 @@ func (ec *emitContext) emitTableArrayStore(instr *Instr) {
 
 	dataReg := ec.resolveRawDataPtr(instr.Args[1].ID, jit.X2)
 	lenReg := ec.resolveRawInt(instr.Args[2].ID, jit.X3)
+	// The key helper materializes the key in X1. If the store value currently
+	// lives in X1, preserve it before clobbering the register; the raw-store
+	// helper may need to resolve the value after key materialization.
+	ec.spillActiveGPRIfPhysReg(instr.Args[4].ID, jit.X1)
 	if !ec.emitTableArrayKeyToReg(instr.Args[3], missLabel) {
 		ec.emitDeopt(instr)
 		return
@@ -591,6 +621,19 @@ func (ec *emitContext) emitTableArrayStore(instr *Instr) {
 		ec.emitPreciseDeopt(instr)
 	}
 	asm.Label(doneLabel)
+}
+
+func (ec *emitContext) spillActiveGPRIfPhysReg(valueID int, reg jit.Reg) {
+	if !ec.hasReg(valueID) || ec.physReg(valueID) != reg {
+		return
+	}
+	slot, ok := ec.slotMap[valueID]
+	if !ok {
+		return
+	}
+	ec.emitStoreGPRValueAsBoxed(valueID, reg, slot)
+	delete(ec.activeRegs, valueID)
+	ec.clearValueRepr(valueID)
 }
 
 func (ec *emitContext) refreshTableArrayStoreFactsAfterExit(instr *Instr) {
@@ -711,11 +754,9 @@ func (ec *emitContext) emitTableArraySwapPairs(instr *Instr) {
 	asm.Label(loopLabel)
 	asm.CMPreg(jit.X1, jit.X4)
 	asm.BCond(jit.CondGT, successMutLabel)
-	asm.ADDimm(jit.X5, jit.X1, 1)
-	asm.LDRreg(jit.X7, jit.X6, jit.X1)
-	asm.LDRreg(jit.X8, jit.X6, jit.X5)
-	asm.STRreg(jit.X8, jit.X6, jit.X1)
-	asm.STRreg(jit.X7, jit.X6, jit.X5)
+	asm.ADDregLSL(jit.X5, jit.X6, jit.X1, 3)
+	asm.LDP(jit.X7, jit.X8, jit.X5, 0)
+	asm.STP(jit.X8, jit.X7, jit.X5, 0)
 	asm.ADDimm(jit.X1, jit.X1, 2)
 	asm.B(loopLabel)
 
@@ -942,6 +983,8 @@ func (ec *emitContext) emitCheckTableArrayLoadExitResult(instr *Instr, deoptLabe
 			asm.BCond(jit.CondEQ, deoptLabel)
 		case TypeTable:
 			jit.EmitCheckIsTableFull(asm, jit.X0, jit.X2, jit.X3, deoptLabel)
+		case TypeString:
+			jit.EmitCheckIsString(asm, jit.X0, jit.X2, jit.X3, deoptLabel)
 		}
 	case int64(vm.FBKindInt):
 		if instr.Type == TypeInt {

@@ -93,9 +93,9 @@ func TestObjectCreationDump(t *testing.T) {
 	// constructor new_vec3 grows by +5 total / +1 mem; inlined object loops
 	// do not grow because they are compiled through non-leaf caller bodies.
 	baselines := []baseline{
-		{"create_and_sum", 165, 66},  // R161: was 1277/598
-		{"transform_chain", 178, 67}, // R161: was 1701/816
-		{"new_vec3", 157, 81},        // escaping fixed N-field constructor
+		{"create_and_sum", 215, 95},  // hash-only mixed table cache disabled for correctness
+		{"transform_chain", 231, 97}, // hash-only mixed table cache disabled for correctness
+		{"new_vec3", 214, 99},        // escaping fixed N-field constructor
 	}
 
 	// Load benchmark source.

@@ -114,13 +114,12 @@ func (a *Assembler) LoadImm64(rd Reg, val int64) {
 	first := true
 	for hw := uint8(0); hw < 4; hw++ {
 		chunk := uint16((uval >> (hw * 16)) & 0xFFFF)
-		if chunk == 0 && first {
-			continue // skip zero chunks before the first non-zero
+		if chunk == 0 {
+			continue // MOVZ clears all other chunks; zero MOVKs are redundant.
 		}
 		if first {
 			// MOVZ with hw
 			a.emit(0xD2800000 | uint32(hw)<<21 | uint32(chunk)<<5 | uint32(rd))
-			first = true
 			first = false
 		} else {
 			a.MOVKimm16(rd, chunk, hw)

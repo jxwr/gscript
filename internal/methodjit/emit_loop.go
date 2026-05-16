@@ -478,7 +478,7 @@ func computeSafeLoopInvariantGPRs(fn *Function, li *loopInfo, alloc *RegAllocati
 			}
 			clobbered := false
 			for _, block := range fn.Blocks {
-				if !bodyBlocks[block.ID] {
+				if !loopInvariantRegisterScopeContains(li, headerID, block.ID) {
 					continue
 				}
 				for _, instr := range block.Instrs {
@@ -516,6 +516,24 @@ func computeSafeLoopInvariantGPRs(fn *Function, li *loopInfo, alloc *RegAllocati
 		return nil
 	}
 	return safe
+}
+
+func loopInvariantRegisterScopeContains(li *loopInfo, headerID, blockID int) bool {
+	if li == nil {
+		return false
+	}
+	if body := li.headerBlocks[headerID]; body != nil && body[blockID] {
+		return true
+	}
+	for outerHeader, body := range li.headerBlocks {
+		if outerHeader == headerID || body == nil || !body[headerID] {
+			continue
+		}
+		if body[blockID] {
+			return true
+		}
+	}
+	return false
 }
 
 func computeSafeLoopInvariantFPRs(fn *Function, li *loopInfo, alloc *RegAllocation) map[int]map[int]loopFPRegEntry {

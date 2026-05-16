@@ -136,8 +136,8 @@ result := sum
 	if _, err := v.Execute(proto); err != nil {
 		t.Fatalf("JIT execute error: %v", err)
 	}
-	if !containsString(tm.Tier2Entered(), "<main>") {
-		t.Fatalf("expected <main> to enter Tier2, entered=%v failed=%v", tm.Tier2Entered(), tm.Tier2Failed())
+	if containsString(tm.Tier2Entered(), "<main>") {
+		t.Fatalf("<main> should stay out of Tier2 until generic exits are restart-safe, entered=%v failed=%v", tm.Tier2Entered(), tm.Tier2Failed())
 	}
 	if got := v.GetGlobal("result"); !got.IsInt() || got.Int() != 501500 {
 		t.Fatalf("result=%v, want 501500", got)
@@ -313,13 +313,27 @@ for i := 1; i <= 200; i++ {
 	defer v.Close()
 	tm := NewTieringManager()
 	v.SetMethodJIT(tm)
+	if _, err := v.Execute(proto); err != nil {
+		t.Fatalf("initial execute error: %v", err)
+	}
 	for _, name := range []string{"F", "M"} {
 		if err := tm.CompileTier2(findProtoByName(proto, name)); err != nil {
 			t.Fatalf("CompileTier2(%s): %v", name, err)
 		}
 	}
-	if _, err := v.Execute(proto); err != nil {
-		t.Fatalf("JIT execute error: %v", err)
+	results, err := v.CallValue(v.GetGlobal("F"), []runtime.Value{runtime.IntValue(8)})
+	if err != nil {
+		t.Fatalf("JIT CallValue(F): %v", err)
+	}
+	if len(results) == 0 || !results[0].IsInt() || results[0].Int() != 9 {
+		t.Fatalf("F(8)=%v, want int 9", results)
+	}
+	results, err = v.CallValue(v.GetGlobal("M"), []runtime.Value{runtime.IntValue(8)})
+	if err != nil {
+		t.Fatalf("JIT CallValue(M): %v", err)
+	}
+	if len(results) == 0 || !results[0].IsInt() || results[0].Int() != 8 {
+		t.Fatalf("M(8)=%v, want int 8", results)
 	}
 	if !containsString(tm.Tier2Entered(), "F") || !containsString(tm.Tier2Entered(), "M") {
 		t.Fatalf("expected F and M to enter Tier2, entered=%v failed=%v", tm.Tier2Entered(), tm.Tier2Failed())
@@ -868,17 +882,17 @@ func inc(x) {
 		t.Fatalf("inc(1.5)=%v, want 2.5", results)
 	}
 
-	if !tm.tier2Failed[inc] {
-		t.Fatal("inc should be marked Tier2-failed after runtime guard deopt")
-	}
 	if _, ok := tm.tier2Compiled[inc]; ok {
 		t.Fatal("inc Tier2 code should be invalidated after runtime deopt")
 	}
 	if inc.Tier2Promoted {
 		t.Fatal("inc Tier2Promoted should be cleared after runtime deopt")
 	}
-	if reason := tm.tier2FailReason[inc]; reason == "" {
-		t.Fatal("inc runtime deopt should record a Tier2 fail reason")
+	if tm.tier2Failed[inc] {
+		t.Fatal("refreshable runtime guard deopt should not permanently mark inc Tier2-failed")
+	}
+	if _, ok := tm.recompileQueue.take(inc); !ok {
+		t.Fatal("refreshable runtime guard deopt should queue inc for recompilation")
 	}
 }
 

@@ -26,7 +26,7 @@ local function sieve(n)
 end
 
 local N = 1000000
-local REPS = 3
+local REPS = 20
 
 local t0 = os.clock()
 local result = 0

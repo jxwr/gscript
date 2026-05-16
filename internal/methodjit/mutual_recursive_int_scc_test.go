@@ -124,8 +124,8 @@ for rep := 1; rep <= 1000; rep++ {
 		t.Fatal("F proto not found")
 	}
 	cf := tm.tier2Compiled[f]
-	if cf == nil || cf.MutualRecursiveIntSCC == nil {
-		t.Fatalf("F was not precompiled to mutual recursive int SCC from stable loop globals; cf=%#v", cf)
+	if cf != nil && cf.MutualRecursiveIntSCC != nil {
+		t.Fatalf("suppressed loop driver should not precompile mutual recursive int SCC; cf=%#v", cf)
 	}
 	for _, site := range tm.ExitStats().Sites {
 		if site.Proto == "F" && site.ExitCode == ExitCallExit {

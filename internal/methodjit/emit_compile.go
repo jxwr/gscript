@@ -24,6 +24,8 @@ var _ *vm.FuncProto
 // CompileOptions configures optional, diagnostic-only native code generation.
 type CompileOptions struct {
 	EnableTier2BlockCounters bool
+	TraceNativeCalls         bool
+	PrintNativeCallTrace     bool
 }
 
 // Compile takes a Function with register allocation and produces executable ARM64 code.
@@ -332,6 +334,8 @@ func CompileWithOptions(fn *Function, alloc *RegAllocation, opts CompileOptions)
 		rawIntSelfABI:              rawIntSelfABI,
 		typedSelfABI:               typedEntryABI,
 		entryShapeGuards:           fn.FixedShapeEntryGuards,
+		traceNativeCalls:           opts.TraceNativeCalls,
+		printNativeCallTrace:       opts.PrintNativeCallTrace,
 	}
 	if opts.EnableTier2BlockCounters {
 		ec.initTier2BlockCounters()
@@ -474,7 +478,7 @@ func CompileWithOptions(fn *Function, alloc *RegAllocation, opts CompileOptions)
 		NumericParamCount:        rawIntSelfABI.NumParams,
 		RawIntSelfABI:            rawIntSelfABI,
 		NumericEntryOffset:       numericEntryOff,
-		TypedSelfABI:             typedEntryABI,
+		TypedSelfABI:             typedSelfABI,
 		TypedPeerABI:             typedPeerABI,
 		TypedEntryOffset:         typedEntryOff,
 		TypedClobberEntryOffset:  typedClobberEntryOff,
@@ -487,6 +491,7 @@ func CompileWithOptions(fn *Function, alloc *RegAllocation, opts CompileOptions)
 		CallCachePCs:             ec.callCachePCs,
 		NewTableCaches:           ec.newTableCaches,
 		FixedTableArgSlots:       ec.fixedTableArgSlots,
+		FixedRecordNewTableSites: fn.FixedRecordNewTableSites,
 		StringConstTables:        fn.StringConstTables,
 		StringFormatPatterns:     fn.StringFormatPatterns,
 		StringSplitSubSpecs:      fn.StringSplitSubSpecs,
@@ -652,18 +657,7 @@ func (ec *emitContext) emitTier2CallCounter(instr *Instr, kind, outcome string) 
 }
 
 func collectNativeSetGlobals(fn *Function) map[int]bool {
-	out := make(map[int]bool)
-	if !fnSupportsNativeSetGlobalProtocol(fn) {
-		return out
-	}
-	for _, block := range fn.Blocks {
-		for _, instr := range block.Instrs {
-			if instr.Op == OpSetGlobal {
-				out[int(instr.Aux)] = true
-			}
-		}
-	}
-	return out
+	return make(map[int]bool)
 }
 
 func collectGlobalGuardConsts(fn *Function) []int {
@@ -976,6 +970,11 @@ type emitContext struct {
 
 	// currentBlockID is the ID of the block currently being emitted.
 	currentBlockID int
+
+	// traceNativeCalls enables compile-time native-call diagnostics in remarks.
+	// printNativeCallTrace additionally mirrors those diagnostics to stderr.
+	traceNativeCalls     bool
+	printNativeCallTrace bool
 
 	// constInts maps value ID -> int64 for ConstInt instructions.
 	// Used by emitRawIntBinOp to emit ADDimm/SUBimm for small constants.
@@ -1427,8 +1426,7 @@ func (ec *emitContext) emitBoxedEntryShapeGuards() {
 		jit.EmitExtractPtr(ec.asm, jit.X0, jit.X0)
 		ec.asm.CBZ(jit.X0, failLabel)
 		ec.asm.LDRW(jit.X16, jit.X0, jit.TableOffShapeID)
-		ec.asm.LoadImm64(jit.X17, int64(fact.ShapeID))
-		ec.asm.CMPreg(jit.X16, jit.X17)
+		emitCMPWConst(ec.asm, jit.X16, jit.X17, int64(fact.ShapeID))
 		ec.asm.BCond(jit.CondNE, failLabel)
 	}
 	ec.asm.B(doneLabel)

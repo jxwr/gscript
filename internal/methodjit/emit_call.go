@@ -268,9 +268,20 @@ func (ec *emitContext) emitGuardIntRange(instr *Instr) {
 	deoptLabel := ec.uniqueLabel("guard_int_range_deopt")
 	doneLabel := ec.uniqueLabel("guard_int_range_done")
 
-	src := ec.resolveRawInt(instr.Args[0].ID, jit.X0)
-	if src != jit.X0 {
-		asm.MOVreg(jit.X0, src)
+	argID := instr.Args[0].ID
+	if ec.hasReg(argID) && ec.valueReprOf(argID) == valueReprRawInt {
+		src := ec.physReg(argID)
+		if src != jit.X0 {
+			asm.MOVreg(jit.X0, src)
+		}
+	} else {
+		src := ec.resolveValueNB(argID, jit.X0)
+		if src != jit.X0 {
+			asm.MOVreg(jit.X0, src)
+		}
+		emitCheckIsInt(asm, jit.X0, jit.X2)
+		asm.BCond(jit.CondNE, deoptLabel)
+		jit.EmitUnboxInt(asm, jit.X0, jit.X0)
 	}
 	emitCmpInt64(asm, jit.X0, instr.Aux, jit.X2)
 	asm.BCond(jit.CondLT, deoptLabel)
@@ -680,7 +691,7 @@ func lenArgKnownRawString(v *Value) bool {
 		return true
 	}
 	switch v.Def.Op {
-	case OpConstString, OpStringConstLookup, OpStringFormatInt, OpStringFormatConst, OpStringSplitPart, OpStringSplitSubstr, OpGuardConstString, OpGuardCalleeProto:
+	case OpConstString, OpStringConstLookup, OpStringFormatInt, OpStringFormatConst, OpStringFormatConstLen, OpStringSplitPart, OpStringSplitSubstr, OpGuardConstString, OpGuardCalleeProto:
 		return true
 	default:
 		return false
@@ -1509,6 +1520,47 @@ func (ec *emitContext) emitStringEqCmp(instr *Instr) {
 
 	asm.Label(doneLabel)
 	ec.storeResultNB(jit.X0, instr.ID)
+}
+
+func (ec *emitContext) emitTypedStringCmp(instr *Instr, cond jit.Cond) bool {
+	if instr == nil || len(instr.Args) < 2 {
+		return false
+	}
+	if valueStaticType(instr.Args[0]) != TypeString || valueStaticType(instr.Args[1]) != TypeString {
+		return false
+	}
+	asm := ec.asm
+	lhsReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	if lhsReg != jit.X0 {
+		asm.MOVreg(jit.X0, lhsReg)
+	}
+	rhsReg := ec.resolveValueNB(instr.Args[1].ID, jit.X1)
+	if rhsReg != jit.X1 {
+		asm.MOVreg(jit.X1, rhsReg)
+	}
+
+	trueLabel := ec.uniqueLabel("str_cmp_true")
+	falseLabel := ec.uniqueLabel("str_cmp_false")
+	doneLabel := ec.uniqueLabel("str_cmp_done")
+	ec.emitStringCmpFast(cond, trueLabel, falseLabel)
+
+	asm.Label(trueLabel)
+	asm.ADDimm(jit.X0, mRegTagBool, 1)
+	asm.B(doneLabel)
+
+	asm.Label(falseLabel)
+	asm.MOVreg(jit.X0, mRegTagBool)
+
+	asm.Label(doneLabel)
+	ec.storeResultNB(jit.X0, instr.ID)
+	return true
+}
+
+func valueStaticType(v *Value) Type {
+	if v == nil || v.Def == nil {
+		return TypeUnknown
+	}
+	return v.Def.Type
 }
 
 // emitNegFloat emits ARM64 code for OpNegFloat (-float).

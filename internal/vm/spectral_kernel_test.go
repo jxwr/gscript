@@ -75,6 +75,47 @@ func TestSpectralKernelRecognizesStructuralProtos(t *testing.T) {
 	}
 }
 
+func TestSpectralKernelRecognizesDenseStructuralProtos(t *testing.T) {
+	proto, vm := compileSpectralKernelTestProgram(t, `
+		func A(i, j) {
+			return 1.0 / ((i + j) * (i + j + 1) / 2 + i + 1)
+		}
+		func multiplyAv(n, v, av) {
+			for i := 0; i < n; i++ {
+				sum := 0.0
+				for j := 0; j < n; j++ {
+					sum = sum + A(i, j) * matrix.getf(v, j, 0)
+				}
+				matrix.setf(av, i, 0, sum)
+			}
+		}
+		func multiplyAtv(n, v, atv) {
+			for i := 0; i < n; i++ {
+				sum := 0.0
+				for j := 0; j < n; j++ {
+					sum = sum + A(j, i) * matrix.getf(v, j, 0)
+				}
+				matrix.setf(atv, i, 0, sum)
+			}
+		}
+		func multiplyAtAv(n, v, u, atav) {
+			for i := 0; i < n; i++ { matrix.setf(u, i, 0, 0.0) }
+			multiplyAv(n, v, u)
+			multiplyAtv(n, u, atav)
+		}
+	`)
+	defer vm.Close()
+	if got := classifyDenseSpectralMultiplyProto(proto.Protos[1]); got != spectralAv {
+		t.Fatalf("dense multiplyAv classified as %v", got)
+	}
+	if got := classifyDenseSpectralMultiplyProto(proto.Protos[2]); got != spectralAtv {
+		t.Fatalf("dense multiplyAtv classified as %v", got)
+	}
+	if !isDenseSpectralAtAvProto(proto.Protos[3]) {
+		t.Fatal("dense multiplyAtAv proto not recognized")
+	}
+}
+
 func TestSpectralKernelWholeAtAvCorrectness(t *testing.T) {
 	globals := compileAndRun(t, `
 		func A(i, j) {
@@ -116,6 +157,50 @@ func TestSpectralKernelWholeAtAvCorrectness(t *testing.T) {
 	got := globals["result"].Number()
 	if got < 4.37 || got > 4.38 {
 		t.Fatalf("result = %.12f, want spectral AtAv sum near 4.375", got)
+	}
+}
+
+func TestSpectralKernelDenseWholeAtAvCorrectness(t *testing.T) {
+	globals := compileAndRun(t, `
+		func A(i, j) {
+			return 1.0 / ((i + j) * (i + j + 1) / 2 + i + 1)
+		}
+		func multiplyAv(n, v, av) {
+			for i := 0; i < n; i++ {
+				sum := 0.0
+				for j := 0; j < n; j++ {
+					sum = sum + A(i, j) * matrix.getf(v, j, 0)
+				}
+				matrix.setf(av, i, 0, sum)
+			}
+		}
+		func multiplyAtv(n, v, atv) {
+			for i := 0; i < n; i++ {
+				sum := 0.0
+				for j := 0; j < n; j++ {
+					sum = sum + A(j, i) * matrix.getf(v, j, 0)
+				}
+				matrix.setf(atv, i, 0, sum)
+			}
+		}
+		func multiplyAtAv(n, v, u, atav) {
+			for i := 0; i < n; i++ { matrix.setf(u, i, 0, 0.0) }
+			multiplyAv(n, v, u)
+			multiplyAtv(n, u, atav)
+		}
+		v := matrix.dense(4, 1)
+		tmp := matrix.dense(4, 1)
+		out := matrix.dense(4, 1)
+		for i := 0; i < 4; i++ {
+			matrix.setf(v, i, 0, 1.0)
+			matrix.setf(out, i, 0, 0.0)
+		}
+		multiplyAtAv(4, v, tmp, out)
+		result := matrix.getf(out, 0, 0) + matrix.getf(out, 1, 0) + matrix.getf(out, 2, 0) + matrix.getf(out, 3, 0)
+	`)
+	got := globals["result"].Number()
+	if got < 4.37 || got > 4.38 {
+		t.Fatalf("result = %.12f, want dense spectral AtAv sum near 4.375", got)
 	}
 }
 

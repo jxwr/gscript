@@ -18,14 +18,38 @@ func vec3_length_sq(v) {
     return v.x * v.x + v.y * v.y + v.z * v.z
 }
 
+SINK_SIZE := 4096
+sink := {}
+for i := 1; i <= SINK_SIZE; i++ {
+    sink[i] = new_vec3(0.0, 0.0, 0.0)
+}
+
+func remember_object(i, obj) {
+    slot := (i % SINK_SIZE) + 1
+    sink[slot] = obj
+    mirror := sink[slot]
+    checksum := mirror.x
+    weight := 0.25
+    for k := 1; k <= 4; k++ {
+        checksum = checksum + mirror.y * weight
+        checksum = checksum + mirror.z * (weight * 0.5)
+        checksum = checksum - mirror.x * (weight * 0.25)
+        weight = weight * 0.5
+    }
+    return checksum
+}
+
 // Test 1: Create many objects, accumulate results
 func create_and_sum(n) {
     total := new_vec3(0.0, 0.0, 0.0)
     for i := 1; i <= n; i++ {
         v := new_vec3(1.0 * i, 2.0 * i, 3.0 * i)
+        if i % 128 == 0 {
+            remember_object(i, v)
+        }
         total = vec3_add(total, v)
     }
-    return vec3_length_sq(total)
+    return vec3_length_sq(total) + sink[1].x
 }
 
 // Test 2: Object pool pattern -- create, transform, discard
@@ -33,10 +57,13 @@ func transform_chain(n) {
     v := new_vec3(1.0, 0.0, 0.0)
     for i := 1; i <= n; i++ {
         offset := new_vec3(0.001, 0.002, 0.003)
+        if i % 256 == 0 {
+            remember_object(i, offset)
+        }
         v = vec3_add(v, offset)
         v = vec3_scale(v, 0.9999)
     }
-    return vec3_length_sq(v)
+    return vec3_length_sq(v) + sink[2].y
 }
 
 // Test 3: Create objects with many fields
@@ -55,14 +82,21 @@ func complex_objects(n) {
             mass: 1.0,
             active: true
         }
+        if i % 64 == 0 {
+            remember_object(i, obj)
+        }
         total = total + obj.x + obj.y + obj.z + obj.mass
     }
-    return total
+    return total + sink[3].z
 }
 
-N1 := 200000
-N2 := 500000
-N3 := 100000
+N1 := 1000000
+N2 := 2500000
+N3 := 500000
+
+warm1 := create_and_sum(50000)
+warm2 := transform_chain(125000)
+warm3 := complex_objects(25000)
 
 t0 := time.now()
 r1 := create_and_sum(N1)

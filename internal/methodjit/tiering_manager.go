@@ -135,6 +135,9 @@ func NewTieringManager() *TieringManager {
 		return tm.TryCompile(proto)
 	})
 	t1.SetCompiledProtocolCallExecutor(tm.tryCompiledProtocolCallExit)
+	t1.SetCompiledTier2Executor(func(compiled interface{}, regs []runtime.Value, base int, proto *vm.FuncProto) ([]runtime.Value, error) {
+		return tm.Execute(compiled, regs, base, proto)
+	})
 	t1.SetOSRHandler(tm.handleOSR)
 	return tm
 }
@@ -621,8 +624,11 @@ func (tm *TieringManager) applyPromotionDecision(proto *vm.FuncProto, profile Fu
 		// not bypass restart-safety: replayed side effects are correctness bugs.
 		osrGate := allowGate("OSR", "not considered")
 		if profile.HasLoop && profile.LoopDepth >= 1 && !decision.SuppressedRecursivePartition && !tm.tier2HasFailed(proto) {
-			if profile.LoopDepth < 2 {
+			if profile.LoopDepth < 2 || hasFieldDispatchCallInLoop(proto) {
 				osrGate = tm.osrRestartSafetyGate(proto, profile)
+			}
+			if osrGate.Allowed && profile.LoopDepth >= 2 && protoHasAllocationBytecodeInLoop(proto) {
+				osrGate = blockGate("OSRLoopAllocation", "static loop allocation would hit Tier 2 allocation gate")
 			}
 			if osrGate.Allowed && !tm.envTier2NoFilter && tm.osrWouldHitCallInLoopGate(proto, profile) {
 				osrGate = blockGate("OSRCallLoop", "static loop call would hit Tier 2 call-boundary gate")
@@ -704,7 +710,6 @@ func (tm *TieringManager) promoteTier2(proto *vm.FuncProto) interface{} {
 		})
 		return t1
 	}
-
 	tm.markTier2Compiled(proto, t2)
 
 	return t2

@@ -630,6 +630,18 @@ func (t *Table) enableStringLookupVersionLocked() uint64 {
 	return t.stringLookupVersion
 }
 
+func (t *Table) promoteStringFieldsToMapLocked(key string, val Value) {
+	t.enableStringLookupVersionLocked()
+	t.smap = make(map[string]Value, initialStringMapCap)
+	for i, k := range t.skeys {
+		t.smap[k] = t.svals[i]
+	}
+	t.smap[key] = val
+	t.skeys = nil
+	t.svals = nil
+	t.setShape(nil)
+}
+
 func (t *Table) ensureStringLookupCacheLocked() *StringLookupCache {
 	if t.smap == nil {
 		return nil
@@ -1253,15 +1265,7 @@ func (t *Table) RawSetStringCached(key string, val Value, cache *FieldCacheEntry
 			cache.AppendShape = t.shape
 		} else {
 			RecordShapeMutation(t.shapeID)
-			t.bumpStringLookupVersionLocked()
-			t.smap = make(map[string]Value, initialStringMapCap)
-			for i, k := range t.skeys {
-				t.smap[k] = t.svals[i]
-			}
-			t.smap[key] = val
-			t.skeys = nil
-			t.svals = nil
-			t.setShape(nil)
+			t.promoteStringFieldsToMapLocked(key, val)
 		}
 	}
 }
@@ -1345,15 +1349,7 @@ func (t *Table) RawSetStringDynamicCached(key string, val Value, cache []TableSt
 			RecordRuntimePathTableStringSetAppend()
 		} else {
 			RecordShapeMutation(t.shapeID)
-			t.bumpStringLookupVersionLocked()
-			t.smap = make(map[string]Value, initialStringMapCap)
-			for i, k := range t.skeys {
-				t.smap[k] = t.svals[i]
-			}
-			t.smap[key] = val
-			t.skeys = nil
-			t.svals = nil
-			t.setShape(nil)
+			t.promoteStringFieldsToMapLocked(key, val)
 			RecordRuntimePathTableStringSetPromote()
 		}
 	}
@@ -1575,15 +1571,7 @@ func (t *Table) RawSetString(key string, val Value) {
 			t.bumpStringLookupVersionLocked()
 		} else {
 			RecordShapeMutation(t.shapeID)
-			t.bumpStringLookupVersionLocked()
-			t.smap = make(map[string]Value, initialStringMapCap)
-			for i, k := range t.skeys {
-				t.smap[k] = t.svals[i]
-			}
-			t.smap[key] = val
-			t.skeys = nil
-			t.svals = nil
-			t.setShape(nil)
+			t.promoteStringFieldsToMapLocked(key, val)
 		}
 	}
 }

@@ -9,13 +9,17 @@ func ack(m, n) {
 }
 
 // Note: ack(3,n) requires deep recursion. ack(3,4)=125 fits in default stack.
-REPS := 50000
+REPS := 200000
+warm := ack(3, 4)
 t0 := time.now()
 result := 0
 for r := 1; r <= REPS; r++ {
-    result = ack(3, 4)
+    result = result + ack(3, r % 5)
+    if result >= 1000000000 {
+        result = result - 1000000000
+    }
 }
 elapsed := time.since(t0)
 
-print(string.format("ack(3,4) = %d (%d reps)", result, REPS))
+print(string.format("ack(3,n%%5) checksum = %d (%d reps)", result, REPS))
 print(string.format("Time: %.3fs", elapsed))

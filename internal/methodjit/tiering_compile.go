@@ -63,6 +63,14 @@ func (tm *TieringManager) compileTier2(proto *vm.FuncProto) (cf *CompiledFunctio
 	}()
 
 	cf, retErr = tm.compileTier2Pipeline(proto, trace)
+	if tm.envR154Trace && cf != nil && retErr == nil {
+		codeSize := 0
+		if cf.Code != nil {
+			codeSize = cf.Code.Size()
+		}
+		fmt.Fprintf(os.Stderr, "[R154] compileTier2 RESUME proto=%q codeSize=%d resume=%v numericResume=%v\n",
+			proto.Name, codeSize, cf.ResumeAddrs, cf.NumericResumeAddrs)
+	}
 	if trace != nil {
 		tm.recordWarmDumpCompile(proto, trace, cf, retErr)
 		recordedWarmDump = true
@@ -164,6 +172,27 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 				"initial IR validation failed: "+errs[0].Error())
 			return fmt.Errorf("tier2: validation failed: %v", errs[0])
 		}
+		if gate := readWriteGlobalInSameLoopGate(fn); !gate.Allowed {
+			if hasIndexedGlobalLoopProtocol(fn) {
+				remarks.Add("Tier2Gate", "changed", 0, 0, gate.Op,
+					"read/write global accepted by indexed native global protocol")
+				return nil
+			}
+			remarks.Add("Tier2Gate", "blocked", 0, 0, gate.Op, gate.Reason)
+			return fmt.Errorf("tier2: %s, staying at Tier 1", gate.Reason)
+		}
+		if typedABIHasStaticSelfCall(proto) && protoReturnsOnlyNoResults(proto) {
+			remarks.Add("Tier2Gate", "blocked", 0, 0, OpCall,
+				"zero-result self recursion is not native-call safe")
+			return fmt.Errorf("tier2: zero-result self recursion is not native-call safe, staying at Tier 1")
+		}
+		if typedABIHasStaticSelfCall(proto) && protoHasRecursiveTableSurface(proto) {
+			if abi := AnalyzeTypedSelfABI(proto); !abi.Eligible {
+				remarks.Add("Tier2Gate", "blocked", 0, 0, OpCall,
+					"recursive table function lacks a proven typed self ABI: "+abi.RejectWhy)
+				return fmt.Errorf("tier2: recursive table function lacks a proven typed self ABI, staying at Tier 1")
+			}
+		}
 		return nil
 	})
 
@@ -205,13 +234,27 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 		staticArgFacts := inferGuardedFixedShapeArgFactsForProto(proto, loopCallGlobals)
 		profiledArgFacts := profiledFixedShapeArgFactsForProto(proto)
 		profiledArrayElementFacts := profiledFixedShapeArrayElementArgFactsForProto(proto)
+		if conflicts := guardedFixedShapeArgConflictParamsForProto(proto, loopCallGlobals); len(conflicts) > 0 && len(profiledArgFacts) > 0 {
+			profiledArgFacts = cloneFixedShapeTableFactIntMap(profiledArgFacts)
+			for paramIdx := range conflicts {
+				delete(profiledArgFacts, paramIdx)
+			}
+		}
+		if conflicts := guardedFixedShapeArrayElementArgConflictParamsForProto(proto, loopCallGlobals); len(conflicts) > 0 && len(profiledArrayElementFacts) > 0 {
+			profiledArrayElementFacts = cloneFixedShapeTableFactIntMap(profiledArrayElementFacts)
+			for paramIdx := range conflicts {
+				delete(profiledArrayElementFacts, paramIdx)
+			}
+		}
 		profiledArrayElementPolyFacts := profiledFixedShapeArrayElementPolyFactsForProto(proto)
+		profiledArgPolyFacts := profiledFixedShapeArgPolyFactsForProto(proto)
 		opts = &Tier2PipelineOpts{
 			InlineGlobals:                   inlineGlobals,
 			ProtocolGlobals:                 loopCallGlobals,
 			GlobalConstValues:               tm.buildNumericGlobalConstValues(proto),
 			InlineMaxSize:                   inlineMaxCalleeSize,
 			FixedShapeArgFacts:              mergeFixedShapeTableFacts(profiledArgFacts, staticArgFacts),
+			FixedShapeArgPolyFacts:          profiledArgPolyFacts,
 			FixedShapeArrayElementArgFacts:  mergeFixedShapeTableFacts(profiledArrayElementFacts, staticArrayElementFacts),
 			FixedShapeArrayElementPolyFacts: profiledArrayElementPolyFacts,
 			GlobalArrayElementFacts:         tm.stableGlobalArrayElementFacts(),
@@ -268,7 +311,6 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 			trace.IRAfter = Print(fn)
 			trace.IntrinsicNotes = intrinsicNotes
 		}
-
 		if gate := firstSelfRecursiveTableMutationInLoopGate(fn); !gate.Allowed {
 			remarks.Add("Tier2Gate", "blocked", 0, 0, gate.Op,
 				fmt.Sprintf("%s %s", gate.Reason, gate.Op))
@@ -349,8 +391,11 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 	var cf *CompiledFunction
 	addStage("ARM64Compile", func() error {
 		var err error
+		traceNativeCalls := tm.envR154Trace || trace != nil || os.Getenv("GSCRIPT_JIT_DEBUG") == "1"
 		cf, err = CompileWithOptions(fn, alloc, CompileOptions{
 			EnableTier2BlockCounters: tm.perfStatsEnabled,
+			TraceNativeCalls:         traceNativeCalls,
+			PrintNativeCallTrace:     tm.envR154Trace || os.Getenv("GSCRIPT_JIT_DEBUG") == "1",
 		})
 		if err != nil {
 			remarks.Add("Tier2Gate", "blocked", 0, 0, OpNop,
@@ -380,9 +425,30 @@ func (tm *TieringManager) compileTier2Pipeline(proto *vm.FuncProto, trace *Tier2
 	if cf.numRegs > proto.MaxStack {
 		proto.MaxStack = cf.numRegs
 	}
+	if reserve := typedPeerCallRegisterReserve(fn, cf.numRegs); reserve > cf.numRegs {
+		cf.numRegs = reserve
+		proto.MaxStack = reserve
+	}
 
 	// R124: The numeric entry (t2_numeric_self_entry_N) is emitted as
 	// an extra label at the end of the same code block when the proto
 	// qualifies, so caller BL is compile-time PC-relative.
 	return cf, nil
+}
+
+func typedPeerCallRegisterReserve(fn *Function, baseSlots int) int {
+	if fn == nil || len(fn.CallABIs) == 0 {
+		return 0
+	}
+	reserve := baseSlots
+	for _, desc := range fn.CallABIs {
+		if !desc.TypedPeer || desc.Callee == nil {
+			continue
+		}
+		needed := baseSlots + desc.Callee.MaxStack + 1
+		if needed > reserve {
+			reserve = needed
+		}
+	}
+	return reserve
 }

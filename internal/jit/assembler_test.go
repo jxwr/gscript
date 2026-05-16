@@ -297,6 +297,14 @@ func TestLoadImm64Large(t *testing.T) {
 	}
 }
 
+func TestLoadImm64SkipsZeroChunks(t *testing.T) {
+	a := NewAssembler()
+	a.LoadImm64(X0, 0x00000000000FFFF0)
+	if len(a.buf) != 8 {
+		t.Fatalf("LoadImm64 sparse: expected 2 instructions, got %d", len(a.buf)/4)
+	}
+}
+
 func TestRET(t *testing.T) {
 	a := NewAssembler()
 	a.RET()

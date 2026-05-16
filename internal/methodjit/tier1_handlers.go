@@ -726,6 +726,65 @@ genericNativePath:
 	return nil
 }
 
+func (e *BaselineJITEngine) executeCompiledTier2Call(compiled interface{}, cl *vm.Closure, regs []runtime.Value, base int, callerProto *vm.FuncProto, absSlot, nArgs, rawC int) error {
+	if e == nil || e.callVM == nil || e.compiledTier2Executor == nil || cl == nil || cl.Proto == nil {
+		return nil
+	}
+	calleeProto := cl.Proto
+	calleeBase := base
+	if callerProto != nil {
+		calleeBase += callerProto.MaxStack
+	}
+	top := e.callVM.Top()
+	if top > calleeBase {
+		calleeBase = top
+	}
+	needed := calleeBase + calleeProto.MaxStack + 1
+	currentRegs := e.callVM.EnsureRegs(needed)
+	srcStart := absSlot + 1
+	for i := 0; i < calleeProto.NumParams && i < nArgs; i++ {
+		currentRegs[calleeBase+i] = currentRegs[srcStart+i]
+	}
+	for i := nArgs; i < calleeProto.NumParams; i++ {
+		currentRegs[calleeBase+i] = runtime.NilValue()
+	}
+	if !e.callVM.PushFrame(cl, calleeBase) {
+		return nil
+	}
+	results, err := e.compiledTier2Executor(compiled, currentRegs, calleeBase, calleeProto)
+	if vm.IsCoroutineYield(err) {
+		return err
+	}
+	e.callVM.CloseUpvalues(calleeBase)
+	e.callVM.PopFrame()
+	if err != nil {
+		return err
+	}
+	currentRegs = e.callVM.Regs()
+	if rawC == 0 {
+		for i, r := range results {
+			idx := absSlot + i
+			if idx < len(currentRegs) {
+				currentRegs[idx] = r
+			}
+		}
+		e.callVM.SetTop(absSlot + len(results))
+		return nil
+	}
+	nr := rawC - 1
+	for i := 0; i < nr; i++ {
+		idx := absSlot + i
+		if idx < len(currentRegs) {
+			if i < len(results) {
+				currentRegs[idx] = results[i]
+			} else {
+				currentRegs[idx] = runtime.NilValue()
+			}
+		}
+	}
+	return nil
+}
+
 func (e *BaselineJITEngine) tryFuseCreateResumeLeafCoroutine(ctx *ExecContext, regs []runtime.Value, base int, proto *vm.FuncProto, fnVal runtime.Value, absSlot, nArgs, rawC int) (bool, error) {
 	if e == nil || e.callVM == nil || ctx == nil || proto == nil || rawC != 2 || nArgs != 1 || !fnVal.IsFunction() {
 		return false, nil

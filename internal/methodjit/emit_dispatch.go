@@ -142,9 +142,13 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 
 	// --- Comparison ---
 	case OpLt:
-		ec.emitGenericNumericCmp(instr, jit.CondLT)
+		if !ec.emitTypedStringCmp(instr, jit.CondLT) {
+			ec.emitGenericNumericCmp(instr, jit.CondLT)
+		}
 	case OpLe:
-		ec.emitGenericNumericCmp(instr, jit.CondLE)
+		if !ec.emitTypedStringCmp(instr, jit.CondLE) {
+			ec.emitGenericNumericCmp(instr, jit.CondLE)
+		}
 	case OpEq:
 		ec.emitGenericNumericCmp(instr, jit.CondEQ)
 	case OpLtInt:
@@ -314,6 +318,9 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 	case OpStringFormatConst:
 		ec.emitStringFormatConstNative(instr)
 		ec.clearTableArrayBoundedKeys()
+	case OpStringFormatConstLen:
+		ec.emitStringFormatConstLenNative(instr)
+		ec.clearTableArrayBoundedKeys()
 	case OpStringSplitPart:
 		ec.emitStringSplitPartNative(instr)
 		ec.clearTableArrayBoundedKeys()
@@ -381,6 +388,7 @@ func instrPreservesTableArrayBoundedKeys(instr *Instr) bool {
 		OpBoxInt, OpBoxFloat, OpUnboxInt, OpUnboxFloat,
 		OpNumToFloat, OpGuardType, OpGuardIntRange, OpGuardGlobalConst, OpGuardConstString, OpGuardTableKind, OpGuardCalleeProto, OpGuardFieldCalleeProto, OpGuardShapeFieldType, OpGuardShapeFieldTypeMask, OpGuardTruthy,
 		OpTableArrayHeader, OpTableArrayLen, OpTableArrayData, OpTableArrayLoad, OpTableShapeID, OpTableArrayStore, OpTableArraySwap, OpTableArraySwapPairs,
+		OpStringFormatConstLen,
 		OpFieldPolyLen,
 		OpNop:
 		return true

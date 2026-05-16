@@ -44,13 +44,13 @@ result := fib_iter(70)
 	if err != nil {
 		t.Fatalf("CompileForDiagnostics: %v", err)
 	}
-	if !strings.Contains(art.IRAfter, "= Add") {
-		t.Fatalf("test must exercise boxed loop-carried arithmetic, IR:\n%s", art.IRAfter)
+	if !strings.Contains(art.IRAfter, "= AddInt") {
+		t.Fatalf("test must exercise loop-carried arithmetic, IR:\n%s", art.IRAfter)
 	}
 
 	addBlock := -1
 	for _, entry := range art.SourceMap {
-		if entry.IROp == "Add" && entry.CodeStart >= 0 {
+		if entry.IROp == "AddInt" && entry.CodeStart >= 0 {
 			addBlock = entry.BlockID
 			break
 		}

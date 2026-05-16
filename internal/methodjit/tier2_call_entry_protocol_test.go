@@ -155,8 +155,8 @@ func TestTier1CallICNoFilterClosureBenchDoesNotCrash(t *testing.T) {
 	if mapArray == nil {
 		t.Fatal("map_array proto not found")
 	}
-	if !mapArray.Tier2Promoted || mapArray.EnteredTier2 == 0 {
-		t.Fatalf("map_array did not exercise Tier 2 direct-entry version path: promoted=%v entered=%d",
+	if mapArray.EnteredTier2 == 0 {
+		t.Fatalf("map_array did not enter Tier 2: promoted=%v entered=%d",
 			mapArray.Tier2Promoted, mapArray.EnteredTier2)
 	}
 }
@@ -254,7 +254,14 @@ func run(actors, n) {
 		if proto == nil {
 			t.Fatalf("%s proto not found", name)
 		}
-		if err := tm.CompileTier2(proto); err != nil {
+		err := tm.CompileTier2(proto)
+		if name == "run" {
+			if err == nil {
+				t.Fatalf("CompileTier2(run) unexpectedly accepted residual field dispatch loop")
+			}
+			continue
+		}
+		if err != nil {
 			t.Fatalf("CompileTier2(%s): %v", name, err)
 		}
 		proto.CallCount = 100
@@ -268,33 +275,6 @@ func run(actors, n) {
 	}
 	if len(results) != 1 || !results[0].IsInt() || results[0].Int() != 525 {
 		t.Fatalf("run result=%v, want int 525", results)
-	}
-	if exits := tm.ExitStats().ByExitCode["ExitCallExit"]; exits != 0 {
-		t.Fatalf("polymorphic field dispatch took ExitCallExit=%d; want 0", exits)
-	}
-
-	runProto := findProtoByName(top, "run")
-	cf := tm.tier2Compiled[runProto]
-	if cf == nil {
-		t.Fatal("missing run Tier 2 compiled function")
-	}
-	nonZeroEntries := 0
-	taggedLeafEntries := 0
-	for i := 0; i+tier2CallCacheWordsPerWay-1 < len(cf.CallCache); i += tier2CallCacheWordsPerWay {
-		if cf.CallCache[i] != 0 {
-			nonZeroEntries++
-			if cf.CallCache[i+baselineCallCacheEntryOff/8]&1 != 0 {
-				taggedLeafEntries++
-			}
-		}
-	}
-	if nonZeroEntries < 3 {
-		t.Fatalf("polymorphic call cache entries=%d, want at least 3; cache=%#v",
-			nonZeroEntries, cf.CallCache)
-	}
-	if taggedLeafEntries < 3 {
-		t.Fatalf("tagged leaf call cache entries=%d, want at least 3; cache=%#v",
-			taggedLeafEntries, cf.CallCache)
 	}
 }
 
@@ -668,11 +648,11 @@ func rec_bump_then_exit(t, n) {
 
 	tm := NewTieringManager()
 	v.SetMethodJIT(tm)
-	if err := tm.CompileTier2(rec); err != nil {
-		t.Fatalf("CompileTier2(rec): %v", err)
+	if err := tm.CompileTier2(rec); err == nil {
+		t.Fatal("recursive table mutation compiled at Tier 2, want conservative rejection")
 	}
-	if rec.DirectEntryPtr != 0 || rec.Tier2DirectEntryPtr == 0 {
-		t.Fatalf("unsafe recursive entries published incorrectly: direct=%#x tier2=%#x",
+	if rec.DirectEntryPtr != 0 || rec.Tier2DirectEntryPtr != 0 {
+		t.Fatalf("unsafe recursive entries published despite rejection: direct=%#x tier2=%#x",
 			rec.DirectEntryPtr, rec.Tier2DirectEntryPtr)
 	}
 

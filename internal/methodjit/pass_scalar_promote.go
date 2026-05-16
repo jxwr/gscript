@@ -18,6 +18,7 @@ type pairInfo struct {
 	promoteType  Type
 	typeKnown    bool
 	typeMismatch bool
+	lowered      bool
 }
 
 func (p *pairInfo) observeType(typ Type) {
@@ -108,18 +109,24 @@ func promoteLoopPairs(fn *Function, li *loopInfo, hdr *Block, ph *Block) {
 				if len(instr.Args) >= 1 {
 					wideKill[instr.Args[0].ID] = true
 				}
-			case OpGetField:
+			case OpGetField, OpFieldLoad, OpFieldLoadNumToFloat:
 				if len(instr.Args) < 1 {
 					continue
 				}
 				p := getPair(instr.Args[0].ID, instr.Aux)
+				if instr.Op != OpGetField {
+					p.lowered = true
+				}
 				p.gets = append(p.gets, instr)
 				p.observeType(instr.Type)
-			case OpSetField:
+			case OpSetField, OpFieldStore:
 				if len(instr.Args) < 2 {
 					continue
 				}
 				p := getPair(instr.Args[0].ID, instr.Aux)
+				if instr.Op != OpSetField {
+					p.lowered = true
+				}
 				p.sets = append(p.sets, instr)
 				if instr.Args[1] == nil || instr.Args[1].Def == nil {
 					p.typeMismatch = true
@@ -234,7 +241,7 @@ func promoteOnePair(fn *Function, hdr, ph, exitBlock *Block, p *pairInfo) {
 
 	// 1. Pre-header init load before ph's terminator.
 	initLoad := &Instr{
-		ID: fn.newValueID(), Op: OpGetField, Type: promoteType,
+		ID: fn.newValueID(), Op: scalarPromotionLoadOp(p), Type: promoteType,
 		Args: []*Value{objVal}, Aux: fieldAux, Aux2: p.gets[0].Aux2, Block: ph,
 	}
 	insertBeforeTerminator(ph, initLoad)
@@ -265,10 +272,24 @@ func promoteOnePair(fn *Function, hdr, ph, exitBlock *Block, p *pairInfo) {
 		storeAux2 = p.gets[0].Aux2
 	}
 	exitStore := &Instr{
-		ID: fn.newValueID(), Op: OpSetField, Type: TypeUnknown,
+		ID: fn.newValueID(), Op: scalarPromotionStoreOp(p), Type: TypeUnknown,
 		Args: []*Value{objVal, phi.Value()}, Aux: fieldAux, Aux2: storeAux2, Block: exitBlock,
 	}
 	insertAtTopAfterPhis(exitBlock, exitStore)
+}
+
+func scalarPromotionLoadOp(p *pairInfo) Op {
+	if p != nil && p.lowered {
+		return OpFieldLoad
+	}
+	return OpGetField
+}
+
+func scalarPromotionStoreOp(p *pairInfo) Op {
+	if p != nil && p.lowered {
+		return OpFieldStore
+	}
+	return OpSetField
 }
 
 // insertBeforeTerminator appends instr to b just before b's terminator.

@@ -38,6 +38,16 @@ func (cf *CompiledFunction) Execute(args []runtime.Value) ([]runtime.Value, erro
 	for i, arg := range args {
 		regs[i] = arg
 	}
+	if cf.Proto != nil && cf.Proto.NumParams > 0 {
+		n := cf.Proto.NumParams
+		if n > len(args) {
+			n = len(args)
+		}
+		if n > 0 {
+			cf.Proto.ObserveArgShapes(args[:n])
+			cf.Proto.ObserveArgArrayElementShapes(args[:n])
+		}
+	}
 	// Fill remaining with nil.
 	for i := len(args); i < nregs; i++ {
 		regs[i] = runtime.NilValue()
@@ -802,6 +812,39 @@ func (cf *CompiledFunction) executeOpExit(ctx *ExecContext, regs []runtime.Value
 			regs[slot] = results[0]
 		} else {
 			regs[slot] = runtime.NilValue()
+		}
+
+	case OpStringFormatConstLen:
+		tempBase := arg1
+		nArgs := arg2
+		if slot >= len(regs) || tempBase < 0 || nArgs < 3 || tempBase+nArgs > len(regs) {
+			return fmt.Errorf("string.format const len op-exit out of register range")
+		}
+		callee := regs[tempBase]
+		patternVal := regs[tempBase+1]
+		if runtime.IsStdStringFormatFunction(callee) && patternVal.IsString() {
+			patternIdx := aux
+			if patternIdx >= 0 && patternIdx < len(cf.StringFormatPatterns) &&
+				patternVal.Str() == cf.StringFormatPatterns[patternIdx] {
+				v, err := runtime.StringFormatValue(regs[tempBase+1 : tempBase+nArgs])
+				if err != nil {
+					return err
+				}
+				regs[slot] = runtime.IntValue(int64(runtime.StringLen(v)))
+				return nil
+			}
+		}
+		if cf.CallVM == nil {
+			return fmt.Errorf("no CallVM set for string.format const len fallback")
+		}
+		results, err := cf.CallVM.CallValue(callee, regs[tempBase+1:tempBase+nArgs])
+		if err != nil {
+			return err
+		}
+		if len(results) > 0 {
+			regs[slot] = runtime.IntValue(int64(runtime.StringLen(results[0])))
+		} else {
+			regs[slot] = runtime.IntValue(0)
 		}
 
 	case OpLen:

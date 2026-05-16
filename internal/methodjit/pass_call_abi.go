@@ -30,7 +30,7 @@ func AnnotateCallABIs(fn *Function, config CallABIAnnotationConfig) *Function {
 	fn.CallABIs = nil
 
 	tails := callABITailCalls(fn)
-	shiftAddOverflowVersions := make(map[*vm.FuncProto]bool)
+	shiftAddOverflowVersions := make(map[*vm.FuncProto]*shiftAddOverflowVersion)
 	descs := make(map[int]CallABIDescriptor)
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
@@ -168,7 +168,7 @@ func callABIAnnotateTypedSelfResult(fn *Function, instr *Instr, tails map[int]bo
 	return true
 }
 
-func callABIDescriptorFor(fn *Function, instr *Instr, globals map[string]*vm.FuncProto, tails map[int]bool, shiftAddOverflowVersions map[*vm.FuncProto]bool, config CallABIAnnotationConfig) (CallABIDescriptor, string) {
+func callABIDescriptorFor(fn *Function, instr *Instr, globals map[string]*vm.FuncProto, tails map[int]bool, shiftAddOverflowVersions map[*vm.FuncProto]*shiftAddOverflowVersion, config CallABIAnnotationConfig) (CallABIDescriptor, string) {
 	if instr == nil || instr.Op != OpCall {
 		return CallABIDescriptor{}, "not a call"
 	}
@@ -218,7 +218,7 @@ func callABIDescriptorFor(fn *Function, instr *Instr, globals map[string]*vm.Fun
 			return miss("callee is not raw-int ABI eligible")
 		}
 	}
-	if callABICalleeHasShiftAddOverflowVersion(callee, shiftAddOverflowVersions) {
+	if spec := callABIShiftAddOverflowVersion(callee, shiftAddOverflowVersions); spec != nil && !callABICallsiteBoundsShiftAddSafe(fn, instr, spec) {
 		return miss("callee may promote raw-int recurrence on overflow")
 	}
 	numArgs := len(instr.Args) - 1
@@ -253,6 +253,9 @@ func callABITypedPeerDescriptorFor(fn *Function, instr *Instr, callee *vm.FuncPr
 	if fn == nil || instr == nil || callee == nil {
 		return CallABIDescriptor{}, false, ""
 	}
+	if protoHasNativeCallUnsafeTableBytecode(callee) {
+		return CallABIDescriptor{}, false, "callee uses table/object bytecode; typed-peer native call exit is not safe"
+	}
 	argFacts := callABITypedPeerArgFacts(fn, instr, callee)
 	arrayElementArgFacts := profiledFixedShapeArrayElementArgFactsForProto(callee)
 	arrayElementArgFacts = mergeFixedShapeTableFacts(arrayElementArgFacts,
@@ -269,6 +272,7 @@ func callABITypedPeerDescriptorFor(fn *Function, instr *Instr, callee *vm.FuncPr
 		}
 		return CallABIDescriptor{}, false, "callee typed-peer ABI rejected: " + abi.RejectWhy
 	}
+	recordTier2SpecDependency(fn, callee)
 	if typedPeerABIUsesOnlyGlobalTableFacts(abi) {
 		wantSig := typedABISignature(abi)
 		if callee.Tier2TypedEntryPtr == 0 {
@@ -382,7 +386,7 @@ func callABITypedPeerArrayElementArgFacts(fn *Function, instr *Instr, globals ma
 	if fn == nil || instr == nil || len(instr.Args) < 2 {
 		return nil
 	}
-	arrayFacts := inferLocalArrayElementTableFacts(fn, fn.FixedShapeTables)
+	arrayFacts := inferLocalArrayElementTableFacts(fn, currentFixedShapeTableFacts(fn))
 	arrayFacts = mergeFixedShapeTableFacts(arrayFacts, inferArrayElementValuesForArgs(fn, globals))
 	if len(arrayFacts) == 0 {
 		return nil
@@ -413,7 +417,7 @@ func collectStableGlobalArrayElementFacts(fn *Function) map[string]FixedShapeTab
 	if fn == nil || fn.Proto == nil {
 		return nil
 	}
-	arrayFacts := inferLocalArrayElementTableFacts(fn, fn.FixedShapeTables)
+	arrayFacts := inferLocalArrayElementTableFacts(fn, currentFixedShapeTableFacts(fn))
 	if len(arrayFacts) == 0 {
 		return nil
 	}
@@ -462,6 +466,23 @@ func collectStableGlobalArrayElementFacts(fn *Function) map[string]FixedShapeTab
 		return nil
 	}
 	return out
+}
+
+func currentFixedShapeTableFacts(fn *Function) map[int]FixedShapeTableFact {
+	if fn == nil {
+		return nil
+	}
+	facts := make(map[int]FixedShapeTableFact, len(fn.FixedShapeTables))
+	for id, fact := range fn.FixedShapeTables {
+		facts[id] = cloneFixedShapeTableFact(fact)
+	}
+	for id, fact := range inferLocalFixedShapeTables(fn) {
+		facts[id] = fact
+	}
+	if len(facts) == 0 {
+		return nil
+	}
+	return facts
 }
 
 func mergeGlobalArrayElementFacts(preferred, fallback map[string]FixedShapeTableFact) map[string]FixedShapeTableFact {
@@ -744,15 +765,19 @@ func callABIIsStaticSelfCall(fn *Function, instr *Instr) bool {
 }
 
 func callABICalleeHasShiftAddOverflowVersion(callee *vm.FuncProto, memo map[*vm.FuncProto]bool) bool {
+	return callABIShiftAddOverflowVersion(callee, nil) != nil
+}
+
+func callABIShiftAddOverflowVersion(callee *vm.FuncProto, memo map[*vm.FuncProto]*shiftAddOverflowVersion) *shiftAddOverflowVersion {
 	if callee == nil {
-		return false
+		return nil
 	}
 	if memo != nil {
 		if cached, ok := memo[callee]; ok {
 			return cached
 		}
 	}
-	setResult := func(result bool) bool {
+	setResult := func(result *shiftAddOverflowVersion) *shiftAddOverflowVersion {
 		if memo != nil {
 			memo[callee] = result
 		}
@@ -760,7 +785,7 @@ func callABICalleeHasShiftAddOverflowVersion(callee *vm.FuncProto, memo map[*vm.
 	}
 	fn := BuildGraph(callee)
 	if fn == nil || fn.Entry == nil || fn.Unpromotable {
-		return setResult(false)
+		return setResult(nil)
 	}
 	passes := []PassFunc{
 		SimplifyPhisPass,
@@ -774,11 +799,59 @@ func callABICalleeHasShiftAddOverflowVersion(callee *vm.FuncProto, memo map[*vm.
 	for _, pass := range passes {
 		fn, err = pass(fn)
 		if err != nil {
-			return setResult(false)
+			return setResult(nil)
 		}
 	}
-	_, ok := detectShiftAddOverflowVersion(fn)
-	return setResult(ok)
+	spec, ok := detectShiftAddOverflowVersion(fn)
+	if !ok {
+		return setResult(nil)
+	}
+	return setResult(spec)
+}
+
+func callABICallsiteBoundsShiftAddSafe(fn *Function, instr *Instr, spec *shiftAddOverflowVersion) bool {
+	if fn == nil || fn.Proto == nil || instr == nil || spec == nil ||
+		!spec.hasCheckFreePrefix || spec.boundParamSlot < 0 ||
+		spec.boundParamSlot >= vm.MaxCallSiteFeedbackArgs ||
+		!instr.HasSource || instr.SourcePC < 0 || instr.SourcePC >= len(fn.Proto.CallSiteFeedback) {
+		return false
+	}
+	fb := fn.Proto.CallSiteFeedback[instr.SourcePC]
+	if fb.Flags&vm.CallSiteArityPolymorphic != 0 || int(fb.NArgs) <= spec.boundParamSlot {
+		return false
+	}
+	min, max, ok := fb.ArgRanges[spec.boundParamSlot].StableRange()
+	if !ok && len(instr.Args) > 1+spec.boundParamSlot {
+		if r, rok := callABIValueIntRange(fn, instr.Args[1+spec.boundParamSlot]); rok {
+			min, max, ok = r.min, r.max, true
+		}
+	}
+	if !ok {
+		return false
+	}
+	_ = min
+	adjustedMax := max + spec.boundAdjust
+	return adjustedMax <= spec.safeLastCounter
+}
+
+func callABIValueIntRange(fn *Function, v *Value) (intRange, bool) {
+	if fn == nil || v == nil {
+		return intRange{}, false
+	}
+	if v.Def != nil {
+		if v.Def.Op == OpConstInt {
+			return intRange{min: v.Def.Aux, max: v.Def.Aux, known: true}, true
+		}
+		if v.Def.Op == OpGuardIntRange {
+			return intRange{min: v.Def.Aux, max: v.Def.Aux2, known: true}, true
+		}
+	}
+	if fn.IntRanges != nil {
+		if r, ok := fn.IntRanges[v.ID]; ok && r.known {
+			return r, true
+		}
+	}
+	return intRange{}, false
 }
 
 func callABITailCalls(fn *Function) map[int]bool {

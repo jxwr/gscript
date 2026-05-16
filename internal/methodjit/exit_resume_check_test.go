@@ -154,19 +154,17 @@ func f(n) {
 	})
 }
 
-func TestExitResumeCheck_CacheableLoopNewTableMarksResultSlot(t *testing.T) {
+func TestExitResumeCheck_CacheableNewTableMarksResultSlot(t *testing.T) {
 	withExitResumeCheck(t, func() {
+		t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
 		src := `
-func f(n) {
-    total := 0
-    for i := 1; i <= n; i++ {
-        row := {}
-        row[0] = true
-        if row[0] {
-            total = total + 1
-        }
-    }
-    return total
+	func f(n) {
+	    row := {nil}
+	    row[1] = true
+	    if row[1] {
+	        return n + 1
+	    }
+    return n
 }
 `
 		top := compileTop(t, src)
@@ -182,7 +180,7 @@ func f(n) {
 		newTableIDs := make(map[int]bool)
 		for _, block := range optimized.Blocks {
 			for _, instr := range block.Instrs {
-				if instr.Op == OpNewTable && tier2NewTableLoopCandidateIsSafe(instr) {
+				if instr.Op == OpNewTable && newTableCacheBatchSize(instr) > 1 {
 					newTableIDs[instr.ID] = true
 				}
 			}
@@ -195,12 +193,6 @@ func f(n) {
 				newTableIDs[site.Key.InstrID] &&
 				len(site.ModifiedSlots) == 1
 		})
-		vmResults := runVMByName(t, src, "f", []runtime.Value{runtime.IntValue(40)})
-		jitResults, entered := runForcedTier2ByName(t, top, "f", []string{"f"}, []runtime.Value{runtime.IntValue(40)})
-		assertRawIntSelfResultsEqual(t, "f", jitResults, vmResults)
-		if entered["f"] == 0 {
-			t.Fatalf("f did not enter Tier 2")
-		}
 	})
 }
 

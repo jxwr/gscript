@@ -111,13 +111,107 @@ func f(n) {
     return total
 }
 `)
-	fn.Proto.ArgIntRangeFeedback = []vm.IntRangeFeedback{{Count: 1, Min: nestedLoopParamRangeMax + 1, Max: nestedLoopParamRangeMax + 1}}
+	fn.Proto.ArgIntRangeFeedback = []vm.IntRangeFeedback{{Count: callResultRangeGuardMinCount, Min: nestedLoopParamRangeMax + 1, Max: nestedLoopParamRangeMax + 1}}
 	out, err := LoopBoundRangeGuardPass(fn)
 	if err != nil {
 		t.Fatalf("LoopBoundRangeGuardPass: %v", err)
 	}
 	if countOps(out)[OpGuardIntRange] != 0 {
 		t.Fatalf("wide observed argument should skip loop-bound range guard\nIR:\n%s", Print(out))
+	}
+}
+
+func TestLoopBoundRangeGuard_UsesNarrowObservedParamMax(t *testing.T) {
+	fn := buildForLoopBoundRangeGuardTest(t, `
+func f(n) {
+    total := 0
+    for i := 0; i < n; i++ {
+        total = total + i
+    }
+    return total
+}
+`)
+	fn.Proto.ArgIntRangeFeedback = []vm.IntRangeFeedback{{Count: callResultRangeGuardMinCount, Min: 45, Max: 45}}
+	out, err := LoopBoundRangeGuardPass(fn)
+	if err != nil {
+		t.Fatalf("LoopBoundRangeGuardPass: %v", err)
+	}
+
+	found := false
+	for _, block := range out.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpGuardIntRange {
+				continue
+			}
+			found = true
+			if instr.Aux != 0 || instr.Aux2 != 45 {
+				t.Fatalf("observed narrow max should tighten guard to [0,45], got [%d,%d]\nIR:\n%s",
+					instr.Aux, instr.Aux2, Print(out))
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected GuardIntRange for observed loop-bound param\nIR:\n%s", Print(out))
+	}
+}
+
+func TestObservedParamRangeGuard_GuardsStableNonLoopParam(t *testing.T) {
+	fn := buildForLoopBoundRangeGuardTest(t, `
+func f(n, reps) {
+    total := 0
+    for i := 0; i < reps; i++ {
+        total = total + n - (i % 8)
+    }
+    return total
+}
+`)
+	fn.Proto.ArgIntRangeFeedback = []vm.IntRangeFeedback{
+		{Count: callResultRangeGuardMinCount, Min: 45, Max: 45},
+		{Count: callResultRangeGuardMinCount, Min: 1000, Max: 1000},
+	}
+	out, err := LoopBoundRangeGuardPass(fn)
+	if err != nil {
+		t.Fatalf("LoopBoundRangeGuardPass: %v", err)
+	}
+	out, err = ObservedParamRangeGuardPass(out)
+	if err != nil {
+		t.Fatalf("ObservedParamRangeGuardPass: %v", err)
+	}
+
+	guards := map[int][2]int64{}
+	for _, block := range out.Blocks {
+		for _, instr := range block.Instrs {
+			if instr.Op != OpGuardIntRange {
+				continue
+			}
+			slot, ok := guardedParamSlot(instr)
+			if !ok {
+				continue
+			}
+			guards[slot] = [2]int64{instr.Aux, instr.Aux2}
+		}
+	}
+	if got := guards[0]; got != [2]int64{45, 45} {
+		t.Fatalf("non-loop param guard = %v, want [45 45]\nIR:\n%s", got, Print(out))
+	}
+	if got := guards[1]; got != [2]int64{1000, 1000} {
+		t.Fatalf("loop param guard should be tightened to observed range, got %v\nIR:\n%s", got, Print(out))
+	}
+}
+
+func TestObservedParamRangeGuard_SkipsSingleWarmupObservation(t *testing.T) {
+	fn := buildForLoopBoundRangeGuardTest(t, `
+func f(n) {
+    return n + 1
+}
+`)
+	fn.Proto.ArgIntRangeFeedback = []vm.IntRangeFeedback{{Count: 1, Min: 45, Max: 45}}
+	out, err := ObservedParamRangeGuardPass(fn)
+	if err != nil {
+		t.Fatalf("ObservedParamRangeGuardPass: %v", err)
+	}
+	if countOps(out)[OpGuardIntRange] != 0 {
+		t.Fatalf("single warmup observation should not emit parameter range guard\nIR:\n%s", Print(out))
 	}
 }
 

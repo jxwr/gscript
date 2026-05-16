@@ -179,6 +179,7 @@ type CallSiteFeedback struct {
 	StringArgMask      uint8
 	StringArgPoly      uint8
 	StringArgs         [MaxCallSiteFeedbackArgs]string
+	ArgRanges          [MaxCallSiteFeedbackArgs]IntRangeFeedback
 	ResultRange        IntRangeFeedback
 }
 
@@ -911,6 +912,7 @@ func (cf *CallSiteFeedback) ObserveCall(fn runtime.Value, args []runtime.Value, 
 	for i := 0; i < limit; i++ {
 		arg := args[i]
 		cf.ArgTypes[i].Observe(arg.Type())
+		cf.ArgRanges[i].Observe(arg)
 		if !arg.IsString() {
 			continue
 		}

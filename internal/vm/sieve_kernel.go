@@ -28,21 +28,30 @@ func runSieveCountKernel(n int) int64 {
 	if n < 2 {
 		return 0
 	}
-	flags := make([]byte, n+1)
-	for i := 2; i <= n; i++ {
-		flags[i] = 1
-	}
-	for i := 2; i <= n/i; i++ {
-		if flags[i] == 0 {
+	// Track only odd numbers. Index i represents 2*i+1, so index 1 is 3.
+	// A zero byte means "not marked composite", avoiding a full initialization
+	// pass over the sieve.
+	maxOddIndex := n / 2
+	composite := make([]byte, maxOddIndex+1)
+	for i := 1; ; i++ {
+		p := 2*i + 1
+		if p > n/p {
+			break
+		}
+		if composite[i] != 0 {
 			continue
 		}
-		for j := i * i; j <= n; j += i {
-			flags[j] = 0
+		step := 2 * p
+		for j := p * p; j <= n; j += step {
+			composite[j/2] = 1
 		}
 	}
-	count := int64(0)
-	for i := 2; i <= n; i++ {
-		if flags[i] != 0 {
+	count := int64(1) // prime 2
+	for i := 1; i <= maxOddIndex; i++ {
+		if 2*i+1 > n {
+			continue
+		}
+		if composite[i] == 0 {
 			count++
 		}
 	}

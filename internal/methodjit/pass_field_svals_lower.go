@@ -30,7 +30,7 @@ func FieldSvalsLowerPass(fn *Function) (*Function, error) {
 		if block == nil || len(block.Instrs) == 0 {
 			continue
 		}
-		eligible := fieldSvalsLowerEligibleKeys(block)
+		eligible := fieldSvalsLowerEligibleKeys(fn, block)
 		cache := make(map[fieldSvalsLowerKey]*Instr)
 		newInstrs := make([]*Instr, 0, len(block.Instrs))
 		for _, instr := range block.Instrs {
@@ -74,7 +74,7 @@ func FieldSvalsLowerPass(fn *Function) (*Function, error) {
 					continue
 				}
 			}
-			if !fieldSvalsLowerable(instr) {
+			if !fieldSvalsLowerable(fn, instr) {
 				newInstrs = append(newInstrs, instr)
 				continue
 			}
@@ -133,7 +133,7 @@ func crossBlockFieldSvalsLower(fn *Function) bool {
 	blockSet := make(map[fieldSvalsLowerKey]map[int]bool)
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
-			if !fieldSvalsLowerable(instr) {
+			if !fieldSvalsLowerable(fn, instr) {
 				continue
 			}
 			shapeID := uint32(instr.Aux2 >> 32)
@@ -302,7 +302,7 @@ func crossBlockExistingFieldSvalsLower(fn *Function) bool {
 	changed := false
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
-			key, fieldIdx, ok := fieldSvalsLowerKeyForInstr(instr)
+			key, fieldIdx, ok := fieldSvalsLowerKeyForInstr(fn, instr)
 			if !ok {
 				continue
 			}
@@ -342,8 +342,8 @@ func crossBlockExistingFieldSvalsLower(fn *Function) bool {
 	return changed
 }
 
-func fieldSvalsLowerKeyForInstr(instr *Instr) (fieldSvalsLowerKey, int, bool) {
-	if fieldSvalsLowerable(instr) || fieldSvalsStoreLowerable(instr) {
+func fieldSvalsLowerKeyForInstr(fn *Function, instr *Instr) (fieldSvalsLowerKey, int, bool) {
+	if fieldSvalsLowerable(fn, instr) || fieldSvalsStoreLowerable(instr) {
 		shapeID := uint32(instr.Aux2 >> 32)
 		fieldIdx := int(int32(instr.Aux2 & 0xFFFFFFFF))
 		return fieldSvalsLowerKey{tableID: instr.Args[0].ID, shapeID: shapeID}, fieldIdx, true
@@ -478,7 +478,7 @@ type useSite struct {
 	instr *Instr
 }
 
-func fieldSvalsLowerEligibleKeys(block *Block) map[fieldSvalsLowerKey]bool {
+func fieldSvalsLowerEligibleKeys(fn *Function, block *Block) map[fieldSvalsLowerKey]bool {
 	eligible := make(map[fieldSvalsLowerKey]bool)
 	seen := make(map[fieldSvalsLowerKey]bool)
 	broken := make(map[fieldSvalsLowerKey]bool)
@@ -505,7 +505,7 @@ func fieldSvalsLowerEligibleKeys(block *Block) map[fieldSvalsLowerKey]bool {
 			}
 			continue
 		}
-		if !fieldSvalsLowerable(instr) {
+		if !fieldSvalsLowerable(fn, instr) {
 			if fieldSvalsStoreLowerable(instr) {
 				shapeID := uint32(instr.Aux2 >> 32)
 				key := fieldSvalsLowerKey{tableID: instr.Args[0].ID, shapeID: shapeID}
@@ -532,8 +532,14 @@ func fieldSvalsLowerEligibleKeys(block *Block) map[fieldSvalsLowerKey]bool {
 	return eligible
 }
 
-func fieldSvalsLowerable(instr *Instr) bool {
+func fieldSvalsLowerable(fn *Function, instr *Instr) bool {
 	if instr == nil || len(instr.Args) == 0 || instr.Args[0] == nil || instr.Aux2 == 0 {
+		return false
+	}
+	if fn != nil && len(fn.FieldPolyShapeFacts[instr.ID]) > 0 {
+		return false
+	}
+	if fn != nil && fn.FieldPolyShapeReceivers[instr.Args[0].ID] {
 		return false
 	}
 	switch instr.Op {

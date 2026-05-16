@@ -17,11 +17,72 @@ func StringNativeCleanupPass(fn *Function) (*Function, []string) {
 		return fn, nil
 	}
 	var notes []string
+	notes = append(notes, lowerStringFormatConstLengths(fn)...)
 	notes = append(notes, fuseStringFormatIntGetTable(fn)...)
 	notes = append(notes, lowerStringSplitProjections(fn)...)
 	notes = append(notes, lowerStringSplitSubstrings(fn)...)
 	notes = append(notes, lowerStringSplitSubstringNumbers(fn)...)
 	return fn, notes
+}
+
+func lowerStringFormatConstLengths(fn *Function) []string {
+	if fn == nil {
+		return nil
+	}
+	uses := computeUseCounts(fn)
+	var notes []string
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil || instr.Op != OpLen || len(instr.Args) != 1 || instr.Args[0] == nil {
+				continue
+			}
+			fmtInstr := instr.Args[0].Def
+			if fmtInstr == nil || fmtInstr.Op != OpStringFormatConst || uses[fmtInstr.ID] != 1 || len(fmtInstr.Args) < 3 {
+				continue
+			}
+			if !stringFormatConstLenArgsAreInts(fmtInstr) {
+				continue
+			}
+			patternIdx := int(fmtInstr.Aux)
+			if patternIdx < 0 || patternIdx >= len(fn.StringFormatPatterns) {
+				continue
+			}
+			pat, ok := parseStringFormatConstIntPatternNative(fn.StringFormatPatterns[patternIdx])
+			if !ok || len(pat.specs) != len(fmtInstr.Args)-2 || !stringFormatConstLenPatternIsIntOnly(pat) {
+				continue
+			}
+			instr.Op = OpStringFormatConstLen
+			instr.Args = append([]*Value(nil), fmtInstr.Args...)
+			instr.Aux = fmtInstr.Aux
+			instr.Aux2 = fmtInstr.Aux2
+			instr.Type = TypeInt
+			fmtInstr.Op = OpNop
+			fmtInstr.Args = nil
+			notes = append(notes, "intrinsic: len(string.format(const-int-pattern,...)) -> StringFormatConstLen")
+		}
+	}
+	return notes
+}
+
+func stringFormatConstLenArgsAreInts(instr *Instr) bool {
+	for _, arg := range instr.Args[2:] {
+		if arg == nil || arg.Def == nil || arg.Def.Type != TypeInt {
+			return false
+		}
+	}
+	return true
+}
+
+func stringFormatConstLenPatternIsIntOnly(pat stringFormatConstIntPatternNative) bool {
+	if len(pat.specs) == 0 {
+		return false
+	}
+	for _, spec := range pat.specs {
+		if spec.kind != 'd' {
+			return false
+		}
+	}
+	return true
 }
 
 func lowerStringFormatIntrinsicCall(fn *Function, instr *Instr, moduleName, fieldName string) (string, bool) {

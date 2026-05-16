@@ -148,7 +148,12 @@ func (ec *emitContext) emitCallExit(instr *Instr) {
 		// Load call result from regs[funcSlot] into the SSA value's home.
 		resultSlot := funcSlot
 		asm.LDR(jit.X0, mRegRegs, slotOffset(resultSlot))
-		ec.storeResultNB(jit.X0, instr.ID)
+		if instr.Type == TypeInt {
+			jit.EmitUnboxInt(asm, jit.X0, jit.X0)
+			ec.storeRawInt(jit.X0, instr.ID)
+		} else {
+			ec.storeResultNB(jit.X0, instr.ID)
+		}
 	}
 
 	// Record this call for deferred resume entry generation.
@@ -245,7 +250,7 @@ func (ec *emitContext) emitGetGlobalNative(instr *Instr) {
 	asm.CBZ(jit.X1, slowLabel)
 
 	// Cache hit! Store to result.
-	ec.storeResultNB(jit.X1, instr.ID)
+	ec.storeGlobalResult(instr, jit.X1)
 	asm.B(doneLabel)
 
 	// --- Slow path: exit-resume to Go, which populates the cache ---
@@ -270,7 +275,7 @@ func (ec *emitContext) emitGetGlobalNative(instr *Instr) {
 // an indexed global table with a matching structural version. If that protocol
 // is unavailable or invalidated, it falls back to the existing OpExit path.
 func (ec *emitContext) emitSetGlobalNative(instr *Instr) {
-	if !ec.supportsIndexedGlobalSetProtocol() {
+	if !ec.supportsIndexedGlobalSetProtocol(instr) {
 		ec.emitOpExit(instr)
 		return
 	}
@@ -279,14 +284,18 @@ func (ec *emitContext) emitSetGlobalNative(instr *Instr) {
 	slowLabel := ec.uniqueLabel("setglobal_slow")
 	doneLabel := ec.uniqueLabel("setglobal_done")
 
+	valReg := jit.XZR
+	if len(instr.Args) > 0 {
+		// Resolve and box before computing the indexed-global address. The
+		// address helper leaves the globalArray index in X17, while boxing a
+		// raw int may use X17 as a scratch register.
+		valReg = ec.resolveValueNB(instr.Args[0].ID, jit.X15)
+	}
+
 	ec.emitIndexedGlobalAddress(int(instr.Aux), slowLabel)
 
-	if len(instr.Args) > 0 {
-		valReg := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
-		if valReg != jit.X0 {
-			asm.MOVreg(jit.X0, valReg)
-		}
-		asm.STRreg(jit.X0, jit.X16, jit.X17)
+	if valReg != jit.XZR {
+		asm.STRreg(valReg, jit.X16, jit.X17)
 	}
 
 	// Native SetGlobal changes global values without an exit. Bump the shared
@@ -307,8 +316,17 @@ func (ec *emitContext) emitSetGlobalNative(instr *Instr) {
 func (ec *emitContext) emitIndexedGetGlobalFast(instr *Instr, slowLabel, doneLabel string) {
 	ec.emitIndexedGlobalAddress(int(instr.Aux), slowLabel)
 	ec.asm.LDRreg(jit.X1, jit.X16, jit.X17)
-	ec.storeResultNB(jit.X1, instr.ID)
+	ec.storeGlobalResult(instr, jit.X1)
 	ec.asm.B(doneLabel)
+}
+
+func (ec *emitContext) storeGlobalResult(instr *Instr, src jit.Reg) {
+	if instr != nil && instr.Type == TypeInt {
+		jit.EmitUnboxInt(ec.asm, src, src)
+		ec.storeRawInt(src, instr.ID)
+		return
+	}
+	ec.storeResultNB(src, instr.ID)
 }
 
 func (ec *emitContext) emitIndexedGlobalAddress(constIdx int, slowLabel string) {
@@ -356,11 +374,11 @@ func (ec *emitContext) supportsIndexedGlobalGetProtocol() bool {
 	return ec != nil && ec.fn != nil && ec.fn.Proto != nil
 }
 
-func (ec *emitContext) supportsIndexedGlobalSetProtocol() bool {
+func (ec *emitContext) supportsIndexedGlobalSetProtocol(instr *Instr) bool {
 	// Keep Tier 2 eligibility for top-level global reducers, but route
 	// SetGlobal through the op-exit path for now. The direct indexed store
-	// protocol can publish stale/nil values when a compiled <main> interleaves
-	// native calls, global writes, and later global reads in the same run.
+	// protocol can return through an invalid resume PC in mixed global/call
+	// scripts, so only GetGlobal uses the indexed fast path.
 	return false
 }
 
@@ -429,7 +447,7 @@ func (ec *emitContext) emitGlobalExitInner(instr *Instr) {
 
 	// Load the global value from the register file into the SSA value's home.
 	asm.LDR(jit.X0, mRegRegs, slotOffset(resultSlot))
-	ec.storeResultNB(jit.X0, instr.ID)
+	ec.storeGlobalResult(instr, jit.X0)
 
 	// Record for deferred resume entry generation.
 	ec.callExitIDs = append(ec.callExitIDs, instr.ID)

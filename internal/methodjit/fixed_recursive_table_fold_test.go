@@ -34,7 +34,7 @@ func checkTree(node) {
 	}
 }
 
-func TestFixedRecursiveTableFoldQualifiesNonLeftRightWalker(t *testing.T) {
+func TestFixedRecursiveTableFoldRejectsNonLeftRightWalker(t *testing.T) {
 	src := `
 func makePair(depth) {
 	if depth == 0 {
@@ -53,20 +53,12 @@ func countPair(node) {
 	if countPair == nil {
 		t.Fatal("countPair proto not found")
 	}
-	protocol, ok := analyzeFixedRecursiveTableFold(countPair)
-	if !ok {
-		dumpProtoBytecode(t, countPair)
-		t.Fatal("non-left/right fixed recursive walker should qualify")
-	}
-	if protocol.nilField != "first" || protocol.baseValue != 7 || protocol.combineBias != 3 {
-		t.Fatalf("unexpected derived protocol: %#v", protocol)
-	}
-	if len(protocol.children) != 2 || protocol.children[0].field != "first" || protocol.children[1].field != "second" {
-		t.Fatalf("unexpected derived children: %#v", protocol.children)
+	if protocol, ok := analyzeFixedRecursiveTableFold(countPair); ok {
+		t.Fatalf("non-left/right walker must not qualify for fixed table fold: %#v", protocol)
 	}
 }
 
-func TestFixedRecursiveTableFoldExecutesNonLeftRightWalker(t *testing.T) {
+func TestFixedRecursiveTableFoldFallsBackForNonLeftRightWalker(t *testing.T) {
 	src := `
 func makePair(depth) {
 	if depth == 0 {
@@ -103,8 +95,11 @@ root := makePair(4)
 		}
 	}
 	countPair := findProtoByName(top, "countPair")
-	if countPair == nil || countPair.EnteredTier2 == 0 {
-		t.Fatalf("countPair did not enter Tier2 protocol; proto=%v", countPair)
+	if countPair == nil {
+		t.Fatal("countPair proto not found")
+	}
+	if cf := tm.tier2Compiled[countPair]; cf != nil && cf.FixedRecursiveTableFold != nil {
+		t.Fatalf("countPair unexpectedly compiled to fixed recursive table fold: cf=%#v", cf)
 	}
 }
 
@@ -161,7 +156,7 @@ func TestFixedRecursiveTableFoldObservesLazyChildMutation(t *testing.T) {
 	}
 }
 
-func TestFixedRecursiveTableFoldFallsBackWhenSelfGlobalChanges(t *testing.T) {
+func TestFixedRecursiveTableFoldRejectsNonLeftRightSelfGlobalChangeCase(t *testing.T) {
 	src := `
 func makePair(depth) {
 	if depth == 0 {
@@ -198,8 +193,8 @@ root := makePair(2)
 		}
 	}
 	countPair := findProtoByName(top, "countPair")
-	if cf := tm.tier2Compiled[countPair]; cf == nil || cf.FixedRecursiveTableFold == nil {
-		t.Fatalf("countPair did not compile to fixed recursive table fold; cf=%#v", cf)
+	if cf := tm.tier2Compiled[countPair]; cf != nil && cf.FixedRecursiveTableFold != nil {
+		t.Fatalf("countPair unexpectedly compiled to fixed recursive table fold; cf=%#v", cf)
 	}
 
 	v.SetGlobal("countPair", v.GetGlobal("replacement"))

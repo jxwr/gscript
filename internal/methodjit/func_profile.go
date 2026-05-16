@@ -325,17 +325,11 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 	if shouldStayTier1ForBoxedRawIntKernel(proto, profile) {
 		return false
 	}
-	// R72: top-level <main> protos with a driver loop (loop body calls
-	// other functions) benefit from Tier 2 because it enables the inline
-	// pass to pull callees into main, eliminating Tier 1 → Tier 2 BLR
-	// transitions on every loop iter. _main_ is only invoked once by
-	// the VM (runtimeCallCount == 1), so the normal `>= 2` threshold
-	// would never fire — special-case it.
+	// Top-level drivers are only invoked once and often contain bytecode ops
+	// that resume through generic exits. Until those continuations are proven
+	// restart-safe, keep <main> on Tier 1 and let hot child functions promote.
 	if proto.Name == "<main>" && profile.HasLoop && profile.CallCount > 0 {
-		if mainProtoHasRecursiveChild(proto) {
-			return false
-		}
-		return true
+		return false
 	}
 
 	if profile.HasLoop && hasGenericStringFormatIntCall(proto) {
@@ -356,6 +350,14 @@ func shouldPromoteTier2(proto *vm.FuncProto, profile FuncProfile, runtimeCallCou
 	if profile.HasLoop && profile.LoopDepth >= 2 &&
 		profile.CallCount > 0 && profile.TableOpCount > 0 &&
 		hasFieldDispatchCallInLoop(proto) {
+		return runtimeCallCount >= 1
+	}
+
+	// Deep table aggregation loops may be invoked only once from <main> while
+	// doing all meaningful work internally. Waiting for a second function call
+	// leaves these hot loops permanently in Tier 1.
+	if profile.HasLoop && profile.LoopDepth >= 2 &&
+		profile.CallCount > 0 && profile.TableOpCount > 0 && profile.ArithCount > 0 {
 		return runtimeCallCount >= 1
 	}
 

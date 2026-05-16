@@ -5,7 +5,7 @@ import "github.com/gscript/gscript/internal/runtime"
 const maxWholeCallScalarScratch = 1 << 20
 
 func wholeCallKernelArity(n int) bool {
-	return n == 1 || n == 2 || n == 3
+	return n == 1 || n == 2 || n == 3 || n == 4
 }
 
 func (vm *VM) tryValueWholeCallKernel(cl *Closure, args []runtime.Value, c int, dst int) (bool, error) {
@@ -128,7 +128,8 @@ func mayHaveWholeCallValueKernelCandidate(proto *FuncProto, argc int, includeRec
 		return (proto.MaxStack == 30 && len(proto.Constants) == 2 && len(proto.Protos) == 0) ||
 			(proto.MaxStack >= 13 && len(proto.Constants) == 0 && len(proto.Protos) == 0 && len(proto.Code) == 45)
 	case 3:
-		return proto.NumParams == 3 && len(proto.Constants) == 1
+		return proto.NumParams == 3 && (len(proto.Constants) == 1 ||
+			(len(proto.Constants) == 5 && (len(proto.Code) == 51 || len(proto.Code) == 91 || len(proto.Code) == 93)))
 	default:
 		return false
 	}
@@ -140,9 +141,14 @@ func mayHaveWholeCallNoResultKernelCandidate(proto *FuncProto, argc int) bool {
 	}
 	switch argc {
 	case 1:
-		return proto.NumParams == 1 && len(proto.Constants) >= 10 && len(proto.Code) == 99
+		return proto.NumParams == 1 && len(proto.Constants) >= 10 &&
+			(len(proto.Code) == 99 || len(proto.Code) == 98 || len(proto.Code) == 241)
 	case 3:
 		return proto.NumParams == 3 && len(proto.Constants) >= 1
+	case 4:
+		return proto.NumParams == 4 &&
+			((len(proto.Constants) == 4 && len(proto.Code) == 45) ||
+				(len(proto.Constants) == 5 && len(proto.Code) == 25))
 	default:
 		return false
 	}

@@ -41,6 +41,7 @@ func LoopBoundRangeGuardPass(fn *Function) (*Function, error) {
 					"observed loop-bound parameter exceeds guarded range")
 				continue
 			}
+			max = loopBoundParamObservedMax(fn, slot, max)
 			if specGuardKindSuppressed(fn, -1, "GuardIntRange") {
 				functionRemarks(fn).Add("LoopBoundRangeGuard", "missed", block.ID, instr.ID, OpGuardIntRange,
 					"skipped globally suppressed int-range guard")
@@ -129,8 +130,27 @@ func loopBoundParamObservedExceeds(fn *Function, slot int, max int64) bool {
 	if fn == nil || fn.Proto == nil || slot < 0 || slot >= len(fn.Proto.ArgIntRangeFeedback) {
 		return false
 	}
-	_, observedMax, ok := fn.Proto.ArgIntRangeFeedback[slot].StableRange()
+	rf := fn.Proto.ArgIntRangeFeedback[slot]
+	if rf.Count < callResultRangeGuardMinCount {
+		return false
+	}
+	_, observedMax, ok := rf.StableRange()
 	return ok && observedMax > max
+}
+
+func loopBoundParamObservedMax(fn *Function, slot int, fallback int64) int64 {
+	if fn == nil || fn.Proto == nil || slot < 0 || slot >= len(fn.Proto.ArgIntRangeFeedback) {
+		return fallback
+	}
+	rf := fn.Proto.ArgIntRangeFeedback[slot]
+	if rf.Count < callResultRangeGuardMinCount {
+		return fallback
+	}
+	_, observedMax, ok := rf.StableRange()
+	if ok && observedMax >= 0 && observedMax < fallback {
+		return observedMax
+	}
+	return fallback
 }
 
 func collectParamSlotsInBoundExpr(fn *Function, v *Value, slots map[int]int64, max int64, seen map[int]bool) {

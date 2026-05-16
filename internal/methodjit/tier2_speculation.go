@@ -13,25 +13,29 @@ import (
 // compile. It is intentionally compact: future refresh policy can compare
 // snapshots without having to know every feedback vector's concrete layout.
 type Tier2FeedbackSnapshot struct {
-	TypeObserved     int
-	FieldObserved    int
-	TableKeyObserved int
-	CallObserved     int
+	TypeObserved            int
+	FieldObserved           int
+	TableKeyObserved        int
+	CallObserved            int
+	ArgShapeObserved        int
+	ArgArrayElementObserved int
 }
 
 func (s Tier2FeedbackSnapshot) totalObserved() int {
-	return s.TypeObserved + s.FieldObserved + s.TableKeyObserved + s.CallObserved
+	return s.TypeObserved + s.FieldObserved + s.TableKeyObserved + s.CallObserved + s.ArgShapeObserved + s.ArgArrayElementObserved
 }
 
 func (s Tier2FeedbackSnapshot) structuralObserved() int {
-	return s.FieldObserved + s.TableKeyObserved + s.CallObserved
+	return s.FieldObserved + s.TableKeyObserved + s.CallObserved + s.ArgShapeObserved + s.ArgArrayElementObserved
 }
 
 func (s Tier2FeedbackSnapshot) lessMatureThan(current Tier2FeedbackSnapshot) bool {
 	return current.TypeObserved > s.TypeObserved ||
 		current.FieldObserved > s.FieldObserved ||
 		current.TableKeyObserved > s.TableKeyObserved ||
-		current.CallObserved > s.CallObserved
+		current.CallObserved > s.CallObserved ||
+		current.ArgShapeObserved > s.ArgShapeObserved ||
+		current.ArgArrayElementObserved > s.ArgArrayElementObserved
 }
 
 func snapshotTier2Feedback(proto *vm.FuncProto) Tier2FeedbackSnapshot {
@@ -52,6 +56,8 @@ const (
 	SpecGuardCallVMProto           SpecializationGuardKind = "call_vm_proto"
 	SpecGuardCallPolymorphic       SpecializationGuardKind = "call_poly_vm_proto"
 	SpecGuardCallResultRange       SpecializationGuardKind = "call_result_range"
+	SpecGuardArgShape              SpecializationGuardKind = "arg_shape"
+	SpecGuardArgArrayElementShape  SpecializationGuardKind = "arg_array_element_shape"
 )
 
 type SpecializationGuard struct {
@@ -318,6 +324,43 @@ func BuildTier2SpecializationProfile(proto *vm.FuncProto) Tier2SpecializationPro
 			})
 		}
 	}
+	addArgShapeGuards := func(kind SpecializationGuardKind, feedbacks vm.ArgArrayElementShapeFeedbackVector) {
+		for idx, fb := range feedbacks {
+			if fb.Count == 0 {
+				continue
+			}
+			switch kind {
+			case SpecGuardArgShape:
+				profile.Snapshot.ArgShapeObserved++
+			case SpecGuardArgArrayElementShape:
+				profile.Snapshot.ArgArrayElementObserved++
+			}
+			slot := fmt.Sprintf("arg%d", idx)
+			if shapes := fb.PolymorphicShapes(); len(shapes) > 0 {
+				for _, shape := range shapes {
+					profile.addGuard(SpecializationGuard{
+						Kind:    kind,
+						PC:      idx,
+						Slot:    slot,
+						ShapeID: shape.ShapeID,
+						Count:   shape.Count,
+					})
+				}
+				continue
+			}
+			if shapeID, _, ok := fb.StableShape(); ok {
+				profile.addGuard(SpecializationGuard{
+					Kind:    kind,
+					PC:      idx,
+					Slot:    slot,
+					ShapeID: shapeID,
+					Count:   fb.Count,
+				})
+			}
+		}
+	}
+	addArgShapeGuards(SpecGuardArgShape, proto.ArgShapeFeedback)
+	addArgShapeGuards(SpecGuardArgArrayElementShape, proto.ArgArrayElementShapeFeedback)
 	profile.Version = profile.computeVersion()
 	return profile
 }

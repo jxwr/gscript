@@ -34,7 +34,7 @@ local function multiplyAtAv(n, v, atav)
     multiplyAtv(n, u, atav)
 end
 
-local N = 500
+local N = 2000
 
 local t0 = os.clock()
 

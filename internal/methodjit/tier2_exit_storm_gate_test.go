@@ -11,7 +11,7 @@ import (
 	"github.com/gscript/gscript/internal/vm"
 )
 
-func TestTier2ExitStormGateAllowsNoFilterReadBackedRecursiveTableMutation(t *testing.T) {
+func TestTier2ExitStormGateRejectsNoFilterReadBackedRecursiveTableMutation(t *testing.T) {
 	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
 
 	top := compileTop(t, `
@@ -37,15 +37,15 @@ func quicksort(arr, lo, hi) {
 	}
 
 	tm := NewTieringManager()
-	if err := tm.CompileTier2(qs); err != nil {
-		t.Fatalf("CompileTier2(quicksort) failed: %v", err)
+	if err := tm.CompileTier2(qs); err == nil {
+		t.Fatal("quicksort compiled at Tier 2, want conservative rejection")
 	}
-	if !qs.Tier2Promoted || qs.Tier2DirectEntryPtr == 0 {
-		t.Fatalf("quicksort did not install Tier2-only direct entry: promoted=%v tier2Direct=%#x", qs.Tier2Promoted, qs.Tier2DirectEntryPtr)
+	if qs.Tier2Promoted || qs.Tier2DirectEntryPtr != 0 {
+		t.Fatalf("quicksort published unsafe Tier2 entry: promoted=%v tier2Direct=%#x", qs.Tier2Promoted, qs.Tier2DirectEntryPtr)
 	}
 }
 
-func TestTableMutationRecoveryAdmitsQuicksortReadBackedSwap(t *testing.T) {
+func TestTableMutationRecoveryKeepsQuicksortBlockedWithoutTypedArrayFacts(t *testing.T) {
 	top := compileTop(t, `
 func quicksort(arr, lo, hi) {
     if lo >= hi { return }
@@ -73,21 +73,12 @@ func quicksort(arr, lo, hi) {
 		t.Fatalf("pipeline quicksort: %v", err)
 	}
 	summary := analyzeLoopTableMutationRecovery(fn)
-	if len(summary.Sites) == 0 {
-		t.Fatal("expected quicksort table mutation recovery sites")
+	if len(summary.Sites) != 0 {
+		t.Fatalf("quicksort should stay blocked without typed array facts, sites=%+v", summary.Sites)
 	}
-	if site, ok := summary.firstUnadmitted(); ok {
-		t.Fatalf("quicksort swap mutation should be admitted, first unadmitted=%+v", site)
-	}
-	for _, site := range summary.Sites {
-		if site.Op == OpSetTable && site.RecoveryClass == tableMutationRecoverReadBackedOverwrite {
-			return
-		}
-	}
-	t.Fatalf("quicksort recovery sites did not include a read-backed SetTable: %+v", summary.Sites)
 }
 
-func TestTier2ExitStormGateAllowsNoFilterSelfRecursiveIdempotentTableOverwrite(t *testing.T) {
+func TestTier2ExitStormGateRejectsNoFilterSelfRecursiveIdempotentTableOverwrite(t *testing.T) {
 	t.Setenv("GSCRIPT_TIER2_NO_FILTER", "1")
 
 	top := compileTop(t, `
@@ -105,12 +96,12 @@ func touch(arr, n) {
 	}
 
 	tm := NewTieringManager()
-	if err := tm.CompileTier2(touch); err != nil {
-		t.Fatalf("CompileTier2(touch) failed: %v", err)
+	if err := tm.CompileTier2(touch); err == nil {
+		t.Fatal("touch compiled at Tier 2, want conservative rejection")
 	}
 }
 
-func TestTier2LoopGateAllowsDefaultSelfRecursiveIdempotentTableOverwrite(t *testing.T) {
+func TestTier2LoopGateRejectsDefaultSelfRecursiveIdempotentTableOverwrite(t *testing.T) {
 	top := compileTop(t, `
 func touch(arr, n) {
     if n <= 0 { return }
@@ -129,8 +120,8 @@ func touch(arr, n) {
 	}
 
 	tm := NewTieringManager()
-	if err := tm.CompileTier2(touch); err != nil {
-		t.Fatalf("CompileTier2(touch) failed: %v", err)
+	if err := tm.CompileTier2(touch); err == nil {
+		t.Fatal("touch compiled at Tier 2, want conservative rejection")
 	}
 }
 
@@ -249,7 +240,7 @@ func make_values(n, seed) {
 	}
 }
 
-func TestTier2LoopGateAllowsCacheableNewTableBoolFillLoop(t *testing.T) {
+func TestTier2LoopGateRejectsNewTableBoolFillLoop(t *testing.T) {
 	src := `
 func alloc_bool_rows(n) {
     total := 0
@@ -279,6 +270,7 @@ for r := 1; r <= 200; r++ {
 	if err != nil {
 		t.Fatalf("pipeline alloc_bool_rows: %v", err)
 	}
+	var sawLoopNewTable bool
 	var sawCacheableLoopNewTable bool
 	li := computeLoopInfo(optimized)
 	for _, block := range optimized.Blocks {
@@ -286,20 +278,25 @@ for r := 1; r <= 200; r++ {
 			continue
 		}
 		for _, instr := range block.Instrs {
-			if instr.Op == OpNewTable && tier2NewTableLoopCandidateIsSafe(instr) {
-				sawCacheableLoopNewTable = true
+			if instr.Op == OpNewTable {
+				sawLoopNewTable = true
+				if tier2NewTableLoopCandidateIsSafe(instr) {
+					sawCacheableLoopNewTable = true
+				}
 			}
 		}
 	}
-	if !sawCacheableLoopNewTable {
-		t.Fatalf("expected cacheable loop NewTable in optimized IR:\n%s", Print(optimized))
+	if !sawLoopNewTable {
+		t.Fatalf("expected loop NewTable in optimized IR:\n%s", Print(optimized))
+	}
+	if sawCacheableLoopNewTable {
+		t.Fatalf("loop NewTable must stay blocked until table-exit resume is safe:\n%s", Print(optimized))
 	}
 
 	tm := NewTieringManager()
-	if err := tm.CompileTier2(allocBoolRows); err != nil {
-		t.Fatalf("CompileTier2(alloc_bool_rows) failed: %v", err)
+	if err := tm.CompileTier2(allocBoolRows); err == nil {
+		t.Fatalf("CompileTier2(alloc_bool_rows) unexpectedly accepted loop NewTable")
 	}
-	compareTier2Result(t, src, "result")
 }
 
 func TestTier2LoopGateAllowsGenericModLoopWithFallback(t *testing.T) {
@@ -369,9 +366,19 @@ for iter := 1; iter <= 3; iter++ {
 	defer v.Close()
 	tm := NewTieringManager()
 	v.SetMethodJIT(tm)
-	_, err := v.Execute(proto)
+	if _, err := v.Execute(proto); err != nil {
+		t.Fatalf("execute top: %v", err)
+	}
+	modZero := findProtoByName(proto, "mod_zero")
+	if modZero == nil {
+		t.Fatal("mod_zero proto not found")
+	}
+	if err := tm.CompileTier2(modZero); err != nil {
+		t.Fatalf("CompileTier2(mod_zero): %v", err)
+	}
+	_, err := v.CallValue(v.GetGlobal("mod_zero"), []runtime.Value{runtime.IntValue(10)})
 	if err == nil {
-		t.Fatal("JIT execute succeeded; want modulo by zero error")
+		t.Fatal("JIT CallValue(mod_zero) succeeded; want modulo by zero error")
 	}
 	if !strings.Contains(err.Error(), "n%0") && !strings.Contains(err.Error(), "zero") {
 		t.Fatalf("error = %q, want modulo by zero", err)

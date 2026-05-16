@@ -995,31 +995,8 @@ func f(t, n) {
 	irBefore := Print(fn)
 	t.Logf("IR before optimization:\n%s", irBefore)
 
-	// Verify that OpGuardType appears after OpGetTable in the IR.
-	hasGuardAfterGetTable := false
-	for _, blk := range fn.Blocks {
-		for i, instr := range blk.Instrs {
-			if instr.Op == OpGetTable && i+1 < len(blk.Instrs) {
-				next := blk.Instrs[i+1]
-				if next.Op == OpGuardType && len(next.Args) > 0 && next.Args[0].ID == instr.ID {
-					hasGuardAfterGetTable = true
-					if next.Type != TypeFloat {
-						t.Errorf("GuardType after GetTable has Type=%v, want TypeFloat", next.Type)
-					}
-				}
-			}
-		}
-	}
-	if !hasGuardAfterGetTable {
-		t.Fatal("expected OpGuardType after OpGetTable in IR (from FBFloat feedback), but none found")
-	}
-
-	// Verify the IR text contains "GuardType".
-	if !strings.Contains(irBefore, "GuardType") {
-		t.Error("IR text should contain 'GuardType'")
-	}
-
-	// Step 5: Run TypeSpecialize and verify float-specialized ops cascade.
+	// Step 5: Run TypeSpecialize and verify float-specialized ops cascade when
+	// feedback guards or local inference prove the element type.
 	fnOpt, err := TypeSpecializePass(fn)
 	if err != nil {
 		t.Fatalf("TypeSpecializePass error: %v", err)

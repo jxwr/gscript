@@ -116,13 +116,7 @@ result := fib(15)
 		t.Fatalf("fib proto not found")
 	}
 	fibProto.EnsureFeedback()
-	if err := tm.CompileTier2(fibProto); err != nil {
-		t.Fatalf("CompileTier2: %v", err)
-	}
-	cf := tm.tier2Compiled[fibProto]
-	if cf == nil {
-		t.Fatalf("fib Tier 2 compile did not populate tier2Compiled")
-	}
+	cf := compileRawSelfTier2ForTest(t, fibProto)
 	if cf.NumericParamCount != 1 {
 		t.Errorf("fib NumericParamCount: want 1, got %d", cf.NumericParamCount)
 	}

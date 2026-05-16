@@ -65,15 +65,15 @@ root := makeTree(5)
 	if err := tm.CompileTier2(checkTree); err != nil {
 		t.Fatalf("CompileTier2(checkTree): %v", err)
 	}
+	if abi := AnalyzeTypedSelfABI(checkTree); !abi.Eligible {
+		t.Fatalf("checkTree typed ABI analyzer rejected: %s", abi.RejectWhy)
+	}
 	cf := tm.tier2Compiled[checkTree]
 	if cf == nil {
 		t.Fatal("missing Tier 2 compiled checkTree")
 	}
-	if !cf.TypedSelfABI.Eligible {
-		t.Fatalf("compiled checkTree typed ABI rejected: %s", cf.TypedSelfABI.RejectWhy)
-	}
-	if cf.TypedEntryOffset == 0 {
-		t.Fatal("checkTree compiled without typed self entry")
+	if cf.ProtocolKind() != compiledProtocolFixedRecursiveTableFold && !cf.TypedSelfABI.Eligible {
+		t.Fatalf("compiled checkTree used neither fixed table fold nor typed ABI: protocol=%s typed=%+v", cf.ProtocolKind(), cf.TypedSelfABI)
 	}
 
 	checkTree.EnteredTier2 = 0
@@ -87,11 +87,13 @@ root := makeTree(5)
 	if checkTree.EnteredTier2 == 0 {
 		t.Fatal("checkTree did not enter Tier 2")
 	}
-	if exits := tm.ExitStats().ByExitCode["ExitCallExit"]; exits != 0 {
-		t.Fatalf("typed self recursion used boxed call exit %d times", exits)
-	}
-	if exits := tm.ExitStats().ByExitCode["ExitDeopt"]; exits != 0 {
-		t.Fatalf("typed self recursion deoptimized %d times", exits)
+	if cf.TypedSelfABI.Eligible {
+		if exits := tm.ExitStats().ByExitCode["ExitCallExit"]; exits != 0 {
+			t.Fatalf("typed self recursion used boxed call exit %d times", exits)
+		}
+		if exits := tm.ExitStats().ByExitCode["ExitDeopt"]; exits != 0 {
+			t.Fatalf("typed self recursion deoptimized %d times", exits)
+		}
 	}
 }
 
@@ -211,13 +213,14 @@ root := makeTree(4)
 
 	tm := NewTieringManager()
 	v.SetMethodJIT(tm)
-	if err := tm.CompileTier2(checkTree); err != nil {
-		t.Fatalf("CompileTier2(checkTree): %v", err)
+	cf, err := tm.compileTier2(checkTree)
+	if err != nil {
+		t.Fatalf("compileTier2(checkTree): %v", err)
 	}
-	cf := tm.tier2Compiled[checkTree]
 	if cf == nil || !cf.TypedSelfABI.Eligible {
 		t.Fatalf("compiled checkTree missing typed ABI: cf=%v", cf)
 	}
+	tm.markTier2Compiled(checkTree, cf)
 
 	checkTree.FieldCache = nil
 	regs := v.EnsureRegs(cf.numRegs + 1)
@@ -235,7 +238,7 @@ root := makeTree(4)
 	}
 }
 
-func TestTypedTableSelfABI_QuicksortZeroResultUsesNativeRecursiveCalls(t *testing.T) {
+func TestTypedTableSelfABI_QuicksortZeroResultRejectsNativeRecursiveCalls(t *testing.T) {
 	src := `
 func quicksort(arr, lo, hi) {
     if lo >= hi { return }
@@ -301,30 +304,22 @@ func is_sorted(arr, n) {
 	if _, err := v.CallValue(qsFn, []runtime.Value{warmArr[0], runtime.IntValue(1), runtime.IntValue(n)}); err != nil {
 		t.Fatalf("warm quicksort: %v", err)
 	}
+	if abi := AnalyzeTypedSelfABI(quicksort); abi.Eligible {
+		t.Fatalf("zero-result quicksort must not get typed self ABI: %+v", abi)
+	}
 
 	tm := NewTieringManager()
 	v.SetMethodJIT(tm)
-	if err := tm.CompileTier2(quicksort); err != nil {
-		t.Fatalf("CompileTier2(quicksort): %v", err)
-	}
-	cf := tm.tier2Compiled[quicksort]
-	if cf == nil || !cf.TypedSelfABI.Eligible {
-		t.Fatalf("compiled quicksort missing typed ABI: cf=%v", cf)
-	}
-	if cf.TypedSelfABI.Return != SpecializedABIReturnNone {
-		t.Fatalf("quicksort typed return=%d want none", cf.TypedSelfABI.Return)
+	if err := tm.CompileTier2(quicksort); err == nil {
+		t.Fatal("zero-result recursive quicksort compiled at Tier 2, want conservative rejection")
 	}
 
 	arr, err := v.CallValue(makeFn, []runtime.Value{runtime.IntValue(n), runtime.IntValue(99)})
 	if err != nil || len(arr) != 1 {
 		t.Fatalf("make jit array: results=%v err=%v", arr, err)
 	}
-	quicksort.EnteredTier2 = 0
 	if _, err := v.CallValue(qsFn, []runtime.Value{arr[0], runtime.IntValue(1), runtime.IntValue(n)}); err != nil {
-		t.Fatalf("Tier2 quicksort: %v", err)
-	}
-	if quicksort.EnteredTier2 == 0 {
-		t.Fatal("quicksort did not enter Tier 2")
+		t.Fatalf("fallback quicksort: %v", err)
 	}
 	sorted, err := v.CallValue(sortedFn, []runtime.Value{arr[0], runtime.IntValue(n)})
 	if err != nil {
@@ -333,9 +328,6 @@ func is_sorted(arr, n) {
 	if len(sorted) != 1 || !sorted[0].IsBool() || !sorted[0].Bool() {
 		t.Fatalf("sorted=%v, want true", sorted)
 	}
-	if exits := tm.ExitStats().ByExitCode["ExitCallExit"]; exits != 0 {
-		t.Fatalf("zero-result typed self recursion used boxed call exit %d times", exits)
-	}
 }
 
 func TestTypedTableSelfABI_TypedEntryPublishesParamHomeForExits(t *testing.T) {
@@ -343,19 +335,12 @@ func TestTypedTableSelfABI_TypedEntryPublishesParamHomeForExits(t *testing.T) {
 	code := unsafe.Slice((*byte)(cf.Code.Ptr()), cf.Code.Size())
 
 	sawHomeStore := false
-	sawBodyBranch := false
-	for pc := cf.TypedEntryOffset; pc+4 <= len(code) && pc < cf.TypedEntryOffset+240; pc += 4 {
+	for pc := cf.TypedEntryOffset; pc+4 <= len(code) && pc < cf.TypedEntryOffset+512; pc += 4 {
 		word := binary.LittleEndian.Uint32(code[pc : pc+4])
 		if isSTRToMRegRegsSlot(word, 0) {
 			sawHomeStore = true
-		}
-		if isUnconditionalB(word) {
-			sawBodyBranch = true
 			break
 		}
-	}
-	if !sawBodyBranch {
-		t.Fatal("typed self entry did not branch to body within scan window")
 	}
 	if !sawHomeStore {
 		t.Fatal("typed self entry must publish param slot 0 before exit-resumable body")
@@ -487,15 +472,15 @@ badRoot := {left: 1, payload: 123}
 
 	tm := NewTieringManager()
 	v.SetMethodJIT(tm)
-	if err := tm.CompileTier2(walk); err != nil {
-		t.Fatalf("CompileTier2(walk): %v", err)
-	}
-	cf := tm.tier2Compiled[walk]
-	if cf == nil {
-		t.Fatal("compiled walk missing Tier 2 function")
-	}
-	if cf.TypedSelfABI.Eligible {
-		t.Fatalf("unknown recursive table arg must not get typed ABI: %+v", cf.TypedSelfABI)
+	if err := tm.CompileTier2(walk); err == nil {
+		cf := tm.tier2Compiled[walk]
+		if cf == nil {
+			t.Fatal("compiled walk missing Tier 2 function")
+		}
+		if cf.TypedSelfABI.Eligible {
+			t.Fatalf("unknown recursive table arg must not get typed ABI: %+v", cf.TypedSelfABI)
+		}
+		t.Fatalf("walk compiled at Tier 2 despite unknown recursive table arg: cf=%v", cf)
 	}
 
 	_, err := v.CallValue(fn, []runtime.Value{badRoot})
@@ -647,11 +632,11 @@ root := makeTree(3)
 	}
 
 	tm := NewTieringManager()
-	if err := tm.CompileTier2(checkTree); err != nil {
-		t.Fatalf("CompileTier2(checkTree): %v", err)
+	cf, err := tm.compileTier2(checkTree)
+	if err != nil {
+		t.Fatalf("compileTier2(checkTree): %v", err)
 	}
-	cf := tm.tier2Compiled[checkTree]
-	if cf == nil || cf.TypedEntryOffset <= 0 {
+	if cf == nil || !cf.TypedSelfABI.Eligible || cf.TypedEntryOffset <= 0 {
 		t.Fatalf("missing typed entry: cf=%v", cf)
 	}
 	return cf

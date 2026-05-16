@@ -3,6 +3,7 @@
 package methodjit
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/gscript/gscript/internal/runtime"
@@ -321,7 +322,7 @@ func TestAnalyzeTypedPeerABIWithGlobalFacts_IgnoresCompiledMaxStackGrowth(t *tes
 	}
 }
 
-func TestAnalyzeTypedSelfABI_QuicksortZeroResult(t *testing.T) {
+func TestAnalyzeTypedSelfABI_RejectsQuicksortZeroResult(t *testing.T) {
 	top := compileTop(t, `func quicksort(arr, lo, hi) {
 	if lo >= hi { return }
 	pivot := arr[hi]
@@ -350,24 +351,11 @@ func TestAnalyzeTypedSelfABI_QuicksortZeroResult(t *testing.T) {
 	}
 
 	abi := AnalyzeTypedSelfABI(qs)
-	if !abi.Eligible {
-		t.Fatalf("quicksort typed ABI rejected: %s", abi.RejectWhy)
+	if abi.Eligible {
+		t.Fatalf("zero-result quicksort must not get typed self ABI: %+v", abi)
 	}
-	if abi.Return != SpecializedABIReturnNone {
-		t.Fatalf("quicksort return=%d want none", abi.Return)
-	}
-	want := []SpecializedABIParamRep{
-		SpecializedABIParamRawTablePtr,
-		SpecializedABIParamRawInt,
-		SpecializedABIParamRawInt,
-	}
-	if len(abi.Params) != len(want) {
-		t.Fatalf("params=%v want %v", abi.Params, want)
-	}
-	for i := range want {
-		if abi.Params[i] != want[i] {
-			t.Fatalf("param %d=%d want %d; abi=%+v", i, abi.Params[i], want[i], abi)
-		}
+	if !strings.Contains(abi.RejectWhy, "zero-result") {
+		t.Fatalf("reject reason=%q, want zero-result", abi.RejectWhy)
 	}
 }
 

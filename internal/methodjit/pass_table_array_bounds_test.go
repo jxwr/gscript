@@ -146,6 +146,166 @@ func TestTableArrayStaticBounds_MarksSetListLoadWithRangedKey(t *testing.T) {
 	}
 }
 
+func TestTableArrayStaticBounds_MarksDominatingLenGuardWithRangedKey(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "guarded_len_bounds"}, NumRegs: 1}
+	entry := &Block{ID: 0}
+	fn.Entry = entry
+	fn.Blocks = []*Block{entry}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: entry}
+	header := &Instr{ID: fn.newValueID(), Op: OpTableArrayHeader, Type: TypeInt, Aux: int64(vm.FBKindMixed), Args: []*Value{tbl.Value()}, Block: entry}
+	length := &Instr{ID: fn.newValueID(), Op: OpTableArrayLen, Type: TypeInt, Aux: int64(vm.FBKindMixed), Args: []*Value{header.Value()}, Block: entry}
+	five := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 5, Block: entry}
+	lt := &Instr{ID: fn.newValueID(), Op: OpLtInt, Type: TypeBool, Args: []*Value{five.Value(), length.Value()}, Block: entry}
+	guard := &Instr{ID: fn.newValueID(), Op: OpGuardTruthy, Type: TypeBool, Args: []*Value{lt.Value()}, Block: entry}
+	data := &Instr{ID: fn.newValueID(), Op: OpTableArrayData, Type: TypeInt, Aux: int64(vm.FBKindMixed), Args: []*Value{header.Value()}, Block: entry}
+	key := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Block: entry}
+	load := &Instr{ID: fn.newValueID(), Op: OpTableArrayLoad, Type: TypeTable, Aux: int64(vm.FBKindMixed), Args: []*Value{data.Value(), length.Value(), key.Value()}, Block: entry}
+	entry.Instrs = []*Instr{tbl, header, length, five, lt, guard, data, key, load}
+	fn.IntRanges = map[int]intRange{key.ID: {min: 1, max: 5, known: true}}
+
+	out, err := TableArrayStaticBoundsPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.TableArrayUpperBoundSafe == nil || !out.TableArrayUpperBoundSafe[load.ID] {
+		t.Fatalf("expected dominating len guard to prove upper bound:\n%s", Print(out))
+	}
+	if out.TableArrayLowerBoundSafe == nil || !out.TableArrayLowerBoundSafe[load.ID] {
+		t.Fatalf("expected key range to prove lower bound:\n%s", Print(out))
+	}
+}
+
+func TestTableArrayStaticBounds_UsesDominatingTrueBranchKeyUpper(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "guarded_branch_key_bounds"}, NumRegs: 1}
+	entry := &Block{ID: 0}
+	body := &Block{ID: 1}
+	exit := &Block{ID: 2}
+	fn.Entry = entry
+	fn.Blocks = []*Block{entry, body, exit}
+	entry.Succs = []*Block{body, exit}
+	body.Preds = []*Block{entry}
+	exit.Preds = []*Block{entry}
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: entry}
+	header := &Instr{ID: fn.newValueID(), Op: OpTableArrayHeader, Type: TypeInt, Aux: int64(vm.FBKindMixed), Args: []*Value{tbl.Value()}, Block: entry}
+	length := &Instr{ID: fn.newValueID(), Op: OpTableArrayLen, Type: TypeInt, Aux: int64(vm.FBKindMixed), Args: []*Value{header.Value()}, Block: entry}
+	five := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 5, Block: entry}
+	lenOK := &Instr{ID: fn.newValueID(), Op: OpLtInt, Type: TypeBool, Args: []*Value{five.Value(), length.Value()}, Block: entry}
+	lenGuard := &Instr{ID: fn.newValueID(), Op: OpGuardTruthy, Type: TypeBool, Args: []*Value{lenOK.Value()}, Block: entry}
+	key := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: entry}
+	keyOK := &Instr{ID: fn.newValueID(), Op: OpLeInt, Type: TypeBool, Args: []*Value{key.Value(), five.Value()}, Block: entry}
+	br := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Args: []*Value{keyOK.Value()}, Aux: int64(body.ID), Aux2: int64(exit.ID), Block: entry}
+	entry.Instrs = []*Instr{tbl, header, length, five, lenOK, lenGuard, key, keyOK, br}
+
+	data := &Instr{ID: fn.newValueID(), Op: OpTableArrayData, Type: TypeInt, Aux: int64(vm.FBKindMixed), Args: []*Value{header.Value()}, Block: body}
+	load := &Instr{ID: fn.newValueID(), Op: OpTableArrayLoad, Type: TypeTable, Aux: int64(vm.FBKindMixed), Args: []*Value{data.Value(), length.Value(), key.Value()}, Block: body}
+	body.Instrs = []*Instr{data, load, {ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: body}}
+	exit.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: exit}}
+	fn.IntRanges = map[int]intRange{}
+	fn.IntNonNegative = map[int]bool{key.ID: true}
+
+	out, err := TableArrayStaticBoundsPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.TableArrayUpperBoundSafe == nil || !out.TableArrayUpperBoundSafe[load.ID] {
+		t.Fatalf("expected true-branch key guard plus len guard to prove upper bound:\n%s", Print(out))
+	}
+	if out.TableArrayLowerBoundSafe == nil || !out.TableArrayLowerBoundSafe[load.ID] {
+		t.Fatalf("expected key range to prove lower bound:\n%s", Print(out))
+	}
+}
+
+func TestTableArrayStaticBounds_MarksInductionKeyWithDominatingLenGuard(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "guarded_induction_key_bounds"}, NumRegs: 1}
+	entry, header, body, exit := buildSimpleLoop(fn)
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: entry}
+	arrHeader := &Instr{ID: fn.newValueID(), Op: OpTableArrayHeader, Type: TypeInt, Aux: int64(vm.FBKindMixed), Args: []*Value{tbl.Value()}, Block: entry}
+	length := &Instr{ID: fn.newValueID(), Op: OpTableArrayLen, Type: TypeInt, Aux: int64(vm.FBKindMixed), Args: []*Value{arrHeader.Value()}, Block: entry}
+	data := &Instr{ID: fn.newValueID(), Op: OpTableArrayData, Type: TypeInt, Aux: int64(vm.FBKindMixed), Args: []*Value{arrHeader.Value()}, Block: entry}
+	zero := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 0, Block: entry}
+	one := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: entry}
+	five := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 5, Block: entry}
+	lenOK := &Instr{ID: fn.newValueID(), Op: OpLtInt, Type: TypeBool, Args: []*Value{five.Value(), length.Value()}, Block: entry}
+	lenGuard := &Instr{ID: fn.newValueID(), Op: OpGuardTruthy, Type: TypeBool, Args: []*Value{lenOK.Value()}, Block: entry}
+	entry.Instrs = []*Instr{tbl, arrHeader, length, data, zero, one, five, lenOK, lenGuard, {ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Aux: int64(header.ID), Block: entry}}
+
+	phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: header}
+	key := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Args: []*Value{phi.Value(), one.Value()}, Block: header}
+	cond := &Instr{ID: fn.newValueID(), Op: OpLeInt, Type: TypeBool, Args: []*Value{key.Value(), five.Value()}, Block: header}
+	br := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Args: []*Value{cond.Value()}, Aux: int64(body.ID), Aux2: int64(exit.ID), Block: header}
+	header.Instrs = []*Instr{phi, key, cond, br}
+
+	load := &Instr{ID: fn.newValueID(), Op: OpTableArrayLoad, Type: TypeTable, Aux: int64(vm.FBKindMixed), Args: []*Value{data.Value(), length.Value(), key.Value()}, Block: body}
+	next := &Instr{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Aux: int64(header.ID), Block: body}
+	body.Instrs = []*Instr{load, next}
+	exit.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: exit}}
+	phi.Args = []*Value{zero.Value(), key.Value()}
+
+	out, err := TableArrayStaticBoundsPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.TableArrayUpperBoundSafe == nil || !out.TableArrayUpperBoundSafe[load.ID] {
+		t.Fatalf("expected induction key plus len guard to prove upper bound:\n%s", Print(out))
+	}
+	if out.TableArrayLowerBoundSafe == nil || !out.TableArrayLowerBoundSafe[load.ID] {
+		t.Fatalf("expected induction key to prove lower bound:\n%s", Print(out))
+	}
+}
+
+func TestTableArrayStaticBounds_MarksInductionKeyWithSplitPreheaderLenGuard(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "split_preheader_guarded_induction"}, NumRegs: 1}
+	entry := &Block{ID: 0}
+	preheader := &Block{ID: 1}
+	header := &Block{ID: 2}
+	body := &Block{ID: 3}
+	exit := &Block{ID: 4}
+	fn.Entry = entry
+	fn.Blocks = []*Block{entry, preheader, header, body, exit}
+	entry.Succs = []*Block{preheader}
+	preheader.Preds = []*Block{entry}
+	preheader.Succs = []*Block{header}
+	header.Preds = []*Block{preheader, body}
+	header.Succs = []*Block{body, exit}
+	body.Preds = []*Block{header}
+	body.Succs = []*Block{header}
+	exit.Preds = []*Block{header}
+
+	tbl := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeTable, Aux: 0, Block: entry}
+	zero := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 0, Block: entry}
+	one := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: entry}
+	five := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 5, Block: entry}
+	entry.Instrs = []*Instr{tbl, zero, one, five, {ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Aux: int64(preheader.ID), Block: entry}}
+
+	arrHeader := &Instr{ID: fn.newValueID(), Op: OpTableArrayHeader, Type: TypeInt, Aux: int64(vm.FBKindMixed), Args: []*Value{tbl.Value()}, Block: preheader}
+	length := &Instr{ID: fn.newValueID(), Op: OpTableArrayLen, Type: TypeInt, Aux: int64(vm.FBKindMixed), Args: []*Value{arrHeader.Value()}, Block: preheader}
+	data := &Instr{ID: fn.newValueID(), Op: OpTableArrayData, Type: TypeInt, Aux: int64(vm.FBKindMixed), Args: []*Value{arrHeader.Value()}, Block: preheader}
+	lenOK := &Instr{ID: fn.newValueID(), Op: OpLtInt, Type: TypeBool, Args: []*Value{five.Value(), length.Value()}, Block: preheader}
+	lenGuard := &Instr{ID: fn.newValueID(), Op: OpGuardTruthy, Type: TypeBool, Args: []*Value{lenOK.Value()}, Block: preheader}
+	preheader.Instrs = []*Instr{arrHeader, length, data, lenOK, lenGuard, {ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Aux: int64(header.ID), Block: preheader}}
+
+	phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: header}
+	key := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Args: []*Value{phi.Value(), one.Value()}, Block: header}
+	cond := &Instr{ID: fn.newValueID(), Op: OpLeInt, Type: TypeBool, Args: []*Value{key.Value(), five.Value()}, Block: header}
+	header.Instrs = []*Instr{phi, key, cond, {ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Args: []*Value{cond.Value()}, Aux: int64(body.ID), Aux2: int64(exit.ID), Block: header}}
+
+	load := &Instr{ID: fn.newValueID(), Op: OpTableArrayLoad, Type: TypeTable, Aux: int64(vm.FBKindMixed), Args: []*Value{data.Value(), length.Value(), key.Value()}, Block: body}
+	body.Instrs = []*Instr{load, {ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Aux: int64(header.ID), Block: body}}
+	exit.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: exit}}
+	phi.Args = []*Value{zero.Value(), key.Value()}
+
+	out, err := TableArrayStaticBoundsPass(fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.TableArrayUpperBoundSafe == nil || !out.TableArrayUpperBoundSafe[load.ID] {
+		t.Fatalf("expected split preheader len guard to prove upper bound:\n%s", Print(out))
+	}
+	if out.TableArrayLowerBoundSafe == nil || !out.TableArrayLowerBoundSafe[load.ID] {
+		t.Fatalf("expected induction key to prove lower bound:\n%s", Print(out))
+	}
+}
+
 func TestLoopRegionVersioning_RejectsAliasingNoGlobalCall(t *testing.T) {
 	fn, load := tableArrayBoundsCallLoopFixture(t, true)
 

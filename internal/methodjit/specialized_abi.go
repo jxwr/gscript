@@ -196,6 +196,9 @@ func AnalyzeSpecializedABI(proto *vm.FuncProto) SpecializedABI {
 			for i := 0; i < proto.NumParams; i++ {
 				slots[i] = specializedSlotRawInt
 			}
+			for slot, rep := range typedSelfForLoopBranchFacts(proto, paramReps, pc) {
+				setSpecializedSlot(slots, slot, rep)
+			}
 		}
 
 		op := vm.DecodeOp(inst)
@@ -280,10 +283,23 @@ func AnalyzeSpecializedABI(proto *vm.FuncProto) SpecializedABI {
 			default:
 				return specializedABIReject("non-single return")
 			}
+		case vm.OP_FORPREP:
+			if !specializedABIRepIsRawInt(getSpecializedSlot(slots, a)) ||
+				!specializedABIRepIsRawInt(getSpecializedSlot(slots, a+1)) ||
+				!specializedABIRepIsRawInt(getSpecializedSlot(slots, a+2)) {
+				return specializedABIReject("non-int for-loop control")
+			}
+			setSpecializedSlot(slots, a, specializedSlotRawInt)
+		case vm.OP_FORLOOP:
+			typedSelfApplyStableForLoopFacts(proto, paramReps, pc, a, slots)
+			setSpecializedSlot(slots, a, specializedSlotRawInt)
+			setSpecializedSlot(slots, a+1, specializedSlotRawInt)
+			setSpecializedSlot(slots, a+2, specializedSlotRawInt)
+			setSpecializedSlot(slots, a+3, specializedSlotRawInt)
 		case vm.OP_LOADNIL, vm.OP_LOADBOOL, vm.OP_GETUPVAL, vm.OP_NEWTABLE, vm.OP_NEWOBJECT2, vm.OP_NEWOBJECTN,
 			vm.OP_GETTABLE, vm.OP_SETTABLE, vm.OP_GETFIELD, vm.OP_SETFIELD,
 			vm.OP_SETLIST, vm.OP_APPEND, vm.OP_NOT, vm.OP_LEN, vm.OP_CONCAT,
-			vm.OP_POW, vm.OP_CLOSURE, vm.OP_FORPREP, vm.OP_FORLOOP,
+			vm.OP_POW, vm.OP_CLOSURE,
 			vm.OP_TFORCALL, vm.OP_TFORLOOP, vm.OP_VARARG, vm.OP_SELF,
 			vm.OP_GO, vm.OP_MAKECHAN, vm.OP_SEND, vm.OP_RECV:
 			return specializedABIReject("unsupported opcode")
@@ -342,7 +358,11 @@ func AnalyzeRawIntSelfABI(proto *vm.FuncProto) RawIntSelfABI {
 // parameter or a table return, such as makeTree(int)->table and
 // checkTree(table)->int.
 func AnalyzeTypedSelfABI(proto *vm.FuncProto) TypedSelfABI {
-	return analyzeTypedABI(proto, true)
+	abi := analyzeTypedABI(proto, true)
+	if abi.Eligible && abi.Return == SpecializedABIReturnNone {
+		return typedSelfABIReject("zero-result typed self ABI is disabled")
+	}
+	return abi
 }
 
 func analyzeTypedABI(proto *vm.FuncProto, requireSelfCall bool) TypedSelfABI {
@@ -751,6 +771,9 @@ func AnalyzeTypedPeerABI(proto *vm.FuncProto) TypedSelfABI {
 	if !abi.Eligible {
 		return abi
 	}
+	if abi.Return == SpecializedABIReturnNone && typedABIHasStaticSelfCall(proto) {
+		return typedSelfABIReject("zero-result self-recursive typed peer ABI is disabled")
+	}
 	for _, rep := range abi.Params {
 		if rep == SpecializedABIParamRawTablePtr {
 			return abi
@@ -763,6 +786,9 @@ func AnalyzeTypedPeerABIWithArgFacts(proto *vm.FuncProto, argFacts map[int]Fixed
 	abi := analyzeTypedABIWithArgFacts(proto, false, argFacts)
 	if !abi.Eligible {
 		return abi
+	}
+	if abi.Return == SpecializedABIReturnNone && typedABIHasStaticSelfCall(proto) {
+		return typedSelfABIReject("zero-result self-recursive typed peer ABI is disabled")
 	}
 	for _, rep := range abi.Params {
 		if rep == SpecializedABIParamRawTablePtr {
@@ -777,6 +803,9 @@ func AnalyzeTypedPeerABIWithFacts(proto *vm.FuncProto, argFacts map[int]FixedSha
 	if !abi.Eligible {
 		return abi
 	}
+	if abi.Return == SpecializedABIReturnNone && typedABIHasStaticSelfCall(proto) {
+		return typedSelfABIReject("zero-result self-recursive typed peer ABI is disabled")
+	}
 	for _, rep := range abi.Params {
 		if rep == SpecializedABIParamRawTablePtr {
 			return abi
@@ -790,6 +819,9 @@ func AnalyzeTypedPeerABIWithFactsAndGlobals(proto *vm.FuncProto, argFacts map[in
 	if !abi.Eligible {
 		return abi
 	}
+	if abi.Return == SpecializedABIReturnNone && typedABIHasStaticSelfCall(proto) {
+		return typedSelfABIReject("zero-result self-recursive typed peer ABI is disabled")
+	}
 	for _, rep := range abi.Params {
 		if rep == SpecializedABIParamRawTablePtr {
 			return abi
@@ -799,6 +831,82 @@ func AnalyzeTypedPeerABIWithFactsAndGlobals(proto *vm.FuncProto, argFacts map[in
 		return abi
 	}
 	return typedSelfABIReject("no table parameter")
+}
+
+func typedABIHasStaticSelfCall(proto *vm.FuncProto) bool {
+	if proto == nil || proto.Name == "" {
+		return false
+	}
+	slots := make([]bool, maxTrackedSlots)
+	for _, inst := range proto.Code {
+		op := vm.DecodeOp(inst)
+		a := vm.DecodeA(inst)
+		b := vm.DecodeB(inst)
+		switch op {
+		case vm.OP_GETGLOBAL:
+			if a >= 0 && a < len(slots) {
+				slots[a] = specializedABIConstString(proto, vm.DecodeBx(inst)) == proto.Name
+			}
+		case vm.OP_MOVE:
+			if a >= 0 && a < len(slots) {
+				slots[a] = b >= 0 && b < len(slots) && slots[b]
+			}
+		case vm.OP_CALL:
+			if a >= 0 && a < len(slots) && slots[a] {
+				return true
+			}
+			if a >= 0 && a < len(slots) {
+				slots[a] = false
+			}
+		default:
+			if typedABIOpWritesA(op) && a >= 0 && a < len(slots) {
+				slots[a] = false
+			}
+		}
+	}
+	return false
+}
+
+func typedABIOpWritesA(op vm.Opcode) bool {
+	switch op {
+	case vm.OP_SETUPVAL, vm.OP_SETGLOBAL, vm.OP_SETTABLE, vm.OP_SETFIELD,
+		vm.OP_EQ, vm.OP_LT, vm.OP_LE, vm.OP_TEST, vm.OP_JMP, vm.OP_RETURN,
+		vm.OP_FORLOOP, vm.OP_TFORLOOP, vm.OP_CLOSE:
+		return false
+	default:
+		return true
+	}
+}
+
+func protoReturnsOnlyNoResults(proto *vm.FuncProto) bool {
+	if proto == nil {
+		return false
+	}
+	sawReturn := false
+	for _, inst := range proto.Code {
+		if vm.DecodeOp(inst) != vm.OP_RETURN {
+			continue
+		}
+		sawReturn = true
+		if vm.DecodeB(inst) != 1 {
+			return false
+		}
+	}
+	return sawReturn
+}
+
+func protoHasRecursiveTableSurface(proto *vm.FuncProto) bool {
+	if proto == nil {
+		return false
+	}
+	for _, inst := range proto.Code {
+		switch vm.DecodeOp(inst) {
+		case vm.OP_GETTABLE, vm.OP_SETTABLE, vm.OP_GETFIELD, vm.OP_SETFIELD,
+			vm.OP_NEWTABLE, vm.OP_NEWOBJECT2, vm.OP_NEWOBJECTN, vm.OP_SETLIST, vm.OP_APPEND:
+			return true
+		}
+	}
+	return false
 }
 
 func qualifiesForNumericCrossRecursiveCandidate(proto *vm.FuncProto) bool {

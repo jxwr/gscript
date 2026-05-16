@@ -984,6 +984,11 @@ def main() -> int:
     parser.add_argument("--no-luajit", action="store_true", help="skip LuaJIT")
     parser.add_argument("--head-ref", default="HEAD", help="git ref for clean baseline snapshot")
     parser.add_argument(
+        "--same-workload",
+        action="store_true",
+        help="run the HEAD binary against current worktree benchmark files instead of HEAD snapshot files",
+    )
+    parser.add_argument(
         "--sort",
         choices=("input", "luajit-gap"),
         default="input",
@@ -1056,9 +1061,10 @@ def main() -> int:
                     row_scale.setdefault(name, change)
             row = BenchmarkResult(spec.name, spec.group, row_scale)
             for mode in modes:
+                head_input_root = root if args.same_workload else head_root
                 row.modes[mode] = {
                     "current": run_subject("current", mode, root, current_bin, luajit_bin, spec, tempdir, scale_overrides, args),
-                    "head": run_subject("head", mode, head_root, head_bin, luajit_bin, spec, tempdir, scale_overrides, args),
+                    "head": run_subject("head", mode, head_input_root, head_bin, luajit_bin, spec, tempdir, scale_overrides, args),
                     "luajit": run_subject("luajit", mode, root, None, luajit_bin, spec, tempdir, scale_overrides, args),
                 }
             results.append(row)

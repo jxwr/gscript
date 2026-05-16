@@ -72,6 +72,14 @@ N := 100000
 REPS := 2000
 MATRIX_SIZE := 300
 
+// Warm JIT feedback and tiering outside the measured sections. This benchmark
+// is intended to compare steady-state array access paths, not first-call
+// compilation or restart-style OSR setup cost.
+warm1 := int_array_sum(N)
+warm2 := float_dot_product(N)
+warm3 := array_swap_bench(N, REPS)
+warm4 := array_2d_access(MATRIX_SIZE)
+
 t0 := time.now()
 r1 := 0
 for rep := 1; rep <= 10; rep++ {

@@ -639,6 +639,24 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		}
 		s.values[instr.ID] = v
 
+	case OpStringFormatConstLen:
+		patternIdx := int(instr.Aux)
+		if patternIdx < 0 || patternIdx >= len(s.fn.StringFormatPatterns) {
+			return nil, false, fmt.Errorf("IR interpreter: string format len pattern %d out of range", patternIdx)
+		}
+		args := make([]runtime.Value, len(instr.Args)-1)
+		for i := 1; i < len(instr.Args); i++ {
+			args[i-1] = s.val(instr.Args[i])
+		}
+		if len(args) == 0 || !args[0].IsString() || args[0].Str() != s.fn.StringFormatPatterns[patternIdx] {
+			return nil, false, fmt.Errorf("IR interpreter: string format len guard mismatch")
+		}
+		v, err := runtime.StringFormatValue(args)
+		if err != nil {
+			return nil, false, err
+		}
+		s.values[instr.ID] = runtime.IntValue(int64(runtime.StringLen(v)))
+
 	case OpStringSplitPart:
 		if len(instr.Args) != 3 {
 			return nil, false, fmt.Errorf("IR interpreter: string split projection expects 3 args")

@@ -617,6 +617,10 @@ type CompiledFunction struct {
 	// holding constructor values for N-field table-exit fallback.
 	FixedTableArgSlots map[int][]int
 
+	// FixedRecordNewTableSites marks OpNewFixedTable instruction IDs whose
+	// values remain local to fixed-record aware field reads.
+	FixedRecordNewTableSites map[int]bool
+
 	// StringConstTables keeps compile-time string lookup tables alive after
 	// native code embeds their backing-array addresses.
 	StringConstTables [][]runtime.Value

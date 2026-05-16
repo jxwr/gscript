@@ -67,6 +67,9 @@ func analyzeFixedRecursiveTableFold(proto *vm.FuncProto) (*fixedRecursiveTableFo
 		return nil, false
 	}
 	for _, child := range children {
+		if child.field != "left" && child.field != "right" {
+			return nil, false
+		}
 		if expr.calls[child.field] != 1 {
 			return nil, false
 		}

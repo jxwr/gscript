@@ -84,7 +84,7 @@ local function advance(dt)
     end
 end
 
-local N = 500000
+local N = 2000000
 local dt = 0.01
 
 offsetMomentum()

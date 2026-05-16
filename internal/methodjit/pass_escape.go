@@ -22,6 +22,8 @@
 
 package methodjit
 
+import "github.com/gscript/gscript/internal/vm"
+
 // virtualAllocInfo describes a table allocation that passed
 // R158's MVP escape predicate. Populated by the analysis phase of
 // EscapeAnalysisPass (R159); consumed by the rewrite phase.
@@ -103,7 +105,7 @@ func identifyVirtualAllocsWithRemarks(fn *Function, remarks *OptimizationRemarks
 				// Rule 1: determine whether this use is OK or
 				// escapes the allocation.
 				switch instr.Op {
-				case OpGetField:
+				case OpGetField, OpGetFieldNumToFloat:
 					if argIdx != 0 {
 						kill(arg.ID, "table is used as a field key or value")
 						continue
@@ -192,6 +194,11 @@ func identifyVirtualPhis(fn *Function, candidates map[int]*virtualAllocInfo) map
 			continue
 		}
 		fm := make(map[string]int)
+		if initial := fixedTableInitialFieldSSA(fn, instrByID[allocID]); len(initial) > 0 {
+			for name, id := range initial {
+				fm[name] = id
+			}
+		}
 		block := fn.Blocks[info.blockID]
 		for _, ins := range block.Instrs {
 			if ins.Op != OpSetField || len(ins.Args) < 2 {
@@ -269,7 +276,7 @@ func identifyVirtualPhis(fn *Function, candidates map[int]*virtualAllocInfo) map
 						if use == nil || use.ID != instr.ID {
 							continue
 						}
-						if ins2.Op == OpGetField && ui == 0 {
+						if (ins2.Op == OpGetField || ins2.Op == OpGetFieldNumToFloat) && ui == 0 {
 							continue
 						}
 						allowedUse = false
@@ -333,6 +340,11 @@ func applyVirtualPhiRewrite(fn *Function, vphi *virtualPhiInfo,
 			return
 		}
 		fm := make(map[string]int)
+		if initial := fixedTableInitialFieldSSA(fn, instrByID[allocID]); len(initial) > 0 {
+			for name, id := range initial {
+				fm[name] = id
+			}
+		}
 		block := fn.Blocks[cand.blockID]
 		for _, ins := range block.Instrs {
 			if ins.Op == OpSetField && len(ins.Args) >= 2 &&
@@ -410,7 +422,7 @@ func applyVirtualPhiRewrite(fn *Function, vphi *virtualPhiInfo,
 	// Step 4: rewrite all GetField(vphi.phiID, Aux=F) uses.
 	for _, b := range fn.Blocks {
 		for _, ins := range b.Instrs {
-			if ins.Op != OpGetField || len(ins.Args) < 1 {
+			if (ins.Op != OpGetField && ins.Op != OpGetFieldNumToFloat) || len(ins.Args) < 1 {
 				continue
 			}
 			if ins.Args[0].ID != vphi.phiID {
@@ -557,7 +569,7 @@ func hasFixedTableScalarReplacementCandidate(fn *Function) bool {
 	}
 	for _, block := range fn.Blocks {
 		for _, instr := range block.Instrs {
-			if instr == nil || instr.Op != OpGetField || len(instr.Args) == 0 || instr.Args[0] == nil {
+			if instr == nil || (instr.Op != OpGetField && instr.Op != OpGetFieldNumToFloat) || len(instr.Args) == 0 || instr.Args[0] == nil {
 				continue
 			}
 			if fixedTables[instr.Args[0].ID] {
@@ -599,6 +611,9 @@ func EscapeAnalysisPass(fn *Function) (*Function, error) {
 	}
 
 	remarks := functionRemarks(fn)
+	if partialMaterializeTablesForReadonlyCalls(fn, remarks) {
+		relinkValueDefs(fn)
+	}
 	virtuals := identifyVirtualAllocsWithRemarks(fn, remarks)
 	if len(virtuals) == 0 {
 		return fn, nil
@@ -646,7 +661,7 @@ func EscapeAnalysisPass(fn *Function) (*Function, error) {
 		// and collect the final value for each field written in the allocation
 		// block. Dominated successor reads observe this end-of-block map.
 		for _, instr := range block.Instrs {
-			if instr.Op == OpGetField && len(instr.Args) >= 1 &&
+			if (instr.Op == OpGetField || instr.Op == OpGetFieldNumToFloat) && len(instr.Args) >= 1 &&
 				instr.Args[0].ID == allocID {
 				name := fieldNameFromAux(fn, instr.Aux)
 				if name == "" {
@@ -674,7 +689,7 @@ func EscapeAnalysisPass(fn *Function) (*Function, error) {
 					continue
 				}
 				for _, instr := range useBlock.Instrs {
-					if instr.Op != OpGetField || len(instr.Args) < 1 ||
+					if (instr.Op != OpGetField && instr.Op != OpGetFieldNumToFloat) || len(instr.Args) < 1 ||
 						instr.Args[0].ID != allocID {
 						continue
 					}
@@ -721,7 +736,7 @@ func EscapeAnalysisPass(fn *Function) (*Function, error) {
 				instr.Args = nil
 				instr.Aux = 0
 
-			case instr.Op == OpGetField && len(instr.Args) >= 1 &&
+			case (instr.Op == OpGetField || instr.Op == OpGetFieldNumToFloat) && len(instr.Args) >= 1 &&
 				instr.Args[0].ID == allocID:
 				name := fieldNameFromAux(fn, instr.Aux)
 				if name == "" {
@@ -751,7 +766,7 @@ func EscapeAnalysisPass(fn *Function) (*Function, error) {
 				continue
 			}
 			for _, instr := range useBlock.Instrs {
-				if instr.Op != OpGetField || len(instr.Args) < 1 ||
+				if (instr.Op != OpGetField && instr.Op != OpGetFieldNumToFloat) || len(instr.Args) < 1 ||
 					instr.Args[0].ID != allocID {
 					continue
 				}
@@ -791,4 +806,401 @@ func EscapeAnalysisPass(fn *Function) (*Function, error) {
 	}
 
 	return fn, nil
+}
+
+type partialMaterializeCtor struct {
+	keys   []string
+	args   []*Value
+	fields map[string]int
+	stores []*Instr
+}
+
+func partialMaterializeTablesForReadonlyCalls(fn *Function, remarks *OptimizationRemarks) bool {
+	if fn == nil || fn.Proto == nil || len(fn.Blocks) == 0 {
+		return false
+	}
+	instrByID := make(map[int]*Instr)
+	allocs := make([]*Instr, 0)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			instrByID[instr.ID] = instr
+			if instr.Op == OpNewFixedTable || instr.Op == OpNewTable {
+				allocs = append(allocs, instr)
+			}
+		}
+	}
+	if len(allocs) == 0 {
+		return false
+	}
+	changed := false
+	for _, alloc := range allocs {
+		ctor, ctorOK := partialMaterializeCtorForAlloc(fn, alloc)
+		if !ctorOK || len(ctor.fields) == 0 || len(ctor.args) == 0 {
+			continue
+		}
+		type callUse struct {
+			block  *Block
+			call   *Instr
+			argIdx int
+		}
+		var calls []callUse
+		var reads []*Instr
+		ok := true
+		dom := computeDominators(fn)
+		for _, block := range fn.Blocks {
+			for _, instr := range block.Instrs {
+				if instr == nil {
+					continue
+				}
+				for argIdx, arg := range instr.Args {
+					if arg == nil || arg.ID != alloc.ID {
+						continue
+					}
+					switch instr.Op {
+					case OpSetField:
+						if alloc.Op != OpNewTable || argIdx != 0 || !partialMaterializeContainsStore(ctor.stores, instr) {
+							ok = false
+							break
+						}
+					case OpGetField, OpGetFieldNumToFloat:
+						if argIdx != 0 {
+							ok = false
+							break
+						}
+						if block.ID != alloc.Block.ID && (dom == nil || !dom.dominates(alloc.Block.ID, block.ID)) {
+							ok = false
+							break
+						}
+						name := fieldNameFromAux(fn, instr.Aux)
+						if _, exists := ctor.fields[name]; name == "" || !exists {
+							ok = false
+							break
+						}
+						reads = append(reads, instr)
+					case OpCall:
+						if argIdx == 0 {
+							ok = false
+							break
+						}
+						_, callee := resolveCallee(instr, fn, InlineConfig{Globals: fn.Globals})
+						if !calleeArgFieldsReadonly(callee, argIdx-1) {
+							ok = false
+							break
+						}
+						if block.ID != alloc.Block.ID && (dom == nil || !dom.dominates(alloc.Block.ID, block.ID)) {
+							ok = false
+							break
+						}
+						calls = append(calls, callUse{block: block, call: instr, argIdx: argIdx})
+					default:
+						ok = false
+						break
+					}
+				}
+				if !ok {
+					break
+				}
+			}
+			if !ok {
+				break
+			}
+		}
+		if !ok || len(calls) == 0 || len(reads) == 0 {
+			continue
+		}
+		for _, read := range reads {
+			name := fieldNameFromAux(fn, read.Aux)
+			fieldID, exists := ctor.fields[name]
+			if !exists {
+				ok = false
+				break
+			}
+			def := instrByID[fieldID]
+			if def == nil {
+				ok = false
+				break
+			}
+			replaceAllUses(fn, read.ID, def)
+			read.Op = OpNop
+			read.Args = nil
+			read.Aux = 0
+			read.Aux2 = 0
+		}
+		if !ok {
+			continue
+		}
+		ctorIdx := int(alloc.Aux)
+		ctorAux2 := alloc.Aux2
+		if alloc.Op == OpNewTable {
+			ctorIdx = ensureFuncProtoTableCtorN(fn.Proto, ctor.keys)
+			ctorAux2 = int64(len(ctor.args))
+		}
+		for _, use := range calls {
+			clone := &Instr{
+				ID:    fn.newValueID(),
+				Op:    OpNewFixedTable,
+				Type:  alloc.Type,
+				Args:  append([]*Value(nil), ctor.args...),
+				Aux:   int64(ctorIdx),
+				Aux2:  ctorAux2,
+				Block: use.block,
+			}
+			clone.copySourceFrom(alloc)
+			insertBeforeInstr(use.block, use.call, clone)
+			use.call.Args[use.argIdx] = clone.Value()
+			instrByID[clone.ID] = clone
+		}
+		for _, store := range ctor.stores {
+			store.Op = OpNop
+			store.Args = nil
+			store.Aux = 0
+			store.Aux2 = 0
+		}
+		allocOp := alloc.Op
+		alloc.Op = OpNop
+		alloc.Args = nil
+		alloc.Aux = 0
+		alloc.Aux2 = 0
+		if remarks != nil {
+			remarks.Add("EscapeAnalysis", "changed", alloc.Block.ID, alloc.ID, allocOp,
+				"partially scalar-replaced table and materialized it only for readonly call arguments")
+		}
+		changed = true
+	}
+	return changed
+}
+
+func partialMaterializeCtorForAlloc(fn *Function, alloc *Instr) (partialMaterializeCtor, bool) {
+	if fn == nil || fn.Proto == nil || alloc == nil {
+		return partialMaterializeCtor{}, false
+	}
+	if alloc.Op == OpNewFixedTable {
+		fields := fixedTableInitialFieldSSA(fn, alloc)
+		if len(fields) == 0 || len(alloc.Args) == 0 {
+			return partialMaterializeCtor{}, false
+		}
+		keys := fixedTableCtorKeys(fn, alloc)
+		if len(keys) != len(alloc.Args) {
+			return partialMaterializeCtor{}, false
+		}
+		return partialMaterializeCtor{
+			keys:   keys,
+			args:   append([]*Value(nil), alloc.Args...),
+			fields: fields,
+		}, true
+	}
+	if alloc.Op != OpNewTable {
+		return partialMaterializeCtor{}, false
+	}
+	fact, hasFact := fn.FixedTableConstructors[alloc.ID]
+	expectedFields := 0
+	if hasFact {
+		expectedFields = len(fact.FieldNames)
+	} else if alloc.Aux == 0 && alloc.Aux2 > 2 {
+		expectedFields = int(alloc.Aux2)
+	}
+	if expectedFields > 0 && expectedFields <= 2 {
+		return partialMaterializeCtor{}, false
+	}
+	var allocBlock *Block
+	var allocIndex int
+	for _, block := range fn.Blocks {
+		for i, instr := range block.Instrs {
+			if instr == alloc {
+				allocBlock = block
+				allocIndex = i
+				break
+			}
+		}
+		if allocBlock != nil {
+			break
+		}
+	}
+	if allocBlock == nil {
+		return partialMaterializeCtor{}, false
+	}
+	capHint := expectedFields
+	if capHint <= 0 {
+		capHint = 4
+	}
+	keys := make([]string, 0, capHint)
+	args := make([]*Value, 0, capHint)
+	fields := make(map[string]int)
+	stores := make([]*Instr, 0, capHint)
+	for i := allocIndex + 1; i < len(allocBlock.Instrs); i++ {
+		instr := allocBlock.Instrs[i]
+		if instr == nil || instr.Op == OpNop {
+			continue
+		}
+		if !instrUsesValue(instr, alloc.ID) {
+			continue
+		}
+		if instr.Op != OpSetField || len(instr.Args) < 2 || instr.Args[0] == nil || instr.Args[0].ID != alloc.ID || instr.Args[1] == nil {
+			break
+		}
+		name := fieldNameFromAux(fn, instr.Aux)
+		if name == "" {
+			return partialMaterializeCtor{}, false
+		}
+		if _, dup := fields[name]; dup {
+			return partialMaterializeCtor{}, false
+		}
+		keys = append(keys, name)
+		args = append(args, instr.Args[1])
+		fields[name] = instr.Args[1].ID
+		stores = append(stores, instr)
+		if expectedFields > 0 && len(stores) == expectedFields {
+			break
+		}
+	}
+	if len(stores) <= 2 || (expectedFields > 0 && len(stores) != expectedFields) {
+		return partialMaterializeCtor{}, false
+	}
+	return partialMaterializeCtor{
+		keys:   keys,
+		args:   args,
+		fields: fields,
+		stores: stores,
+	}, true
+}
+
+func instrUsesValue(instr *Instr, valueID int) bool {
+	if instr == nil {
+		return false
+	}
+	for _, arg := range instr.Args {
+		if arg != nil && arg.ID == valueID {
+			return true
+		}
+	}
+	return false
+}
+
+func fixedTableCtorKeys(fn *Function, instr *Instr) []string {
+	if fn == nil || fn.Proto == nil || instr == nil || instr.Op != OpNewFixedTable {
+		return nil
+	}
+	switch int(instr.Aux2) {
+	case 2:
+		ctorIdx := int(instr.Aux)
+		if ctorIdx < 0 || ctorIdx >= len(fn.Proto.TableCtors2) {
+			return nil
+		}
+		ctor := fn.Proto.TableCtors2[ctorIdx].Runtime
+		return []string{ctor.Key1, ctor.Key2}
+	default:
+		ctorIdx := int(instr.Aux)
+		if ctorIdx < 0 || ctorIdx >= len(fn.Proto.TableCtorsN) {
+			return nil
+		}
+		return append([]string(nil), fn.Proto.TableCtorsN[ctorIdx].Runtime.Keys...)
+	}
+}
+
+func partialMaterializeContainsStore(stores []*Instr, instr *Instr) bool {
+	for _, store := range stores {
+		if store == instr {
+			return true
+		}
+	}
+	return false
+}
+
+func insertBeforeInstr(block *Block, before, instr *Instr) {
+	if block == nil || instr == nil {
+		return
+	}
+	if before == nil {
+		insertBeforeTerminator(block, instr)
+		return
+	}
+	for i, cur := range block.Instrs {
+		if cur == before {
+			block.Instrs = append(block.Instrs, nil)
+			copy(block.Instrs[i+1:], block.Instrs[i:])
+			block.Instrs[i] = instr
+			return
+		}
+	}
+	insertBeforeTerminator(block, instr)
+}
+
+func calleeArgFieldsReadonly(proto *vm.FuncProto, paramIdx int) bool {
+	if proto == nil || paramIdx < 0 || paramIdx >= proto.NumParams {
+		return false
+	}
+	fn := BuildGraph(proto)
+	if fn == nil || fn.Unpromotable {
+		return false
+	}
+	tracked := make(map[int]bool)
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			if instr.Op == OpLoadSlot && instr.Aux == int64(paramIdx) {
+				tracked[instr.ID] = true
+			}
+		}
+	}
+	if len(tracked) == 0 {
+		return false
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			switch instr.Op {
+			case OpStoreSlot:
+				if len(instr.Args) > 0 && instr.Args[0] != nil && tracked[instr.Args[0].ID] {
+					tracked[instr.ID] = true
+				}
+			case OpPhi:
+				for _, arg := range instr.Args {
+					if arg != nil && tracked[arg.ID] {
+						tracked[instr.ID] = true
+						break
+					}
+				}
+			}
+		}
+	}
+	for _, block := range fn.Blocks {
+		for _, instr := range block.Instrs {
+			if instr == nil {
+				continue
+			}
+			for argIdx, arg := range instr.Args {
+				if arg == nil || !tracked[arg.ID] {
+					continue
+				}
+				switch instr.Op {
+				case OpGetField, OpGetFieldNumToFloat, OpGetTable, OpLen, OpReturn:
+					continue
+				case OpSetTable:
+					if argIdx == 0 {
+						return false
+					}
+				case OpSetField, OpFieldStore, OpSetList, OpAppend,
+					OpTableArrayStore, OpTableArraySwap, OpTableArraySwapPairs,
+					OpTableBoolArrayFill, OpTableIntArrayReversePrefix, OpTableIntArrayCopyPrefix:
+					if argIdx == 0 {
+						return false
+					}
+				case OpCall, OpCallFloor, OpFieldCallFloor, OpSelf:
+					return false
+				default:
+					if argIdx == 0 {
+						return false
+					}
+				}
+			}
+		}
+	}
+	return true
 }

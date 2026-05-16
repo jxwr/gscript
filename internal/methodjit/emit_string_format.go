@@ -704,6 +704,100 @@ func (ec *emitContext) emitStringFormatConstNative(instr *Instr) {
 	asm.Label(doneLabel)
 }
 
+func (ec *emitContext) emitStringFormatConstLenNative(instr *Instr) {
+	if instr == nil || len(instr.Args) < 3 || ec.fn == nil {
+		ec.emitDeopt(instr)
+		return
+	}
+	patternIdx := int(instr.Aux)
+	if patternIdx < 0 || patternIdx >= len(ec.fn.StringFormatPatterns) {
+		ec.emitDeopt(instr)
+		return
+	}
+	pattern := ec.fn.StringFormatPatterns[patternIdx]
+	pat, ok := parseStringFormatConstIntPatternNative(pattern)
+	if !ok || len(pat.specs) != len(instr.Args)-2 || !stringFormatConstLenPatternIsIntOnly(pat) {
+		ec.emitDeopt(instr)
+		return
+	}
+	asm := ec.asm
+	slowLabel := ec.uniqueLabel("strfmt_len_slow")
+	doneLabel := ec.uniqueLabel("strfmt_len_done")
+
+	callee := ec.resolveValueNB(instr.Args[0].ID, jit.X0)
+	if callee != jit.X0 {
+		asm.MOVreg(jit.X0, callee)
+	}
+	ec.emitStdStringFormatGuard(jit.X0, slowLabel)
+
+	patternVal := ec.resolveValueNB(instr.Args[1].ID, jit.X1)
+	if patternVal != jit.X1 {
+		asm.MOVreg(jit.X1, patternVal)
+	}
+	ec.emitStringValueEqualsConstGuard(jit.X1, pattern, slowLabel)
+
+	if pat.staticLen > 0 {
+		asm.LoadImm64(jit.X15, int64(pat.staticLen))
+	} else {
+		asm.MOVimm16(jit.X15, 0)
+	}
+	asm.LoadImm64(jit.X10, 10)
+	for i, spec := range pat.specs {
+		arg := ec.resolveValueNB(instr.Args[i+2].ID, jit.X1)
+		if arg != jit.X1 {
+			asm.MOVreg(jit.X1, arg)
+		}
+		emitCheckIsInt(asm, jit.X1, jit.X2)
+		asm.BCond(jit.CondNE, slowLabel)
+		jit.EmitUnboxInt(asm, jit.X1, jit.X1)
+		asm.LoadImm64(jit.X3, math.MinInt64)
+		asm.CMPreg(jit.X1, jit.X3)
+		asm.BCond(jit.CondEQ, slowLabel)
+
+		nonNegLabel := ec.uniqueLabel("strfmt_len_only_nonneg")
+		digitLoopLabel := ec.uniqueLabel("strfmt_len_only_digit_loop")
+		digitDoneLabel := ec.uniqueLabel("strfmt_len_only_digit_done")
+		widthOKLabel := ec.uniqueLabel("strfmt_len_only_width_ok")
+
+		asm.MOVimm16(jit.X2, 0)
+		asm.MOVreg(jit.X3, jit.X1)
+		asm.CMPimm(jit.X1, 0)
+		asm.BCond(jit.CondGE, nonNegLabel)
+		asm.MOVimm16(jit.X2, 1)
+		asm.NEG(jit.X3, jit.X1)
+		asm.Label(nonNegLabel)
+
+		asm.MOVimm16(jit.X4, 0)
+		asm.Label(digitLoopLabel)
+		asm.SDIV(jit.X11, jit.X3, jit.X10)
+		asm.ADDimm(jit.X4, jit.X4, 1)
+		asm.MOVreg(jit.X3, jit.X11)
+		asm.CBNZ(jit.X3, digitLoopLabel)
+		asm.Label(digitDoneLabel)
+
+		asm.ADDreg(jit.X13, jit.X4, jit.X2)
+		asm.LoadImm64(jit.X14, int64(spec.width))
+		asm.CMPreg(jit.X14, jit.X13)
+		asm.BCond(jit.CondLE, widthOKLabel)
+		asm.MOVreg(jit.X13, jit.X14)
+		asm.Label(widthOKLabel)
+		asm.ADDreg(jit.X15, jit.X15, jit.X13)
+	}
+
+	if instr.Type == TypeInt {
+		ec.storeRawInt(jit.X15, instr.ID)
+		asm.B(doneLabel)
+	} else {
+		jit.EmitBoxIntFast(asm, jit.X0, jit.X15, mRegTagInt)
+		ec.storeResultNB(jit.X0, instr.ID)
+		asm.B(doneLabel)
+	}
+
+	asm.Label(slowLabel)
+	ec.emitDeopt(instr)
+	asm.Label(doneLabel)
+}
+
 func (ec *emitContext) emitFormatConstIntArgNative(argIdx, digitOff int, pad byte) {
 	asm := ec.asm
 	signLabel := ec.uniqueLabel("strfmtc_sign")

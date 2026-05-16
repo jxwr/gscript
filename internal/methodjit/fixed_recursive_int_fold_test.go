@@ -135,8 +135,8 @@ for rep := 1; rep <= 3; rep++ {
 		t.Fatal("fib proto not found")
 	}
 	cf := tm.tier2Compiled[fib]
-	if cf == nil || cf.FixedRecursiveIntFold == nil {
-		t.Fatalf("loop callee precompile did not prefer fixed recursive int fold; cf=%#v", cf)
+	if cf != nil && cf.FixedRecursiveIntFold != nil {
+		t.Fatalf("suppressed loop driver should not precompile fixed recursive int fold; cf=%#v", cf)
 	}
 }
 

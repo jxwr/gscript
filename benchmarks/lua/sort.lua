@@ -39,7 +39,7 @@ local function is_sorted(arr, n)
     return true
 end
 
-local N = 50000
+local N = 100000
 local REPS = 3
 
 local t0 = os.clock()

@@ -15,15 +15,21 @@ func fib_iter(n) {
 
 // Run many iterations of fib to accumulate measurable time
 func bench_fib_iter(n, reps) {
-    result := 0
+    checksum := 0
     for r := 1; r <= reps; r++ {
-        result = fib_iter(n)
+        m := n - (r % 8)
+        checksum = checksum + (fib_iter(m) % 997)
+        if checksum >= 1000000000 {
+            checksum = checksum - 1000000000
+        }
     }
-    return result
+    return checksum
 }
 
-N := 70
+N := 45
 REPS := 1000000
+
+warm := bench_fib_iter(N, 1000)
 
 t0 := time.now()
 result := bench_fib_iter(N, REPS)

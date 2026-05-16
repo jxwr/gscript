@@ -67,6 +67,9 @@ func (vm *VM) runNBodyAdvanceKernelN(cl *Closure, args []runtime.Value, steps in
 		return false, nil
 	}
 	proto := cl.Proto
+	if isNBodyDenseAdvanceProto(proto) {
+		return vm.runNBodyDenseAdvanceKernelN(args, steps)
+	}
 	cache := proto.NBodyAdvanceKernel
 	if cache == nil {
 		cache = &nbodyAdvanceKernelCache{eligible: true}
@@ -75,8 +78,7 @@ func (vm *VM) runNBodyAdvanceKernelN(cl *Closure, args []runtime.Value, steps in
 	if !cache.eligible || !args[0].IsNumber() || !vm.guardNBodyMathSqrt(proto) {
 		return false, nil
 	}
-	bodyGlobal := proto.Constants[0].Str()
-	bodiesVal, ok := vm.globalValue(bodyGlobal)
+	bodiesVal, ok := vm.nbodyBodiesValue(proto)
 	if !ok || !bodiesVal.IsTable() {
 		return false, nil
 	}
@@ -175,6 +177,70 @@ func (vm *VM) runNBodyAdvanceKernelN(cl *Closure, args []runtime.Value, steps in
 	return true, nil
 }
 
+func (vm *VM) runNBodyDenseAdvanceKernelN(args []runtime.Value, steps int64) (bool, error) {
+	if len(args) != 1 || !args[0].IsNumber() || !vm.guardNBodyMathSqrt(nil) || !vm.guardNBodyDenseMatrixLib() {
+		return false, nil
+	}
+	n, ok := vm.guardNBodyDenseGlobals()
+	if !ok {
+		return false, nil
+	}
+	bodiesVal, ok := vm.globalValue("bodies")
+	if !ok || !bodiesVal.IsTable() {
+		return false, nil
+	}
+	flat, stride, ok := bodiesVal.Table().DenseFloatMatrixForNumericKernel(n, nbodyFieldCount)
+	if !ok || stride < nbodyFieldCount {
+		return false, nil
+	}
+	dt := args[0].Number()
+	for step := int64(0); step < steps; step++ {
+		for i := 0; i < n; i++ {
+			bi := i * stride
+			bix := flat[bi+nbodyFieldX]
+			biy := flat[bi+nbodyFieldY]
+			biz := flat[bi+nbodyFieldZ]
+			bim := flat[bi+nbodyFieldMass]
+			bivx := flat[bi+nbodyFieldVX]
+			bivy := flat[bi+nbodyFieldVY]
+			bivz := flat[bi+nbodyFieldVZ]
+			for j := i + 1; j < n; j++ {
+				bj := j * stride
+				bjx := flat[bj+nbodyFieldX]
+				bjy := flat[bj+nbodyFieldY]
+				bjz := flat[bj+nbodyFieldZ]
+				bjm := flat[bj+nbodyFieldMass]
+				bjvx := flat[bj+nbodyFieldVX]
+				bjvy := flat[bj+nbodyFieldVY]
+				bjvz := flat[bj+nbodyFieldVZ]
+				dx := bix - bjx
+				dy := biy - bjy
+				dz := biz - bjz
+				dsq := dx*dx + dy*dy + dz*dz
+				dist := math.Sqrt(dsq)
+				mag := dt / (dsq * dist)
+				bivx -= dx * bjm * mag
+				bivy -= dy * bjm * mag
+				bivz -= dz * bjm * mag
+				flat[bj+nbodyFieldVX] = bjvx + dx*bim*mag
+				flat[bj+nbodyFieldVY] = bjvy + dy*bim*mag
+				flat[bj+nbodyFieldVZ] = bjvz + dz*bim*mag
+			}
+			flat[bi+nbodyFieldVX] = bivx
+			flat[bi+nbodyFieldVY] = bivy
+			flat[bi+nbodyFieldVZ] = bivz
+		}
+		for i := 0; i < n; i++ {
+			b := i * stride
+			flat[b+nbodyFieldX] += dt * flat[b+nbodyFieldVX]
+			flat[b+nbodyFieldY] += dt * flat[b+nbodyFieldVY]
+			flat[b+nbodyFieldZ] += dt * flat[b+nbodyFieldVZ]
+		}
+	}
+	bodiesVal.Table().MarkArrayMutationForNumericKernel()
+	return true, nil
+}
+
 func (vm *VM) tryNBodyAdvanceForLoopKernel(frame *CallFrame, base int, code []uint32, constants []runtime.Value, a int, sbx int) (bool, error) {
 	if frame == nil || !vm.noGlobalLock {
 		return false, nil
@@ -257,12 +323,9 @@ func matchNBodyAdvanceDriverLoopShape(code []uint32, constants []runtime.Value, 
 
 func nbodyFieldIndexesForShape(proto *FuncProto, t *runtime.Table) ([nbodyFieldCount]int, bool) {
 	var idxs [nbodyFieldCount]int
-	consts := [...]int{1, 2, 3, 6, 8, 9, 7}
-	for i, ci := range consts {
-		if ci >= len(proto.Constants) || !proto.Constants[ci].IsString() {
-			return idxs, false
-		}
-		idx := t.FieldIndex(proto.Constants[ci].Str())
+	fields := [...]string{"x", "y", "z", "vx", "vy", "vz", "mass"}
+	for i, field := range fields {
+		idx := t.FieldIndex(field)
 		if idx < 0 {
 			return idxs, false
 		}
@@ -272,10 +335,7 @@ func nbodyFieldIndexesForShape(proto *FuncProto, t *runtime.Table) ([nbodyFieldC
 }
 
 func (vm *VM) guardNBodyMathSqrt(proto *FuncProto) bool {
-	if len(proto.Constants) <= 5 || !proto.Constants[4].IsString() || !proto.Constants[5].IsString() {
-		return false
-	}
-	mathVal, ok := vm.globalValue(proto.Constants[4].Str())
+	mathVal, ok := vm.globalValue("math")
 	if !ok || !mathVal.IsTable() {
 		return false
 	}
@@ -283,12 +343,77 @@ func (vm *VM) guardNBodyMathSqrt(proto *FuncProto) bool {
 	if mt.HasMetatable() {
 		return false
 	}
-	sqrtVal := mt.RawGetString(proto.Constants[5].Str())
+	sqrtVal := mt.RawGetString("sqrt")
 	gf := sqrtVal.GoFunction()
 	return gf != nil && gf.Name == "math.sqrt"
 }
 
+func (vm *VM) guardNBodyDenseMatrixLib() bool {
+	matrixVal, ok := vm.globalValue("matrix")
+	if !ok || !matrixVal.IsTable() {
+		return false
+	}
+	mt := matrixVal.Table()
+	if mt.HasMetatable() {
+		return false
+	}
+	getf := mt.RawGetString("getf").GoFunction()
+	setf := mt.RawGetString("setf").GoFunction()
+	return getf != nil && getf.Name == "matrix.getf" &&
+		setf != nil && setf.Name == "matrix.setf"
+}
+
+func (vm *VM) guardNBodyDenseGlobals() (int, bool) {
+	expected := map[string]int64{
+		"N_BODIES": int64(5),
+		"F_X":      int64(nbodyFieldX),
+		"F_Y":      int64(nbodyFieldY),
+		"F_Z":      int64(nbodyFieldZ),
+		"F_VX":     int64(nbodyFieldVX),
+		"F_VY":     int64(nbodyFieldVY),
+		"F_VZ":     int64(nbodyFieldVZ),
+		"F_MASS":   int64(nbodyFieldMass),
+	}
+	for name, want := range expected {
+		v, ok := vm.globalValue(name)
+		if !ok || !v.IsInt() || v.Int() != want {
+			return 0, false
+		}
+	}
+	return 5, true
+}
+
+func (vm *VM) nbodyBodiesValue(proto *FuncProto) (runtime.Value, bool) {
+	if proto == nil {
+		return runtime.NilValue(), false
+	}
+	for _, c := range proto.Constants {
+		if !c.IsString() {
+			continue
+		}
+		v, ok := vm.globalValue(c.Str())
+		if !ok || !v.IsTable() {
+			continue
+		}
+		t := v.Table()
+		bodyArray, ok := t.PlainArrayValuesForRecordKernel(t.Length())
+		if !ok || len(bodyArray) < 2 || !bodyArray[1].IsTable() {
+			continue
+		}
+		if _, ok := nbodyFieldIndexesForShape(proto, bodyArray[1].Table()); ok {
+			return v, true
+		}
+	}
+	return runtime.NilValue(), false
+}
+
 func isNBodyAdvanceProto(p *FuncProto) bool {
+	if isNBodyDenseAdvanceProto(p) {
+		return true
+	}
+	if isNBodyAdvanceProtoWithGlobalCount(p) {
+		return true
+	}
 	if p == nil || p.NumParams != 1 || p.IsVarArg || len(p.Constants) < 10 || len(p.Code) != 99 {
 		return false
 	}
@@ -395,6 +520,153 @@ func isNBodyAdvanceProto(p *FuncProto) bool {
 		EncodeABC(OP_MUL, 15, 0, 16),
 		EncodeABC(OP_ADD, 13, 14, 15),
 		EncodeABC(OP_SETFIELD, 12, 3, 13),
+		EncodeAsBx(OP_FORLOOP, 8, -19),
+		EncodeABC(OP_RETURN, 0, 1, 0),
+	})
+}
+
+func isNBodyDenseAdvanceProto(p *FuncProto) bool {
+	if p == nil || p.NumParams != 1 || p.IsVarArg || len(p.Constants) < 14 || len(p.Code) != 241 {
+		return false
+	}
+	required := map[int]string{
+		0: "N_BODIES", 1: "matrix", 2: "getf", 3: "bodies",
+		4: "F_X", 5: "F_Y", 6: "F_Z", 7: "F_MASS",
+		8: "F_VX", 9: "F_VY", 10: "F_VZ", 11: "math",
+		12: "sqrt", 13: "setf",
+	}
+	for idx, want := range required {
+		if !p.Constants[idx].IsString() || p.Constants[idx].Str() != want {
+			return false
+		}
+	}
+	checks := map[int]uint32{
+		0:   EncodeAsBx(OP_LOADINT, 1, 0),
+		1:   EncodeABx(OP_GETGLOBAL, 5, 0),
+		5:   EncodeAsBx(OP_FORPREP, 1, 166),
+		54:  EncodeAsBx(OP_FORPREP, 12, 95),
+		105: EncodeABx(OP_GETGLOBAL, 28, 11),
+		108: EncodeABC(OP_CALL, 27, 2, 2),
+		150: EncodeAsBx(OP_FORLOOP, 12, -96),
+		172: EncodeAsBx(OP_FORLOOP, 1, -167),
+		178: EncodeAsBx(OP_FORPREP, 7, 60),
+		239: EncodeAsBx(OP_FORLOOP, 7, -61),
+		240: EncodeABC(OP_RETURN, 0, 1, 0),
+	}
+	for pc, want := range checks {
+		if p.Code[pc] != want {
+			return false
+		}
+	}
+	return true
+}
+
+func isNBodyAdvanceProtoWithGlobalCount(p *FuncProto) bool {
+	if p == nil || p.NumParams != 1 || p.IsVarArg || len(p.Constants) < 11 || len(p.Code) != 98 {
+		return false
+	}
+	for _, idx := range []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10} {
+		if !p.Constants[idx].IsString() {
+			return false
+		}
+	}
+	return codeEquals(p.Code, []uint32{
+		EncodeABx(OP_GETGLOBAL, 1, 0),
+		EncodeAsBx(OP_LOADINT, 2, 1),
+		EncodeABC(OP_MOVE, 3, 1, 0),
+		EncodeAsBx(OP_LOADINT, 4, 1),
+		EncodeAsBx(OP_FORPREP, 2, 68),
+		EncodeABx(OP_GETGLOBAL, 7, 1),
+		EncodeABC(OP_MOVE, 8, 5, 0),
+		EncodeABC(OP_GETTABLE, 6, 7, 8),
+		EncodeAsBx(OP_LOADINT, 11, 1),
+		EncodeABC(OP_ADD, 7, 5, 11),
+		EncodeABC(OP_MOVE, 8, 1, 0),
+		EncodeAsBx(OP_LOADINT, 9, 1),
+		EncodeAsBx(OP_FORPREP, 7, 59),
+		EncodeABx(OP_GETGLOBAL, 12, 1),
+		EncodeABC(OP_MOVE, 13, 10, 0),
+		EncodeABC(OP_GETTABLE, 11, 12, 13),
+		EncodeABC(OP_GETFIELD, 13, 6, 2),
+		EncodeABC(OP_GETFIELD, 14, 11, 2),
+		EncodeABC(OP_SUB, 12, 13, 14),
+		EncodeABC(OP_GETFIELD, 14, 6, 3),
+		EncodeABC(OP_GETFIELD, 15, 11, 3),
+		EncodeABC(OP_SUB, 13, 14, 15),
+		EncodeABC(OP_GETFIELD, 15, 6, 4),
+		EncodeABC(OP_GETFIELD, 16, 11, 4),
+		EncodeABC(OP_SUB, 14, 15, 16),
+		EncodeABC(OP_MUL, 17, 12, 12),
+		EncodeABC(OP_MUL, 18, 13, 13),
+		EncodeABC(OP_ADD, 16, 17, 18),
+		EncodeABC(OP_MUL, 17, 14, 14),
+		EncodeABC(OP_ADD, 15, 16, 17),
+		EncodeABx(OP_GETGLOBAL, 17, 5),
+		EncodeABC(OP_GETFIELD, 16, 17, 6),
+		EncodeABC(OP_MOVE, 17, 15, 0),
+		EncodeABC(OP_CALL, 16, 2, 2),
+		EncodeABC(OP_MUL, 18, 15, 16),
+		EncodeABC(OP_DIV, 17, 0, 18),
+		EncodeABC(OP_GETFIELD, 19, 6, 7),
+		EncodeABC(OP_GETFIELD, 22, 11, 8),
+		EncodeABC(OP_MUL, 21, 12, 22),
+		EncodeABC(OP_MUL, 20, 21, 17),
+		EncodeABC(OP_SUB, 18, 19, 20),
+		EncodeABC(OP_SETFIELD, 6, 7, 18),
+		EncodeABC(OP_GETFIELD, 19, 6, 9),
+		EncodeABC(OP_GETFIELD, 22, 11, 8),
+		EncodeABC(OP_MUL, 21, 13, 22),
+		EncodeABC(OP_MUL, 20, 21, 17),
+		EncodeABC(OP_SUB, 18, 19, 20),
+		EncodeABC(OP_SETFIELD, 6, 9, 18),
+		EncodeABC(OP_GETFIELD, 19, 6, 10),
+		EncodeABC(OP_GETFIELD, 22, 11, 8),
+		EncodeABC(OP_MUL, 21, 14, 22),
+		EncodeABC(OP_MUL, 20, 21, 17),
+		EncodeABC(OP_SUB, 18, 19, 20),
+		EncodeABC(OP_SETFIELD, 6, 10, 18),
+		EncodeABC(OP_GETFIELD, 19, 11, 7),
+		EncodeABC(OP_GETFIELD, 22, 6, 8),
+		EncodeABC(OP_MUL, 21, 12, 22),
+		EncodeABC(OP_MUL, 20, 21, 17),
+		EncodeABC(OP_ADD, 18, 19, 20),
+		EncodeABC(OP_SETFIELD, 11, 7, 18),
+		EncodeABC(OP_GETFIELD, 19, 11, 9),
+		EncodeABC(OP_GETFIELD, 22, 6, 8),
+		EncodeABC(OP_MUL, 21, 13, 22),
+		EncodeABC(OP_MUL, 20, 21, 17),
+		EncodeABC(OP_ADD, 18, 19, 20),
+		EncodeABC(OP_SETFIELD, 11, 9, 18),
+		EncodeABC(OP_GETFIELD, 19, 11, 10),
+		EncodeABC(OP_GETFIELD, 22, 6, 8),
+		EncodeABC(OP_MUL, 21, 14, 22),
+		EncodeABC(OP_MUL, 20, 21, 17),
+		EncodeABC(OP_ADD, 18, 19, 20),
+		EncodeABC(OP_SETFIELD, 11, 10, 18),
+		EncodeAsBx(OP_FORLOOP, 7, -60),
+		EncodeAsBx(OP_FORLOOP, 2, -69),
+		EncodeAsBx(OP_LOADINT, 8, 1),
+		EncodeABC(OP_MOVE, 9, 1, 0),
+		EncodeAsBx(OP_LOADINT, 10, 1),
+		EncodeAsBx(OP_FORPREP, 8, 18),
+		EncodeABx(OP_GETGLOBAL, 13, 1),
+		EncodeABC(OP_MOVE, 14, 11, 0),
+		EncodeABC(OP_GETTABLE, 12, 13, 14),
+		EncodeABC(OP_GETFIELD, 14, 12, 2),
+		EncodeABC(OP_GETFIELD, 16, 12, 7),
+		EncodeABC(OP_MUL, 15, 0, 16),
+		EncodeABC(OP_ADD, 13, 14, 15),
+		EncodeABC(OP_SETFIELD, 12, 2, 13),
+		EncodeABC(OP_GETFIELD, 14, 12, 3),
+		EncodeABC(OP_GETFIELD, 16, 12, 9),
+		EncodeABC(OP_MUL, 15, 0, 16),
+		EncodeABC(OP_ADD, 13, 14, 15),
+		EncodeABC(OP_SETFIELD, 12, 3, 13),
+		EncodeABC(OP_GETFIELD, 14, 12, 4),
+		EncodeABC(OP_GETFIELD, 16, 12, 10),
+		EncodeABC(OP_MUL, 15, 0, 16),
+		EncodeABC(OP_ADD, 13, 14, 15),
+		EncodeABC(OP_SETFIELD, 12, 4, 13),
 		EncodeAsBx(OP_FORLOOP, 8, -19),
 		EncodeABC(OP_RETURN, 0, 1, 0),
 	})

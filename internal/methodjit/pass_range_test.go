@@ -296,6 +296,35 @@ func TestRangePass_DuplicateBackedgeInductionUpdate(t *testing.T) {
 	}
 }
 
+func TestRangePass_MarksConstBoundPreIncrementInductionSafe(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "const_bound_preinc"}, NumRegs: 1}
+	entry, header, body, exit := buildSimpleLoop(fn)
+
+	zero := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 0, Block: entry}
+	one := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: entry}
+	limit := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 5, Block: entry}
+	entry.Instrs = []*Instr{zero, one, limit, {ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: entry, Aux: int64(header.ID)}}
+
+	phi := &Instr{ID: fn.newValueID(), Op: OpPhi, Type: TypeInt, Block: header}
+	add := &Instr{ID: fn.newValueID(), Op: OpAddInt, Type: TypeInt, Args: []*Value{phi.Value(), one.Value()}, Block: header}
+	cond := &Instr{ID: fn.newValueID(), Op: OpLeInt, Type: TypeBool, Args: []*Value{add.Value(), limit.Value()}, Block: header}
+	br := &Instr{ID: fn.newValueID(), Op: OpBranch, Type: TypeUnknown, Args: []*Value{cond.Value()}, Aux: int64(body.ID), Aux2: int64(exit.ID), Block: header}
+	header.Instrs = []*Instr{phi, add, cond, br}
+
+	body.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpJump, Type: TypeUnknown, Block: body, Aux: int64(header.ID)}}
+	exit.Instrs = []*Instr{{ID: fn.newValueID(), Op: OpReturn, Type: TypeUnknown, Block: exit}}
+	phi.Args = []*Value{zero.Value(), add.Value()}
+	assertValidates(t, fn, "const bound preinc input")
+
+	out, err := RangeAnalysisPass(fn)
+	if err != nil {
+		t.Fatalf("RangeAnalysisPass: %v", err)
+	}
+	if !out.Int48Safe[add.ID] {
+		t.Fatalf("pre-increment const-bound induction update should be Int48Safe:\n%s\nranges=%v", Print(out), out.IntRanges)
+	}
+}
+
 func TestRangePass_SeedsModuloRecurrencePhi(t *testing.T) {
 	fn := &Function{Proto: &vm.FuncProto{Name: "mod_recur"}}
 	b := &Block{ID: 0, defs: make(map[int]*Value)}

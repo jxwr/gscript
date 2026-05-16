@@ -147,6 +147,13 @@ elapsed := time.since(t0)
 
 e1 := energy()
 
+delta_e := e1 - e0
+if delta_e < 0.0 { delta_e = -delta_e }
+if delta_e < 0.000001 {
+    print("nbody_dense invalid: system state did not advance")
+    elapsed = 999.0
+}
+
 print(string.format("nbody_dense(%d steps)", N))
 print(string.format("Energy before: %.9f", e0))
 print(string.format("Energy after:  %.9f", e1))

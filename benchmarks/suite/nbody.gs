@@ -86,7 +86,7 @@ func advance(dt) {
     }
 }
 
-N := 500000
+N := 2000000
 dt := 0.01
 
 offsetMomentum()

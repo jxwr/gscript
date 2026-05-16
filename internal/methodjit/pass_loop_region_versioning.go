@@ -26,8 +26,6 @@ func LoopRegionVersioningPass(fn *Function) (*Function, error) {
 	if fn == nil || len(fn.Blocks) == 0 {
 		return fn, nil
 	}
-	fn.TableArrayUpperBoundSafe = nil
-	fn.TableArrayLowerBoundSafe = nil
 	fn.LoopTableArrayFacts = nil
 
 	li := computeLoopInfo(fn)
@@ -37,8 +35,8 @@ func LoopRegionVersioningPass(fn *Function) (*Function, error) {
 
 	dom := computeDominators(fn)
 	preheaders := computeLoopPreheaders(fn, li)
-	safe := make(map[int]bool)
-	lowerSafe := make(map[int]bool)
+	safe := cloneTableArrayBoolMap(fn.TableArrayUpperBoundSafe)
+	lowerSafe := cloneTableArrayBoolMap(fn.TableArrayLowerBoundSafe)
 	accessFacts := make(map[int]LoopTableArrayFact)
 
 	for _, header := range fn.Blocks {
@@ -82,6 +80,9 @@ func LoopRegionVersioningPass(fn *Function) (*Function, error) {
 				continue
 			}
 			for _, instr := range block.Instrs {
+				if loopRegionSkipAccess(instr) {
+					continue
+				}
 				fact, ok := loopRegionAccessFact(header.ID, preheader.ID, instr, regionFacts, key, guardedLimit)
 				if !ok && guard.Op == OpLeInt {
 					if insertedLoopLimitArrayLenGuard(fn, preheader, li.headerBlocks[header.ID], key, guardedLimit, instr, regionFacts, limitGuards) {
@@ -114,6 +115,8 @@ func LoopRegionVersioningPass(fn *Function) (*Function, error) {
 	}
 
 	if len(safe) == 0 {
+		fn.TableArrayUpperBoundSafe = nil
+		fn.TableArrayLowerBoundSafe = nil
 		return fn, nil
 	}
 	fn.TableArrayUpperBoundSafe = safe
@@ -122,6 +125,12 @@ func LoopRegionVersioningPass(fn *Function) (*Function, error) {
 	}
 	fn.LoopTableArrayFacts = accessFacts
 	return fn, nil
+}
+
+func loopRegionSkipAccess(instr *Instr) bool {
+	return instr != nil &&
+		instr.Op == OpTableArrayStore &&
+		instr.Aux2&tableArrayStoreFlagAllowGrow != 0
 }
 
 func loopRegionKeyNonNegative(fn *Function, li *loopInfo, header *Block, key *Value) bool {
@@ -165,6 +174,14 @@ func loopRegionKeyNonNegative(fn *Function, li *loopInfo, header *Block, key *Va
 // versioning stage.
 func TableArrayBoundsCheckHoistPass(fn *Function) (*Function, error) {
 	return LoopRegionVersioningPass(fn)
+}
+
+func cloneTableArrayBoolMap(src map[int]bool) map[int]bool {
+	dst := make(map[int]bool, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 type loopRegionTableArrayFact struct {

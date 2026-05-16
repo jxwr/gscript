@@ -287,8 +287,8 @@ func (tm *TieringManager) executeMutualRecursiveIntSCCArgs(cf *CompiledFunction,
 	if cf == nil || cf.MutualRecursiveIntSCC == nil || proto == nil {
 		return 0, false, fmt.Errorf("tier2: missing mutual recursive int SCC protocol")
 	}
-	proto.EnteredTier2 = 1
 	protocol := cf.MutualRecursiveIntSCC
+	markMutualRecursiveIntSCCEntered(protocol)
 	if !tm.mutualRecursiveIntSCCGlobalsMatch(protocol) {
 		tm.disableTier2AfterRuntimeDeopt(proto, "tier2: mutual recursive int SCC global changed")
 		return 0, false, fmt.Errorf("tier2: mutual recursive int SCC global changed")
@@ -323,6 +323,17 @@ func (tm *TieringManager) executeMutualRecursiveIntSCCArgs(cf *CompiledFunction,
 		protocol.last.Store(&mutualRecursiveIntLast{key: key, value: result})
 	}
 	return result, ok, nil
+}
+
+func markMutualRecursiveIntSCCEntered(protocol *mutualRecursiveIntSCCProtocol) {
+	if protocol == nil {
+		return
+	}
+	for _, p := range protocol.protos {
+		if p != nil {
+			p.EnteredTier2 = 1
+		}
+	}
 }
 
 func (tm *TieringManager) mutualRecursiveIntSCCGlobalsMatch(protocol *mutualRecursiveIntSCCProtocol) bool {

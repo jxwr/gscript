@@ -107,7 +107,9 @@ func TablePreallocHintPass(fn *Function) (*Function, error) {
 				}
 				if fn.Proto != nil && fn.Proto.TableKeyFeedback != nil && instr.HasSource && instr.SourcePC >= 0 && instr.SourcePC < len(fn.Proto.TableKeyFeedback) {
 					if feedbackHint, ok := tablePreallocArrayHintFromFeedback(fn.Proto.TableKeyFeedback[instr.SourcePC], largeLoopBuilder); ok {
-						arrayHint = feedbackHint
+						if feedbackHint > arrayHint {
+							arrayHint = feedbackHint
+						}
 					}
 				}
 				hint.observeArrayHint(arrayHint)

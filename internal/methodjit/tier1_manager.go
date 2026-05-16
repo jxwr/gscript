@@ -92,6 +92,10 @@ type BaselineJITEngine struct {
 	// protocolCallExecutor: when set by TieringManager, handleCall can dispatch
 	// already-compiled whole-call protocols without building a VM callee frame.
 	protocolCallExecutor func(runtime.Value, []runtime.Value, int, int, int) (bool, error)
+	// compiledTier2Executor: when set by TieringManager, handleCall can dispatch
+	// an already-promoted Tier 2 callee directly instead of routing through
+	// VM.CallValue on every hot Tier 1 -> Tier 2 call boundary.
+	compiledTier2Executor func(interface{}, []runtime.Value, int, *vm.FuncProto) ([]runtime.Value, error)
 	// osrHandler: when set, nested Tier 1 calls that hit the OSR back-edge
 	// counter are handled at the callee boundary instead of bubbling
 	// errOSRRequested to the caller as a generic JIT failure.
@@ -201,6 +205,10 @@ func (e *BaselineJITEngine) SetCompiledProtocolCallExecutor(fn func(runtime.Valu
 	e.protocolCallExecutor = fn
 }
 
+func (e *BaselineJITEngine) SetCompiledTier2Executor(fn func(interface{}, []runtime.Value, int, *vm.FuncProto) ([]runtime.Value, error)) {
+	e.compiledTier2Executor = fn
+}
+
 // SetOSRHandler sets a callback used when a nested Tier 1 callee requests OSR.
 func (e *BaselineJITEngine) SetOSRHandler(fn func([]runtime.Value, int, *vm.FuncProto) ([]runtime.Value, error)) {
 	e.osrHandler = fn
@@ -250,6 +258,9 @@ func nativeBLRReplaySafe(proto *vm.FuncProto) bool {
 	if proto == nil {
 		return true
 	}
+	if baselineHasStaticSelfAndNonSelfCall(proto) {
+		return false
+	}
 	seenSideEffect := false
 	for _, inst := range proto.Code {
 		op := vm.DecodeOp(inst)
@@ -261,6 +272,28 @@ func nativeBLRReplaySafe(proto *vm.FuncProto) bool {
 		}
 	}
 	return true
+}
+
+func baselineHasStaticSelfAndNonSelfCall(proto *vm.FuncProto) bool {
+	if proto == nil {
+		return false
+	}
+	hasSelfCall := false
+	hasNonSelfCall := false
+	for pc, inst := range proto.Code {
+		if vm.DecodeOp(inst) != vm.OP_CALL {
+			continue
+		}
+		if isBaselineStaticSelfCall(proto, pc, vm.DecodeA(inst)) {
+			hasSelfCall = true
+		} else {
+			hasNonSelfCall = true
+		}
+		if hasSelfCall && hasNonSelfCall {
+			return true
+		}
+	}
+	return false
 }
 
 func tier1OpHasNativeVisibleSideEffect(op vm.Opcode) bool {

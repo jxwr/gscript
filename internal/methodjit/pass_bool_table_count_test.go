@@ -51,7 +51,7 @@ result := sieve_once(100)
 	compareTier2Result(t, src, "result")
 }
 
-func TestBoolTableCountLoop_DoesNotRewriteUnboundedCountRange(t *testing.T) {
+func TestBoolTableCountLoop_RewritesGuardedCountRange(t *testing.T) {
 	src := `
 func count_flags(n) {
     flags := {}
@@ -75,8 +75,8 @@ result := count_flags(4)
 	if err != nil {
 		t.Fatalf("CompileForDiagnostics(count_flags): %v", err)
 	}
-	if strings.Contains(art.IRAfter, "TableBoolArrayCount") {
-		t.Fatalf("unbounded count range should not be rewritten:\n%s", art.IRAfter)
+	if !strings.Contains(art.IRAfter, "TableBoolArrayCount") {
+		t.Fatalf("guarded count range should be rewritten:\n%s", art.IRAfter)
 	}
 	compareTier2Result(t, src, "result")
 }

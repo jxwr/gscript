@@ -104,6 +104,7 @@ const (
 	OpStringConstLookup       // Args[0] indexes Function.StringConstTables[Aux], Aux2 = table length
 	OpStringFormatInt         // Args[0]=callee, Args[1]=pattern value, Args[2]=int; Aux indexes Function.StringFormatPatterns
 	OpStringFormatConst       // Args[0]=callee, Args[1]=const pattern, Args[2:]=values; Aux indexes Function.StringFormatPatterns
+	OpStringFormatConstLen    // Args[0]=callee, Args[1]=const pattern, Args[2:]=int values; Aux indexes Function.StringFormatPatterns
 	OpGetTableStringFormatInt // Args[0]=table, Args[1]=callee, Args[2]=pattern value, Args[3]=int; Aux indexes Function.StringFormatPatterns
 	OpStringSplitPart         // Args[0]=callee, Args[1]=string, Args[2]=sep; Aux = 1-based token index
 	OpStringSplitSubstr       // Args[0]=split callee, Args[1]=sub callee, Args[2]=string, Args[3]=sep; Aux indexes Function.StringSplitSubSpecs
@@ -314,6 +315,7 @@ var opNames = [...]string{
 	OpStringConstLookup:          "StringConstLookup",
 	OpStringFormatInt:            "StringFormatInt",
 	OpStringFormatConst:          "StringFormatConst",
+	OpStringFormatConstLen:       "StringFormatConstLen",
 	OpGetTableStringFormatInt:    "GetTableStringFormatInt",
 	OpStringSplitPart:            "StringSplitPart",
 	OpStringSplitSubstr:          "StringSplitSubstr",

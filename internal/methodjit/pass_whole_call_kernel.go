@@ -43,7 +43,7 @@ func AnnotateWholeCallKernelExits(fn *Function, globals map[string]*vm.FuncProto
 }
 
 func vmWholeCallKernelArity(n int) bool {
-	return n == 1 || n == 2 || n == 3
+	return n == 1 || n == 2 || n == 3 || n == 4
 }
 
 func stableNoResultWholeCallCandidate(fn *Function, instr *Instr, globals map[string]*vm.FuncProto, nArgs int) bool {

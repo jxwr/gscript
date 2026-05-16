@@ -88,6 +88,94 @@ func TestCallResultRangeGuardPass_RangeAnalysisConsumesGuard(t *testing.T) {
 	}
 }
 
+func TestCallResultRangeGuardPass_GuardsProfiledBoxedCallResult(t *testing.T) {
+	proto := &vm.FuncProto{
+		Name:             "call_result_boxed",
+		CallSiteFeedback: vm.NewCallSiteFeedbackVector(1),
+	}
+	for i := 0; i < int(callResultRangeGuardMinCount); i++ {
+		proto.CallSiteFeedback[0].ObserveCall(runtime.NilValue(), nil, 1, 1)
+		proto.CallSiteFeedback[0].ObserveResult(runtime.IntValue(int64(40 + i)))
+	}
+	fn := &Function{Proto: proto}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	callee := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeFunction, Aux: 0, Block: b}
+	call := &Instr{ID: fn.newValueID(), Op: OpCall, Type: TypeAny, Args: []*Value{callee.Value()}, Block: b, HasSource: true, SourcePC: 0, Aux: 0, Aux2: 1}
+	modBy := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 997, Block: b}
+	mod := &Instr{ID: fn.newValueID(), Op: OpMod, Type: TypeUnknown, Args: []*Value{call.Value(), modBy.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{mod.Value()}, Block: b}
+	b.Instrs = []*Instr{callee, call, modBy, mod, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	var err error
+	fn, err = CallResultRangeGuardPass(fn)
+	if err != nil {
+		t.Fatalf("CallResultRangeGuardPass: %v", err)
+	}
+	if len(fn.Blocks[0].Instrs) < 3 || fn.Blocks[0].Instrs[2].Op != OpGuardIntRange {
+		t.Fatalf("missing GuardIntRange after boxed call:\n%s", Print(fn))
+	}
+	guard := fn.Blocks[0].Instrs[2]
+	if mod.Args[0].ID != guard.ID {
+		t.Fatalf("Mod arg not rewritten to guard:\n%s", Print(fn))
+	}
+
+	fn, err = TypeSpecializePass(fn)
+	if err != nil {
+		t.Fatalf("TypeSpecializePass: %v", err)
+	}
+	if mod.Op != OpModInt {
+		t.Fatalf("guarded boxed call result should specialize Mod to ModInt:\n%s", Print(fn))
+	}
+}
+
+func TestCallResultRangeGuardPass_SpeculatesStableBoxedCallWithIntegerUse(t *testing.T) {
+	calleeProto := &vm.FuncProto{Name: "callee"}
+	proto := &vm.FuncProto{
+		Name:             "call_result_boxed_int_use",
+		CallSiteFeedback: vm.NewCallSiteFeedbackVector(1),
+	}
+	proto.CallSiteFeedback[0].Count = 1
+	proto.CallSiteFeedback[0].NArgs = 1
+	proto.CallSiteFeedback[0].ResultArity = 1
+	proto.CallSiteFeedback[0].CalleeVMProto = calleeProto
+	proto.CallSiteFeedback[0].CalleeVMProtos[0] = calleeProto
+	proto.CallSiteFeedback[0].CalleeVMProtoCount = 1
+
+	fn := &Function{Proto: proto}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	callee := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeFunction, Aux: 0, Block: b}
+	call := &Instr{ID: fn.newValueID(), Op: OpCall, Type: TypeAny, Args: []*Value{callee.Value()}, Block: b, HasSource: true, SourcePC: 0, Aux: 0, Aux2: 1}
+	modBy := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 997, Block: b}
+	mod := &Instr{ID: fn.newValueID(), Op: OpMod, Type: TypeUnknown, Args: []*Value{call.Value(), modBy.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{mod.Value()}, Block: b}
+	b.Instrs = []*Instr{callee, call, modBy, mod, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	var err error
+	fn, err = CallResultRangeGuardPass(fn)
+	if err != nil {
+		t.Fatalf("CallResultRangeGuardPass: %v", err)
+	}
+	if len(fn.Blocks[0].Instrs) < 3 || fn.Blocks[0].Instrs[2].Op != OpGuardIntRange {
+		t.Fatalf("missing speculative GuardIntRange after boxed call:\n%s", Print(fn))
+	}
+	guard := fn.Blocks[0].Instrs[2]
+	if guard.Aux != callFloorSpecRangeMin || guard.Aux2 != callFloorSpecRangeMax {
+		t.Fatalf("guard range=[%d,%d], want [%d,%d]", guard.Aux, guard.Aux2, callFloorSpecRangeMin, callFloorSpecRangeMax)
+	}
+
+	fn, err = TypeSpecializePass(fn)
+	if err != nil {
+		t.Fatalf("TypeSpecializePass: %v", err)
+	}
+	if mod.Op != OpModInt {
+		t.Fatalf("guarded boxed call result should specialize Mod to ModInt:\n%s", Print(fn))
+	}
+}
+
 func TestCallResultRangeGuardPass_SpeculatesStableFieldCallFloor(t *testing.T) {
 	proto := &vm.FuncProto{
 		Name:             "call_result_spec",

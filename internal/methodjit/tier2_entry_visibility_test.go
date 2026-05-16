@@ -66,10 +66,14 @@ result := fib(5)
 		t.Fatal("fib did not land in tier2Compiled after CompileTier2")
 	}
 
-	// Execute again to guarantee at least one post-promotion invocation
-	// dispatches through Tier 2 native code.
-	if _, err := v.Execute(proto); err != nil {
-		t.Fatalf("second Execute: %v", err)
+	// Call fib directly after promotion. <main> is intentionally kept out of
+	// Tier 2 until generic-exit continuations are restart-safe.
+	results, err := v.CallValue(v.GetGlobal("fib"), []runtime.Value{runtime.IntValue(5)})
+	if err != nil {
+		t.Fatalf("CallValue(fib): %v", err)
+	}
+	if len(results) == 0 || !results[0].IsInt() || results[0].Int() != 5 {
+		t.Fatalf("fib(5)=%v, want int 5", results)
 	}
 
 	if fibProto.EnteredTier2 != 1 {
