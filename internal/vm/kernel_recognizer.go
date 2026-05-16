@@ -66,7 +66,6 @@ const (
 	wholeCallKernelGroupByNestedAgg
 	wholeCallKernelActorsDispatchMutation
 	wholeCallKernelMandelbrotCount
-	wholeCallKernelSumPrimes
 	wholeCallKernelCount
 )
 
@@ -259,16 +258,6 @@ var wholeCallKernelRegistry = [wholeCallKernelCount]wholeCallKernelRecognizer{
 		},
 		recognize: isMandelbrotCountProto,
 		runValue:  (*VM).runMandelbrotCountWholeCallKernel,
-	},
-	{
-		info: KernelInfo{
-			Name:    "sum_primes_trial_division",
-			Route:   KernelRouteWholeCallValue,
-			Arity:   1,
-			Results: kernelWholeCallSingleResultCount,
-		},
-		recognize: isSumPrimesTrialDivisionProto,
-		runValue:  (*VM).runSumPrimesTrialDivisionWholeCallKernel,
 	},
 }
 
