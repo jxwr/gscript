@@ -1,0 +1,7 @@
+{
+  "timestamp": "2026-05-16T08:25:16Z",
+  "commit": "59768284b03386a701e35827ab8f9e011f2f296d",
+  "report_json": "benchmarks/data/history/2026-05-16.full_perf.json",
+  "report_markdown": "benchmarks/data/history/2026-05-16.full_perf.md",
+  "note": "Saved after the object-creation hot-path optimization landed. The raw timing_compare report was captured from the same code state before post-run cleanup."
+}
