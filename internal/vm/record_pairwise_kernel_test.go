@@ -54,7 +54,7 @@ func TestRecordPairwiseAdvanceKernelRecognizesStructuralProto(t *testing.T) {
 	}
 }
 
-func TestNBodyDenseAdvanceKernelRecognizesBenchmarkProto(t *testing.T) {
+func TestDenseRecordMatrixAdvanceKernelRecognizesBenchmarkProto(t *testing.T) {
 	src, err := os.ReadFile("../../benchmarks/suite/nbody_dense.gs")
 	if err != nil {
 		t.Fatalf("read nbody_dense benchmark: %v", err)
@@ -62,12 +62,12 @@ func TestNBodyDenseAdvanceKernelRecognizesBenchmarkProto(t *testing.T) {
 	proto, vm := compileSpectralKernelTestProgram(t, string(src))
 	defer vm.Close()
 	advance := findTestProtoByName(proto, "advance")
-	if advance == nil || !isNBodyDenseAdvanceProto(advance) || !HasRecordPairwiseAdvanceWholeCallKernel(advance) {
+	if advance == nil || !isDenseRecordMatrixAdvanceProto(advance) || !HasRecordPairwiseAdvanceWholeCallKernel(advance) {
 		t.Fatal("dense advance proto not recognized")
 	}
 }
 
-func TestNBodyDenseAdvanceLoopKernelMatchesFallback(t *testing.T) {
+func TestDenseRecordMatrixAdvanceLoopKernelMatchesFallback(t *testing.T) {
 	srcBytes, err := os.ReadFile("../../benchmarks/suite/nbody_dense.gs")
 	if err != nil {
 		t.Fatalf("read nbody_dense benchmark: %v", err)

@@ -18,10 +18,11 @@ const (
 )
 
 type recordPairwiseAdvanceKernelCache struct {
-	eligible bool
-	shapeID  uint32
-	idxs     [nbodyFieldCount]int
-	spec     *recordPairwiseAdvanceKernelSpec
+	eligible  bool
+	shapeID   uint32
+	idxs      [nbodyFieldCount]int
+	spec      *recordPairwiseAdvanceKernelSpec
+	denseSpec *denseRecordMatrixAdvanceKernelSpec
 }
 
 type nbodyRecord struct {
@@ -35,6 +36,17 @@ type recordPairwiseAdvanceKernelSpec struct {
 	sqrtTableName string
 	sqrtFieldName string
 	fieldNames    [nbodyFieldCount]string
+}
+
+type denseRecordMatrixAdvanceKernelSpec struct {
+	countName      string
+	matrixName     string
+	matrixGetName  string
+	matrixSetName  string
+	tableName      string
+	sqrtTableName  string
+	sqrtFieldName  string
+	fieldIndexName [nbodyFieldCount]string
 }
 
 type recordPairwiseAdvanceDriverLoopShape struct {
@@ -75,13 +87,23 @@ func (vm *VM) runRecordPairwiseAdvanceKernelN(cl *Closure, args []runtime.Value,
 		return false, nil
 	}
 	proto := cl.Proto
-	if isNBodyDenseAdvanceProto(proto) {
-		return vm.runNBodyDenseAdvanceKernelN(args, steps)
-	}
 	cache := proto.RecordPairwiseAdvanceKernel
 	if cache == nil {
 		cache = &recordPairwiseAdvanceKernelCache{eligible: true}
 		proto.RecordPairwiseAdvanceKernel = cache
+	}
+	if isDenseRecordMatrixAdvanceProto(proto) {
+		spec := cache.denseSpec
+		if spec == nil {
+			var ok bool
+			spec, ok = denseRecordMatrixAdvanceKernelSpecForProto(proto)
+			if !ok {
+				cache.eligible = false
+				return false, nil
+			}
+			cache.denseSpec = spec
+		}
+		return vm.runDenseRecordMatrixAdvanceKernelN(args, steps, spec)
 	}
 	spec := cache.spec
 	if spec == nil {
@@ -195,15 +217,15 @@ func (vm *VM) runRecordPairwiseAdvanceKernelN(cl *Closure, args []runtime.Value,
 	return true, nil
 }
 
-func (vm *VM) runNBodyDenseAdvanceKernelN(args []runtime.Value, steps int64) (bool, error) {
-	if len(args) != 1 || !args[0].IsNumber() || !vm.guardNBodyDenseMathSqrt() || !vm.guardNBodyDenseMatrixLib() {
+func (vm *VM) runDenseRecordMatrixAdvanceKernelN(args []runtime.Value, steps int64, spec *denseRecordMatrixAdvanceKernelSpec) (bool, error) {
+	if len(args) != 1 || !args[0].IsNumber() || !vm.guardDenseRecordMatrixSqrt(spec) || !vm.guardDenseRecordMatrixLib(spec) {
 		return false, nil
 	}
-	n, ok := vm.guardNBodyDenseGlobals()
+	n, fields, ok := vm.guardDenseRecordMatrixGlobals(spec)
 	if !ok {
 		return false, nil
 	}
-	bodiesVal, ok := vm.globalValue("bodies")
+	bodiesVal, ok := vm.globalValue(spec.tableName)
 	if !ok || !bodiesVal.IsTable() {
 		return false, nil
 	}
@@ -211,26 +233,29 @@ func (vm *VM) runNBodyDenseAdvanceKernelN(args []runtime.Value, steps int64) (bo
 	if !ok || stride < nbodyFieldCount {
 		return false, nil
 	}
+	fx, fy, fz := fields[nbodyFieldX], fields[nbodyFieldY], fields[nbodyFieldZ]
+	fvx, fvy, fvz := fields[nbodyFieldVX], fields[nbodyFieldVY], fields[nbodyFieldVZ]
+	fmass := fields[nbodyFieldMass]
 	dt := args[0].Number()
 	for step := int64(0); step < steps; step++ {
 		for i := 0; i < n; i++ {
 			bi := i * stride
-			bix := flat[bi+nbodyFieldX]
-			biy := flat[bi+nbodyFieldY]
-			biz := flat[bi+nbodyFieldZ]
-			bim := flat[bi+nbodyFieldMass]
-			bivx := flat[bi+nbodyFieldVX]
-			bivy := flat[bi+nbodyFieldVY]
-			bivz := flat[bi+nbodyFieldVZ]
+			bix := flat[bi+fx]
+			biy := flat[bi+fy]
+			biz := flat[bi+fz]
+			bim := flat[bi+fmass]
+			bivx := flat[bi+fvx]
+			bivy := flat[bi+fvy]
+			bivz := flat[bi+fvz]
 			for j := i + 1; j < n; j++ {
 				bj := j * stride
-				bjx := flat[bj+nbodyFieldX]
-				bjy := flat[bj+nbodyFieldY]
-				bjz := flat[bj+nbodyFieldZ]
-				bjm := flat[bj+nbodyFieldMass]
-				bjvx := flat[bj+nbodyFieldVX]
-				bjvy := flat[bj+nbodyFieldVY]
-				bjvz := flat[bj+nbodyFieldVZ]
+				bjx := flat[bj+fx]
+				bjy := flat[bj+fy]
+				bjz := flat[bj+fz]
+				bjm := flat[bj+fmass]
+				bjvx := flat[bj+fvx]
+				bjvy := flat[bj+fvy]
+				bjvz := flat[bj+fvz]
 				dx := bix - bjx
 				dy := biy - bjy
 				dz := biz - bjz
@@ -240,19 +265,19 @@ func (vm *VM) runNBodyDenseAdvanceKernelN(args []runtime.Value, steps int64) (bo
 				bivx -= dx * bjm * mag
 				bivy -= dy * bjm * mag
 				bivz -= dz * bjm * mag
-				flat[bj+nbodyFieldVX] = bjvx + dx*bim*mag
-				flat[bj+nbodyFieldVY] = bjvy + dy*bim*mag
-				flat[bj+nbodyFieldVZ] = bjvz + dz*bim*mag
+				flat[bj+fvx] = bjvx + dx*bim*mag
+				flat[bj+fvy] = bjvy + dy*bim*mag
+				flat[bj+fvz] = bjvz + dz*bim*mag
 			}
-			flat[bi+nbodyFieldVX] = bivx
-			flat[bi+nbodyFieldVY] = bivy
-			flat[bi+nbodyFieldVZ] = bivz
+			flat[bi+fvx] = bivx
+			flat[bi+fvy] = bivy
+			flat[bi+fvz] = bivz
 		}
 		for i := 0; i < n; i++ {
 			b := i * stride
-			flat[b+nbodyFieldX] += dt * flat[b+nbodyFieldVX]
-			flat[b+nbodyFieldY] += dt * flat[b+nbodyFieldVY]
-			flat[b+nbodyFieldZ] += dt * flat[b+nbodyFieldVZ]
+			flat[b+fx] += dt * flat[b+fvx]
+			flat[b+fy] += dt * flat[b+fvy]
+			flat[b+fz] += dt * flat[b+fvz]
 		}
 	}
 	bodiesVal.Table().MarkArrayMutationForNumericKernel()
@@ -364,8 +389,11 @@ func (vm *VM) guardRecordPairwiseSqrt(spec *recordPairwiseAdvanceKernelSpec) boo
 	return vm.guardGoFunctionField(spec.sqrtTableName, spec.sqrtFieldName, "math.sqrt")
 }
 
-func (vm *VM) guardNBodyDenseMathSqrt() bool {
-	return vm.guardGoFunctionField("math", "sqrt", "math.sqrt")
+func (vm *VM) guardDenseRecordMatrixSqrt(spec *denseRecordMatrixAdvanceKernelSpec) bool {
+	if spec == nil {
+		return false
+	}
+	return vm.guardGoFunctionField(spec.sqrtTableName, spec.sqrtFieldName, "math.sqrt")
 }
 
 func (vm *VM) guardGoFunctionField(tableName, fieldName, goName string) bool {
@@ -382,8 +410,11 @@ func (vm *VM) guardGoFunctionField(tableName, fieldName, goName string) bool {
 	return gf != nil && gf.Name == goName
 }
 
-func (vm *VM) guardNBodyDenseMatrixLib() bool {
-	matrixVal, ok := vm.globalValue("matrix")
+func (vm *VM) guardDenseRecordMatrixLib(spec *denseRecordMatrixAdvanceKernelSpec) bool {
+	if spec == nil {
+		return false
+	}
+	matrixVal, ok := vm.globalValue(spec.matrixName)
 	if !ok || !matrixVal.IsTable() {
 		return false
 	}
@@ -391,30 +422,36 @@ func (vm *VM) guardNBodyDenseMatrixLib() bool {
 	if mt.HasMetatable() {
 		return false
 	}
-	getf := mt.RawGetString("getf").GoFunction()
-	setf := mt.RawGetString("setf").GoFunction()
+	getf := mt.RawGetString(spec.matrixGetName).GoFunction()
+	setf := mt.RawGetString(spec.matrixSetName).GoFunction()
 	return getf != nil && getf.Name == "matrix.getf" &&
 		setf != nil && setf.Name == "matrix.setf"
 }
 
-func (vm *VM) guardNBodyDenseGlobals() (int, bool) {
-	expected := map[string]int64{
-		"N_BODIES": int64(5),
-		"F_X":      int64(nbodyFieldX),
-		"F_Y":      int64(nbodyFieldY),
-		"F_Z":      int64(nbodyFieldZ),
-		"F_VX":     int64(nbodyFieldVX),
-		"F_VY":     int64(nbodyFieldVY),
-		"F_VZ":     int64(nbodyFieldVZ),
-		"F_MASS":   int64(nbodyFieldMass),
+func (vm *VM) guardDenseRecordMatrixGlobals(spec *denseRecordMatrixAdvanceKernelSpec) (int, [nbodyFieldCount]int, bool) {
+	var fields [nbodyFieldCount]int
+	if spec == nil {
+		return 0, fields, false
 	}
-	for name, want := range expected {
+	count, ok := vm.globalValue(spec.countName)
+	if !ok || !count.IsInt() || count.Int() < 0 || count.Int() > 64 {
+		return 0, fields, false
+	}
+	seen := 0
+	for i, name := range spec.fieldIndexName {
 		v, ok := vm.globalValue(name)
-		if !ok || !v.IsInt() || v.Int() != want {
-			return 0, false
+		if !ok || !v.IsInt() || v.Int() < 0 || v.Int() >= nbodyFieldCount {
+			return 0, fields, false
 		}
+		idx := int(v.Int())
+		bit := 1 << idx
+		if seen&bit != 0 {
+			return 0, fields, false
+		}
+		seen |= bit
+		fields[i] = idx
 	}
-	return 5, true
+	return int(count.Int()), fields, true
 }
 
 func (vm *VM) recordPairwiseTableValue(spec *recordPairwiseAdvanceKernelSpec) (runtime.Value, bool) {
@@ -429,13 +466,51 @@ func (vm *VM) recordPairwiseTableValue(spec *recordPairwiseAdvanceKernelSpec) (r
 }
 
 func recordPairwiseAdvanceKernelSpecForProto(proto *FuncProto) (*recordPairwiseAdvanceKernelSpec, bool) {
-	if proto == nil || isNBodyDenseAdvanceProto(proto) {
+	if proto == nil || isDenseRecordMatrixAdvanceProto(proto) {
 		return nil, false
 	}
 	if isRecordPairwiseAdvanceProto(proto) {
 		return analyzeRecordPairwiseAdvanceKernelSpec(proto)
 	}
 	return nil, false
+}
+
+func denseRecordMatrixAdvanceKernelSpecForProto(proto *FuncProto) (*denseRecordMatrixAdvanceKernelSpec, bool) {
+	if !isDenseRecordMatrixAdvanceProto(proto) {
+		return nil, false
+	}
+	names := func(idxs ...int) ([]string, bool) {
+		out := make([]string, len(idxs))
+		for i, idx := range idxs {
+			name, ok := protoStringConstant(proto, idx)
+			if !ok {
+				return nil, false
+			}
+			out[i] = name
+		}
+		return out, true
+	}
+	vals, ok := names(0, 1, 2, 3, 11, 12, 13)
+	if !ok {
+		return nil, false
+	}
+	fieldVals, ok := names(4, 5, 6, 8, 9, 10, 7)
+	if !ok {
+		return nil, false
+	}
+	spec := &denseRecordMatrixAdvanceKernelSpec{
+		countName:     vals[0],
+		matrixName:    vals[1],
+		matrixGetName: vals[2],
+		tableName:     vals[3],
+		sqrtTableName: vals[4],
+		sqrtFieldName: vals[5],
+		matrixSetName: vals[6],
+	}
+	for i, name := range fieldVals {
+		spec.fieldIndexName[i] = name
+	}
+	return spec, true
 }
 
 func analyzeRecordPairwiseAdvanceKernelSpec(proto *FuncProto) (*recordPairwiseAdvanceKernelSpec, bool) {
@@ -620,7 +695,7 @@ func protoStringConstant(proto *FuncProto, idx int) (string, bool) {
 }
 
 func isRecordPairwiseAdvanceProto(p *FuncProto) bool {
-	if isNBodyDenseAdvanceProto(p) {
+	if isDenseRecordMatrixAdvanceProto(p) {
 		return true
 	}
 	if isRecordPairwiseAdvanceProtoWithGlobalCount(p) {
@@ -737,18 +812,12 @@ func isRecordPairwiseAdvanceProto(p *FuncProto) bool {
 	})
 }
 
-func isNBodyDenseAdvanceProto(p *FuncProto) bool {
+func isDenseRecordMatrixAdvanceProto(p *FuncProto) bool {
 	if p == nil || p.NumParams != 1 || p.IsVarArg || len(p.Constants) < 14 || len(p.Code) != 241 {
 		return false
 	}
-	required := map[int]string{
-		0: "N_BODIES", 1: "matrix", 2: "getf", 3: "bodies",
-		4: "F_X", 5: "F_Y", 6: "F_Z", 7: "F_MASS",
-		8: "F_VX", 9: "F_VY", 10: "F_VZ", 11: "math",
-		12: "sqrt", 13: "setf",
-	}
-	for idx, want := range required {
-		if !p.Constants[idx].IsString() || p.Constants[idx].Str() != want {
+	for idx := 0; idx <= 13; idx++ {
+		if !p.Constants[idx].IsString() {
 			return false
 		}
 	}
