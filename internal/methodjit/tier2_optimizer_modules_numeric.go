@@ -4,6 +4,8 @@ func tier2NumericModules() []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
 		tier2PassModule("LoopBoundRangeGuard", Tier2PhaseNumeric, LoopBoundRangeGuardPass),
 		tier2PassModule("ObservedParamRangeGuard", Tier2PhaseNumeric, ObservedParamRangeGuardPass),
+		tier2PassModule("ExactGuardConst", Tier2PhaseNumeric, ExactGuardConstPass),
+		tier2PassModule("ConstProp (post-ExactGuardConst)", Tier2PhaseNumeric, ConstPropPass),
 		tier2PassModule("RangeAnalysis", Tier2PhaseNumeric, RangeAnalysisPass),
 		{
 			Name:  "OverflowBoxing",
@@ -43,6 +45,9 @@ func tier2NumericModules() []Tier2OptimizerModule {
 		tier2PassModule("DCE (post-ModRangeSimplify)", Tier2PhaseNumeric, DCEPass),
 		tier2PassModule("ModZeroCompare", Tier2PhaseNumeric, ModZeroComparePass),
 		tier2PassModule("DCE (post-ModZeroCompare)", Tier2PhaseNumeric, DCEPass),
+		tier2PassModule("ConstantPhiBranchThreading", Tier2PhaseNumeric, ConstantPhiBranchThreadingPass),
+		tier2PassModule("JumpOnlyThreading", Tier2PhaseNumeric, JumpOnlyThreadingPass),
+		tier2PassModule("SimplifyPhis (post-ConstantPhiBranchThreading)", Tier2PhaseNumeric, SimplifyPhisPass),
 	}
 }
 
@@ -91,6 +96,7 @@ func tier2FloatNumericModules() []Tier2OptimizerModule {
 		tier2PassModule("FMAFusion", Tier2PhaseFloatNumeric, FMAFusionPass),
 		tier2PassModule("FloatStrengthReduction", Tier2PhaseFloatNumeric, FloatStrengthReductionPass),
 		tier2PassModule("FMAFusion (post-FloatStrengthReduction)", Tier2PhaseFloatNumeric, FMAFusionPass),
+		tier2PassModule("ComplexEscapeLoop", Tier2PhaseFloatNumeric, ComplexEscapeLoopPass),
 	}
 }
 

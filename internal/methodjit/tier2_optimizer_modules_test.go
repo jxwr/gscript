@@ -144,6 +144,8 @@ func TestTier2NumericModuleOrder(t *testing.T) {
 	assertTier2ModuleOrder(t, tier2NumericModules(), Tier2PhaseNumeric, []string{
 		"LoopBoundRangeGuard",
 		"ObservedParamRangeGuard",
+		"ExactGuardConst",
+		"ConstProp (post-ExactGuardConst)",
 		"RangeAnalysis",
 		"OverflowBoxing",
 		"IntExactDivision",
@@ -152,6 +154,9 @@ func TestTier2NumericModuleOrder(t *testing.T) {
 		"DCE (post-ModRangeSimplify)",
 		"ModZeroCompare",
 		"DCE (post-ModZeroCompare)",
+		"ConstantPhiBranchThreading",
+		"JumpOnlyThreading",
+		"SimplifyPhis (post-ConstantPhiBranchThreading)",
 	})
 }
 
@@ -199,6 +204,7 @@ func TestTier2FloatNumericModuleOrder(t *testing.T) {
 		"FMAFusion",
 		"FloatStrengthReduction",
 		"FMAFusion (post-FloatStrengthReduction)",
+		"ComplexEscapeLoop",
 	})
 }
 

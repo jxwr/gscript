@@ -84,6 +84,13 @@ const (
 	// Emitted by FMAFusionPass for SubFloat(acc, single-use MulFloat(a,b)).
 	// Single-insn ARM64 FMSUBd.
 	OpFMSUB
+	// Runtime loop specialization for fixed-bound complex escape iteration.
+	// Args = [ci, cr], Aux = max iterations, Aux2 = escape radius squared bits.
+	// Returns true when the point stayed inside for all iterations.
+	OpComplexEscapeInSet
+	// Row-count variant of the same runtime specialization.
+	// Args = [y, two, recip, ciBias, crBias], Aux = max iterations, Aux2 = row size.
+	OpComplexEscapeRowCount
 
 	// Comparison (type-generic)
 	OpEq // Args[0] == Args[1]
@@ -301,6 +308,8 @@ var opNames = [...]string{
 	OpMatrixStoreFRowConst:       "MatrixStoreFRowConst",
 	OpFMA:                        "FMA",
 	OpFMSUB:                      "FMSUB",
+	OpComplexEscapeInSet:         "ComplexEscapeInSet",
+	OpComplexEscapeRowCount:      "ComplexEscapeRowCount",
 	OpEq:                         "Eq",
 	OpLt:                         "Lt",
 	OpLe:                         "Le",

@@ -23,11 +23,11 @@ func ObservedParamRangeGuardPass(fn *Function) (*Function, error) {
 			continue
 		}
 		rf := fn.Proto.ArgIntRangeFeedback[slot]
-		if rf.Count < observedParamRangeGuardMinCount {
-			continue
-		}
 		min, max, stable := rf.StableRange()
 		if !stable {
+			continue
+		}
+		if rf.Count < observedParamRangeGuardMinCount && !canSingleObservationParamRangeGuard(fn, rf) {
 			continue
 		}
 		if next := nextRangeGuardForSource(block, i, instr.ID); next != nil {
@@ -68,6 +68,16 @@ func ObservedParamRangeGuardPass(fn *Function) (*Function, error) {
 			"no stable integer parameter range feedback")
 	}
 	return fn, nil
+}
+
+func canSingleObservationParamRangeGuard(fn *Function, rf interface {
+	StableRange() (int64, int64, bool)
+}) bool {
+	if fn == nil {
+		return false
+	}
+	min, max, stable := rf.StableRange()
+	return stable && min == max && computeLoopInfo(fn).hasLoops()
 }
 
 func nextRangeGuardForSource(block *Block, idx int, sourceID int) *Instr {

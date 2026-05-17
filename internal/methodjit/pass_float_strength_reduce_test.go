@@ -62,6 +62,34 @@ func TestFloatStrengthReduction_DoesNotRewriteNonPowerOfTwo(t *testing.T) {
 	}
 }
 
+func TestFloatStrengthReduction_RewritesExactGuardedIntDivisor(t *testing.T) {
+	fn := &Function{}
+	b := &Block{ID: 0}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	x := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeFloat, Aux: 0, Block: b}
+	n := &Instr{ID: fn.newValueID(), Op: OpLoadSlot, Type: TypeInt, Aux: 1, Block: b}
+	guard := &Instr{ID: fn.newValueID(), Op: OpGuardIntRange, Type: TypeInt, Args: []*Value{n.Value()}, Aux: 1000, Aux2: 1000, Block: b}
+	div := &Instr{ID: fn.newValueID(), Op: OpDivFloat, Type: TypeFloat, Args: []*Value{x.Value(), guard.Value()}, Block: b}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Args: []*Value{div.Value()}, Block: b}
+	b.Instrs = []*Instr{x, n, guard, div, ret}
+
+	if _, err := FloatStrengthReductionPass(fn); err != nil {
+		t.Fatalf("FloatStrengthReductionPass: %v", err)
+	}
+	if div.Op != OpMulFloat {
+		t.Fatalf("exact guarded int divisor should be rewritten:\n%s", Print(fn))
+	}
+	recip := div.Args[1].Def
+	if recip == nil || recip.Op != OpConstFloat {
+		t.Fatalf("expected reciprocal ConstFloat, got %#v", recip)
+	}
+	if got := math.Float64frombits(uint64(recip.Aux)); got != 0.001 {
+		t.Fatalf("reciprocal = %v, want 0.001", got)
+	}
+}
+
 func TestFloatStrengthReduction_ExposesFMA(t *testing.T) {
 	fn := &Function{}
 	b := &Block{ID: 0}

@@ -215,6 +215,26 @@ func f(n) {
 	}
 }
 
+func TestObservedParamRangeGuard_AllowsSingleExactObservationForLoop(t *testing.T) {
+	fn := buildForLoopBoundRangeGuardTest(t, `
+func f(n) {
+    total := 0
+    for i := 0; i < n; i++ {
+        total = total + i
+    }
+    return total
+}
+`)
+	fn.Proto.ArgIntRangeFeedback = []vm.IntRangeFeedback{{Count: 1, Min: 45, Max: 45}}
+	out, err := ObservedParamRangeGuardPass(fn)
+	if err != nil {
+		t.Fatalf("ObservedParamRangeGuardPass: %v", err)
+	}
+	if countOps(out)[OpGuardIntRange] != 1 {
+		t.Fatalf("single exact loop observation should emit guarded specialization\nIR:\n%s", Print(out))
+	}
+}
+
 func TestObservedParamRangeGuard_UsesTwoStableObservations(t *testing.T) {
 	fn := buildForLoopBoundRangeGuardTest(t, `
 func f(n) {

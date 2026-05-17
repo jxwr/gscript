@@ -1577,7 +1577,7 @@ func freeDeadValues(block *Block, instrIdx int, alloc *RegAllocation, gprs, fprs
 func needsFloatReg(instr *Instr) bool {
 	// Comparisons produce bools, not floats, regardless of operand type.
 	switch instr.Op {
-	case OpLtFloat, OpLeFloat:
+	case OpLtFloat, OpLeFloat, OpComplexEscapeInSet:
 		return false
 	}
 	if instr.Type == TypeFloat {

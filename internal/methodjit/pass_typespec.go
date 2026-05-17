@@ -539,8 +539,10 @@ func (ts *typeSpecializer) inferType(instr *Instr) Type {
 		return TypeFloat
 	case OpFloor:
 		return TypeInt
-	case OpEqInt, OpLtInt, OpLeInt, OpModZeroInt, OpLtFloat, OpLeFloat, OpEqString:
+	case OpEqInt, OpLtInt, OpLeInt, OpModZeroInt, OpLtFloat, OpLeFloat, OpEqString, OpComplexEscapeInSet:
 		return TypeBool
+	case OpComplexEscapeRowCount:
+		return TypeInt
 	case OpEq, OpLt, OpLe, OpNot:
 		return TypeBool
 	case OpLen:

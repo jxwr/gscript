@@ -28,6 +28,11 @@ func FloatStrengthReductionPass(fn *Function) (*Function, error) {
 				continue
 			}
 			reciprocal, ok := pow2Reciprocal(instr.Args[1])
+			reason := "rewrote " + instr.Op.String() + " by power-of-two constant to MulFloat"
+			if !ok {
+				reciprocal, ok = exactGuardedIntReciprocal(instr.Args[1])
+				reason = "rewrote " + instr.Op.String() + " by exact guarded int divisor to MulFloat"
+			}
 			if !ok {
 				continue
 			}
@@ -44,14 +49,13 @@ func FloatStrengthReductionPass(fn *Function) (*Function, error) {
 			block.Instrs[i] = c
 			i++
 
-			before := instr.Op
 			instr.Op = OpMulFloat
 			instr.Type = TypeFloat
 			instr.Args = []*Value{instr.Args[0], c.Value()}
 			instr.Aux = 0
 			instr.Aux2 = 0
 			functionRemarks(fn).Add("FloatStrengthReduction", "changed", block.ID, instr.ID, instr.Op,
-				"rewrote "+before.String()+" by power-of-two constant to MulFloat")
+				reason)
 		}
 	}
 	return fn, nil
@@ -183,6 +187,26 @@ func pow2Reciprocal(v *Value) (float64, bool) {
 			return 0, false
 		}
 		return 1.0 / d, true
+	default:
+		return 0, false
+	}
+}
+
+func exactGuardedIntReciprocal(v *Value) (float64, bool) {
+	if v == nil || v.Def == nil {
+		return 0, false
+	}
+	switch v.Def.Op {
+	case OpGuardIntRange:
+		if v.Def.Aux != v.Def.Aux2 || v.Def.Aux == 0 {
+			return 0, false
+		}
+		return 1.0 / float64(v.Def.Aux), true
+	case OpConstInt:
+		if v.Def.Aux2 != 1 || v.Def.Aux == 0 {
+			return 0, false
+		}
+		return 1.0 / float64(v.Def.Aux), true
 	default:
 		return 0, false
 	}

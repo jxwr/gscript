@@ -167,6 +167,10 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitFloatCmp(instr, jit.CondLT)
 	case OpLeFloat:
 		ec.emitFloatCmp(instr, jit.CondLE)
+	case OpComplexEscapeInSet:
+		ec.emitComplexEscapeInSet(instr)
+	case OpComplexEscapeRowCount:
+		ec.emitComplexEscapeRowCount(instr)
 
 	// --- Phi ---
 	case OpPhi:
@@ -397,7 +401,7 @@ func instrPreservesTableArrayBoundedKeys(instr *Instr) bool {
 		OpSqrt, OpFloor, OpFMA, OpFMSUB,
 		OpEq, OpLt, OpLe,
 		OpEqInt, OpLtInt, OpLeInt, OpModZeroInt, OpEqString,
-		OpLtFloat, OpLeFloat,
+		OpLtFloat, OpLeFloat, OpComplexEscapeInSet, OpComplexEscapeRowCount,
 		OpBoxInt, OpBoxFloat, OpUnboxInt, OpUnboxFloat,
 		OpNumToFloat, OpGuardType, OpGuardIntRange, OpGuardGlobalConst, OpGuardConstString, OpGuardTableKind, OpGuardCalleeProto, OpGuardFieldCalleeProto, OpGuardShapeFieldType, OpGuardShapeFieldTypeMask, OpGuardTruthy,
 		OpTableArrayHeader, OpTableArrayLen, OpTableArrayData, OpTableArrayLoad, OpTableShapeID, OpTableArrayStore, OpTableArraySwap, OpTableArraySwapPairs,
@@ -419,7 +423,7 @@ func instrPreservesFieldSvalsCache(instr *Instr) bool {
 		return true
 	case OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpSqrt, OpFMA, OpFMSUB:
 		return instr.Type == TypeFloat
-	case OpLtFloat, OpLeFloat:
+	case OpLtFloat, OpLeFloat, OpComplexEscapeInSet, OpComplexEscapeRowCount:
 		return true
 	case OpNumToFloat, OpGuardType, OpGuardIntRange, OpGuardGlobalConst, OpGuardConstString, OpGuardTableKind, OpGuardCalleeProto, OpGuardFieldCalleeProto, OpGuardShapeFieldType, OpGuardShapeFieldTypeMask:
 		// These paths use X0/X2/X3 and FPR temporaries on the fast path.
