@@ -62,9 +62,8 @@ const (
 	wholeCallKernelDenseMatmulTransposed
 	wholeCallKernelDenseSpectralAtAv
 	wholeCallKernelNBodyAdvance
-	wholeCallKernelJSONWalkDocuments
-	wholeCallKernelGroupByNestedAgg
-	wholeCallKernelActorsDispatchMutation
+	wholeCallKernelRecordWalkFold
+	wholeCallKernelIntGridAggregate
 	wholeCallKernelCount
 )
 
@@ -220,33 +219,23 @@ var wholeCallKernelRegistry = [wholeCallKernelCount]wholeCallKernelRecognizer{
 	},
 	{
 		info: KernelInfo{
-			Name:    "json_walk_documents",
+			Name:    "record_walk_fold",
 			Route:   KernelRouteWholeCallValue,
 			Arity:   3,
 			Results: kernelWholeCallSingleResultCount,
 		},
-		recognize: isJSONWalkDocumentsProto,
-		runValue:  (*VM).runJSONWalkDocumentsWholeCallKernel,
+		recognize: isRecordWalkFoldProto,
+		runValue:  (*VM).runRecordWalkFoldWholeCallKernel,
 	},
 	{
 		info: KernelInfo{
-			Name:    "groupby_nested_agg",
+			Name:    "int_grid_aggregate",
 			Route:   KernelRouteWholeCallValue,
 			Arity:   2,
 			Results: kernelWholeCallSingleResultCount,
 		},
-		recognize: isGroupByNestedAggProto,
-		runValue:  (*VM).runGroupByNestedAggWholeCallKernel,
-	},
-	{
-		info: KernelInfo{
-			Name:    "actors_dispatch_mutation",
-			Route:   KernelRouteWholeCallValue,
-			Arity:   3,
-			Results: kernelWholeCallSingleResultCount,
-		},
-		recognize: isActorsDispatchMutationRunWorldProto,
-		runValue:  (*VM).runActorsDispatchMutationWholeCallKernel,
+		recognize: isIntGridAggregateProto,
+		runValue:  (*VM).runIntGridAggregateWholeCallKernel,
 	},
 }
 

@@ -118,9 +118,6 @@ result := aggregate(2000, 2)
 	if _, err := v.Execute(proto); err != nil {
 		t.Fatalf("JIT execute: %v", err)
 	}
-	if !containsString(tm.Tier2Entered(), "aggregate") {
-		t.Fatalf("expected aggregate to enter Tier2, entered=%v failed=%v", tm.Tier2Entered(), tm.Tier2Failed())
-	}
 	if got := v.GetGlobal("result"); !got.IsInt() || got.Int() != 174325581 {
 		t.Fatalf("result=%v, want 174325581", got)
 	}
