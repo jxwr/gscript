@@ -57,6 +57,19 @@ func hyper(m, n) {
 	}
 }
 
+func TestRawIntNestedKernelIgnoresProtoMetadataName(t *testing.T) {
+	top := compileProto(t, rawIntNestedAckSource)
+	ack := *top.Protos[0]
+	ack.Name = "metadata_only"
+	kernel, ok := analyzeRawIntNestedKernel(&ack)
+	if !ok {
+		t.Fatal("nested recurrence should use bytecode self global, not proto metadata name")
+	}
+	if kernel.selfName != "ack" {
+		t.Fatalf("selfName = %q, want bytecode global ack", kernel.selfName)
+	}
+}
+
 func TestRawIntNestedKernelCallValueUsesPromotedWholeCall(t *testing.T) {
 	top := compileProto(t, rawIntNestedAckSource)
 	globals := runtime.NewInterpreterGlobals()

@@ -78,19 +78,19 @@ func analyzeRawIntNestedKernel(proto *FuncProto) (*rawIntNestedKernel, bool) {
 	if !ok {
 		return nil, false
 	}
-	generalStart, zeroArg, mStep, ok := rawIntNestedParseZeroCase(proto, secondHeader)
+	generalStart, zeroArg, mStep, selfName, ok := rawIntNestedParseZeroCase(proto, secondHeader)
 	if !ok {
 		return nil, false
 	}
-	mStep2, nStep, end, ok := rawIntNestedParseNestedCase(proto, generalStart)
-	if !ok || end != len(proto.Code) || mStep2 != mStep {
+	mStep2, nStep, nestedSelfName, end, ok := rawIntNestedParseNestedCase(proto, generalStart)
+	if !ok || end != len(proto.Code) || mStep2 != mStep || nestedSelfName != selfName {
 		return nil, false
 	}
 	if mStep <= 0 || nStep <= 0 || zeroArg < 0 {
 		return nil, false
 	}
 	return &rawIntNestedKernel{
-		selfName: proto.Name,
+		selfName: selfName,
 		baseAdd:  baseAdd,
 		zeroArg:  zeroArg,
 		mStep:    mStep,
@@ -133,79 +133,79 @@ func rawIntNestedParseBaseCase(proto *FuncProto, pc, mSlot, nSlot int) (next int
 	return next, addValue, true
 }
 
-func rawIntNestedParseZeroCase(proto *FuncProto, pc int) (next int, zeroArg, mStep int64, ok bool) {
+func rawIntNestedParseZeroCase(proto *FuncProto, pc int) (next int, zeroArg, mStep int64, selfName string, ok bool) {
 	code := proto.Code
 	if pc+8 >= len(code) {
-		return 0, 0, 0, false
+		return 0, 0, 0, "", false
 	}
 	zeroSlot, zero, ok := rawIntNestedLoadInt(proto, pc)
 	if !ok || zero != 0 {
-		return 0, 0, 0, false
+		return 0, 0, 0, "", false
 	}
 	if !rawIntNestedEqSlotConstZero(code[pc+1], 1, zeroSlot) || DecodeOp(code[pc+2]) != OP_JMP {
-		return 0, 0, 0, false
+		return 0, 0, 0, "", false
 	}
 	next = pc + 3 + DecodesBx(code[pc+2])
 	if next <= pc+3 || next > len(code) {
-		return 0, 0, 0, false
+		return 0, 0, 0, "", false
 	}
 	callPC := pc + 3
-	fnSlot, ok := rawIntNestedSelfGlobal(proto, callPC)
+	fnSlot, selfName, ok := rawIntNestedSelfGlobal(proto, callPC)
 	if !ok {
-		return 0, 0, 0, false
+		return 0, 0, 0, "", false
 	}
 	stepSlot, stepValue, ok := rawIntNestedLoadInt(proto, callPC+1)
 	if !ok {
-		return 0, 0, 0, false
+		return 0, 0, 0, "", false
 	}
 	if !rawIntNestedSubParamConst(code[callPC+2], fnSlot+1, 0, stepSlot) {
-		return 0, 0, 0, false
+		return 0, 0, 0, "", false
 	}
 	argSlot, argValue, ok := rawIntNestedLoadInt(proto, callPC+3)
 	if !ok || argSlot != fnSlot+2 {
-		return 0, 0, 0, false
+		return 0, 0, 0, "", false
 	}
 	if !rawIntNestedTailSelfCallReturn(code[callPC+4], code[callPC+5], fnSlot) {
-		return 0, 0, 0, false
+		return 0, 0, 0, "", false
 	}
-	return next, argValue, stepValue, true
+	return next, argValue, stepValue, selfName, true
 }
 
-func rawIntNestedParseNestedCase(proto *FuncProto, pc int) (mStep, nStep int64, next int, ok bool) {
+func rawIntNestedParseNestedCase(proto *FuncProto, pc int) (mStep, nStep int64, selfName string, next int, ok bool) {
 	code := proto.Code
 	if pc+10 >= len(code) {
-		return 0, 0, 0, false
+		return 0, 0, "", 0, false
 	}
-	outerSlot, ok := rawIntNestedSelfGlobal(proto, pc)
+	outerSlot, outerName, ok := rawIntNestedSelfGlobal(proto, pc)
 	if !ok {
-		return 0, 0, 0, false
+		return 0, 0, "", 0, false
 	}
 	mStepSlot, mStepValue, ok := rawIntNestedLoadInt(proto, pc+1)
 	if !ok || !rawIntNestedSubParamConst(code[pc+2], outerSlot+1, 0, mStepSlot) {
-		return 0, 0, 0, false
+		return 0, 0, "", 0, false
 	}
-	innerSlot, ok := rawIntNestedSelfGlobal(proto, pc+3)
-	if !ok {
-		return 0, 0, 0, false
+	innerSlot, innerName, ok := rawIntNestedSelfGlobal(proto, pc+3)
+	if !ok || innerName != outerName {
+		return 0, 0, "", 0, false
 	}
 	if DecodeOp(code[pc+4]) != OP_MOVE || DecodeA(code[pc+4]) != innerSlot+1 || DecodeB(code[pc+4]) != 0 {
-		return 0, 0, 0, false
+		return 0, 0, "", 0, false
 	}
 	nStepSlot, nStepValue, ok := rawIntNestedLoadInt(proto, pc+5)
 	if !ok || !rawIntNestedSubParamConst(code[pc+6], innerSlot+2, 1, nStepSlot) {
-		return 0, 0, 0, false
+		return 0, 0, "", 0, false
 	}
 	if DecodeOp(code[pc+7]) != OP_CALL || DecodeA(code[pc+7]) != innerSlot ||
 		DecodeB(code[pc+7]) != 3 || DecodeC(code[pc+7]) != 2 {
-		return 0, 0, 0, false
+		return 0, 0, "", 0, false
 	}
 	if DecodeOp(code[pc+8]) != OP_MOVE || DecodeA(code[pc+8]) != outerSlot+2 || DecodeB(code[pc+8]) != innerSlot {
-		return 0, 0, 0, false
+		return 0, 0, "", 0, false
 	}
 	if !rawIntNestedTailSelfCallReturn(code[pc+9], code[pc+10], outerSlot) {
-		return 0, 0, 0, false
+		return 0, 0, "", 0, false
 	}
-	return mStepValue, nStepValue, pc + 11, true
+	return mStepValue, nStepValue, outerName, pc + 11, true
 }
 
 func rawIntNestedLoadInt(proto *FuncProto, pc int) (slot int, value int64, ok bool) {
@@ -252,19 +252,19 @@ func rawIntNestedTailSelfCallReturn(callInst, returnInst uint32, fnSlot int) boo
 		DecodeB(returnInst) == 0
 }
 
-func rawIntNestedSelfGlobal(proto *FuncProto, pc int) (slot int, ok bool) {
+func rawIntNestedSelfGlobal(proto *FuncProto, pc int) (slot int, name string, ok bool) {
 	if proto == nil || pc < 0 || pc >= len(proto.Code) {
-		return 0, false
+		return 0, "", false
 	}
 	inst := proto.Code[pc]
 	if DecodeOp(inst) != OP_GETGLOBAL {
-		return 0, false
+		return 0, "", false
 	}
 	idx := DecodeBx(inst)
-	if idx < 0 || idx >= len(proto.Constants) || !proto.Constants[idx].IsString() || proto.Constants[idx].Str() != proto.Name {
-		return 0, false
+	if idx < 0 || idx >= len(proto.Constants) || !proto.Constants[idx].IsString() || proto.Constants[idx].Str() == "" {
+		return 0, "", false
 	}
-	return DecodeA(inst), true
+	return DecodeA(inst), proto.Constants[idx].Str(), true
 }
 
 func (k *rawIntNestedKernel) fold(mv, nv runtime.Value) (int64, bool) {
