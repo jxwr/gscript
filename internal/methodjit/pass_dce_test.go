@@ -408,3 +408,32 @@ func TestDCE_MatrixStoresNotDropped(t *testing.T) {
 		}
 	}
 }
+
+func TestDCE_RecordArrayLoopKernelNotDropped(t *testing.T) {
+	fn := &Function{Proto: &vm.FuncProto{Name: "record-array-kernel-live"}, NumRegs: 1}
+	b := &Block{ID: 0, defs: make(map[int]*Value)}
+	data := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 1, Block: b}
+	limit := &Instr{ID: fn.newValueID(), Op: OpConstInt, Type: TypeInt, Aux: 10, Block: b}
+	scale := &Instr{ID: fn.newValueID(), Op: OpConstFloat, Type: TypeFloat, Block: b}
+	kernel := &Instr{
+		ID:    fn.newValueID(),
+		Op:    OpRecordArrayLoopKernel,
+		Type:  TypeUnknown,
+		Args:  []*Value{data.Value(), limit.Value(), limit.Value(), scale.Value(), scale.Value()},
+		Block: b,
+	}
+	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Block: b}
+	b.Instrs = []*Instr{data, limit, scale, kernel, ret}
+	fn.Entry = b
+	fn.Blocks = []*Block{b}
+
+	if _, err := DCEPass(fn); err != nil {
+		t.Fatalf("DCEPass error: %v", err)
+	}
+	for _, instr := range b.Instrs {
+		if instr.Op == OpRecordArrayLoopKernel {
+			return
+		}
+	}
+	t.Fatalf("DCE dropped RecordArrayLoopKernel; IR:\n%s", Print(fn))
+}
