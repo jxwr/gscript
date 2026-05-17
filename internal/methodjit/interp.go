@@ -542,9 +542,9 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 			return nil, false, fmt.Errorf("IR interpreter: cannot mod %s and int", a.TypeName())
 		}
 
-	case OpGcdAccumLoop:
+	case OpEuclideanReductionLoop:
 		if len(instr.Args) < 6 {
-			return nil, false, fmt.Errorf("IR interpreter: GcdAccumLoop needs 6 args")
+			return nil, false, fmt.Errorf("IR interpreter: EuclideanReductionLoop needs 6 args")
 		}
 		outerLimit := s.val(instr.Args[0]).Int()
 		innerLimit := s.val(instr.Args[1]).Int()
@@ -566,7 +566,7 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		}
 		s.values[instr.ID] = runtime.IntValue(total)
 
-	case OpCollatzTotalLoop:
+	case OpOddEvenAffineLengthTotalLoop:
 		limit := s.val(instr.Args[0]).Int()
 		total := int64(0)
 		for n := int64(2); n <= limit; n++ {

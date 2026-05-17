@@ -1,9 +1,9 @@
 package methodjit
 
-// GcdAccumLoopPass lowers a nested affine Euclidean-GCD reduction into a native
+// EuclideanReductionLoopPass lowers a nested affine Euclidean-GCD reduction into a native
 // loop body. It is intentionally keyed on IR shape, not on function or source
 // names.
-func GcdAccumLoopPass(fn *Function) (*Function, error) {
+func EuclideanReductionLoopPass(fn *Function) (*Function, error) {
 	if fn == nil {
 		return fn, nil
 	}
@@ -83,7 +83,7 @@ func lowerGcdAccumOuterHeader(fn *Function, outer *Block) bool {
 
 	op := &Instr{
 		ID:    fn.newValueID(),
-		Op:    OpGcdAccumLoop,
+		Op:    OpEuclideanReductionLoop,
 		Type:  TypeInt,
 		Args:  []*Value{outerLimit, innerLimit, aMul, aAdd, bMul, bAdd},
 		Block: outer,
@@ -92,7 +92,7 @@ func lowerGcdAccumOuterHeader(fn *Function, outer *Block) bool {
 	outer.Instrs = []*Instr{op, ret}
 	outer.Preds = []*Block{pre}
 	outer.Succs = nil
-	functionRemarks(fn).Add("GcdAccumLoop", "changed", outer.ID, op.ID, op.Op,
+	functionRemarks(fn).Add("EuclideanReductionLoop", "changed", outer.ID, op.ID, op.Op,
 		"lowered nested affine Euclidean-GCD reduction loop")
 	return true
 }

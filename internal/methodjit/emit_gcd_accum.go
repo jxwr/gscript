@@ -4,7 +4,7 @@ package methodjit
 
 import "github.com/gscript/gscript/internal/jit"
 
-func (ec *emitContext) emitGcdAccumLoop(instr *Instr) {
+func (ec *emitContext) emitEuclideanReductionLoop(instr *Instr) {
 	if instr == nil || len(instr.Args) < 6 {
 		return
 	}
@@ -22,12 +22,12 @@ func (ec *emitContext) emitGcdAccumLoop(instr *Instr) {
 	loadArg(4, jit.X13) // b multiplier
 	loadArg(5, jit.X14) // b addend
 
-	outerLoop := ec.uniqueLabel("gcd_accum_outer")
-	innerLoop := ec.uniqueLabel("gcd_accum_inner")
-	gcdLoop := ec.uniqueLabel("gcd_accum_gcd")
-	gcdDone := ec.uniqueLabel("gcd_accum_gcd_done")
-	innerDone := ec.uniqueLabel("gcd_accum_inner_done")
-	done := ec.uniqueLabel("gcd_accum_done")
+	outerLoop := ec.uniqueLabel("euclidean_reduction_outer")
+	innerLoop := ec.uniqueLabel("euclidean_reduction_inner")
+	gcdLoop := ec.uniqueLabel("euclidean_reduction_gcd")
+	gcdDone := ec.uniqueLabel("euclidean_reduction_gcd_done")
+	innerDone := ec.uniqueLabel("euclidean_reduction_inner_done")
+	done := ec.uniqueLabel("euclidean_reduction_done")
 
 	asm.MOVimm16(jit.X7, 0) // total
 	asm.MOVimm16(jit.X8, 1) // i

@@ -59,7 +59,7 @@ func runWithTimeout(t *testing.T, name, src string, deadline time.Duration) {
 // under R12. Wall-time budget: 1s (real value ≈ 0.054s on M4 Max).
 func TestProductionScale_Collatz_ModHotLoop(t *testing.T) {
 	src := `
-func collatz_total(limit) {
+func odd_even_affine_length(limit) {
     total_steps := 0
     for n := 2; n <= limit; n++ {
         x := n
@@ -76,10 +76,10 @@ func collatz_total(limit) {
     }
     return total_steps
 }
-result := collatz_total(5000)
-result = collatz_total(5000)
+result := odd_even_affine_length(5000)
+result = odd_even_affine_length(5000)
 `
-	runWithTimeout(t, "collatz_total(5000)", src, 3*time.Second)
+	runWithTimeout(t, "odd_even_affine_length(5000)", src, 3*time.Second)
 }
 
 // TestProductionScale_QuicksortDeepRecursion is the R22 regression:

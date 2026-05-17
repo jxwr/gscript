@@ -1,8 +1,8 @@
 package methodjit
 
-// CollatzTotalLoopPass lowers a positive integer loop that totals Collatz
+// OddEvenAffineLengthTotalLoopPass lowers a positive integer loop that totals Collatz
 // sequence lengths. The match is structural and does not inspect function names.
-func CollatzTotalLoopPass(fn *Function) (*Function, error) {
+func OddEvenAffineLengthTotalLoopPass(fn *Function) (*Function, error) {
 	if fn == nil {
 		return fn, nil
 	}
@@ -45,7 +45,7 @@ func lowerCollatzTotalOuterHeader(fn *Function, outer *Block) bool {
 	}
 	op := &Instr{
 		ID:    fn.newValueID(),
-		Op:    OpCollatzTotalLoop,
+		Op:    OpOddEvenAffineLengthTotalLoop,
 		Type:  TypeInt,
 		Args:  []*Value{limit},
 		Block: outer,
@@ -54,7 +54,7 @@ func lowerCollatzTotalOuterHeader(fn *Function, outer *Block) bool {
 	outer.Instrs = []*Instr{op, ret}
 	outer.Preds = []*Block{outer.Preds[0]}
 	outer.Succs = nil
-	functionRemarks(fn).Add("CollatzTotalLoop", "changed", outer.ID, op.ID, op.Op,
+	functionRemarks(fn).Add("OddEvenAffineLengthTotalLoop", "changed", outer.ID, op.ID, op.Op,
 		"lowered Collatz total loop")
 	return true
 }

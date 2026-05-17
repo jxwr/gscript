@@ -4,7 +4,7 @@ package methodjit
 
 import "github.com/gscript/gscript/internal/jit"
 
-func (ec *emitContext) emitCollatzTotalLoop(instr *Instr) {
+func (ec *emitContext) emitOddEvenAffineLengthTotalLoop(instr *Instr) {
 	if instr == nil || len(instr.Args) < 1 {
 		return
 	}
@@ -14,11 +14,11 @@ func (ec *emitContext) emitCollatzTotalLoop(instr *Instr) {
 		asm.MOVreg(jit.X9, limit)
 	}
 
-	outerLoop := ec.uniqueLabel("collatz_total_outer")
-	innerLoop := ec.uniqueLabel("collatz_total_inner")
-	oddLabel := ec.uniqueLabel("collatz_total_odd")
-	innerDone := ec.uniqueLabel("collatz_total_inner_done")
-	done := ec.uniqueLabel("collatz_total_done")
+	outerLoop := ec.uniqueLabel("odd_even_affine_length_outer")
+	innerLoop := ec.uniqueLabel("odd_even_affine_length_inner")
+	oddLabel := ec.uniqueLabel("odd_even_affine_length_odd")
+	innerDone := ec.uniqueLabel("odd_even_affine_length_inner_done")
+	done := ec.uniqueLabel("odd_even_affine_length_done")
 
 	asm.MOVimm16(jit.X7, 0) // total
 	asm.MOVimm16(jit.X8, 2) // n

@@ -11,7 +11,7 @@ import (
 )
 
 const collatzTotalSrc = `
-func collatz_total(limit) {
+func odd_even_affine_length(limit) {
     total_steps := 0
     for n := 2; n <= limit; n++ {
         x := n
@@ -33,18 +33,18 @@ func TestTier2CollatzTotalKnownFloatModGatedBeforeRuntimeDeopt(t *testing.T) {
 	src := collatzTotalSrc + `
 result := 0
 for iter := 1; iter <= 3; iter++ {
-    result = collatz_total(100)
+    result = odd_even_affine_length(100)
 }`
 	proto := compileProto(t, src)
-	collatz := findProtoByName(proto, "collatz_total")
+	collatz := findProtoByName(proto, "odd_even_affine_length")
 	if collatz == nil {
-		t.Fatal("collatz_total proto not found")
+		t.Fatal("odd_even_affine_length proto not found")
 	}
 
 	tm := NewTieringManager()
 	err := tm.CompileTier2(collatz)
 	if err != nil {
-		t.Fatalf("CompileTier2(collatz_total): %v", err)
+		t.Fatalf("CompileTier2(odd_even_affine_length): %v", err)
 	}
 
 	globals := runtime.NewInterpreterGlobals()
@@ -58,27 +58,27 @@ for iter := 1; iter <= 3; iter++ {
 	}
 	result := v.GetGlobal("result")
 	if !result.IsInt() || result.Int() != 3142 {
-		t.Fatalf("collatz_total(100)=%v, want int(3142)", result)
+		t.Fatalf("odd_even_affine_length(100)=%v, want int(3142)", result)
 	}
 	if reason := jitTM.tier2FailReason[collatz]; reason != "" {
-		t.Fatalf("collatz_total Tier2 fail reason=%q, want successful native float mod", reason)
+		t.Fatalf("odd_even_affine_length Tier2 fail reason=%q, want successful native float mod", reason)
 	}
 }
 
 func TestTier2CollatzTotalNarrowsExactDivRecurrenceToInt(t *testing.T) {
 	proto := compileProto(t, collatzTotalSrc)
-	collatz := findProtoByName(proto, "collatz_total")
+	collatz := findProtoByName(proto, "odd_even_affine_length")
 	if collatz == nil {
-		t.Fatal("collatz_total proto not found")
+		t.Fatal("odd_even_affine_length proto not found")
 	}
 	fn := BuildGraph(collatz)
 	fn, _, err := RunTier2Pipeline(fn, nil)
 	if err != nil {
-		t.Fatalf("RunTier2Pipeline(collatz_total): %v", err)
+		t.Fatalf("RunTier2Pipeline(odd_even_affine_length): %v", err)
 	}
 
 	ir := Print(fn)
-	if countOpHelper(fn, OpCollatzTotalLoop) != 0 {
+	if countOpHelper(fn, OpOddEvenAffineLengthTotalLoop) != 0 {
 		for _, op := range []Op{OpDivFloat, OpAddFloat, OpMulFloat, OpMod, OpModInt} {
 			if countOpHelper(fn, op) != 0 {
 				t.Fatalf("expected Collatz loop specialization to absorb %s after narrowing, IR:\n%s", op, ir)

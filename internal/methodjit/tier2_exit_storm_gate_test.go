@@ -180,17 +180,17 @@ func TestTier2ExitStormGateAllowsNoFilterKnownFloatModLoop(t *testing.T) {
 	top := compileTop(t, collatzTotalSrc+`
 result := 0
 for iter := 1; iter <= 3; iter++ {
-    result = collatz_total(100)
+    result = odd_even_affine_length(100)
 }
 `)
-	collatz := findProtoByName(top, "collatz_total")
+	collatz := findProtoByName(top, "odd_even_affine_length")
 	if collatz == nil {
-		t.Fatal("collatz_total proto not found")
+		t.Fatal("odd_even_affine_length proto not found")
 	}
 
 	tm := NewTieringManager()
 	if err := tm.CompileTier2(collatz); err != nil {
-		t.Fatalf("CompileTier2(collatz_total): %v", err)
+		t.Fatalf("CompileTier2(odd_even_affine_length): %v", err)
 	}
 }
 

@@ -171,10 +171,10 @@ func (ec *emitContext) emitInstr(instr *Instr, block *Block) {
 		ec.emitComplexEscapeInSet(instr)
 	case OpComplexEscapeRowCount:
 		ec.emitComplexEscapeRowCount(instr)
-	case OpGcdAccumLoop:
-		ec.emitGcdAccumLoop(instr)
-	case OpCollatzTotalLoop:
-		ec.emitCollatzTotalLoop(instr)
+	case OpEuclideanReductionLoop:
+		ec.emitEuclideanReductionLoop(instr)
+	case OpOddEvenAffineLengthTotalLoop:
+		ec.emitOddEvenAffineLengthTotalLoop(instr)
 	case OpRecordArrayLoopKernel:
 		ec.emitRecordArrayLoopKernel(instr)
 
@@ -407,7 +407,7 @@ func instrPreservesTableArrayBoundedKeys(instr *Instr) bool {
 		OpSqrt, OpFloor, OpFMA, OpFMSUB,
 		OpEq, OpLt, OpLe,
 		OpEqInt, OpLtInt, OpLeInt, OpModZeroInt, OpEqString,
-		OpLtFloat, OpLeFloat, OpComplexEscapeInSet, OpComplexEscapeRowCount, OpGcdAccumLoop, OpCollatzTotalLoop, OpRecordArrayLoopKernel,
+		OpLtFloat, OpLeFloat, OpComplexEscapeInSet, OpComplexEscapeRowCount, OpEuclideanReductionLoop, OpOddEvenAffineLengthTotalLoop, OpRecordArrayLoopKernel,
 		OpBoxInt, OpBoxFloat, OpUnboxInt, OpUnboxFloat,
 		OpNumToFloat, OpGuardType, OpGuardIntRange, OpGuardGlobalConst, OpGuardConstString, OpGuardTableKind, OpGuardCalleeProto, OpGuardFieldCalleeProto, OpGuardShapeFieldType, OpGuardShapeFieldTypeMask, OpGuardTruthy,
 		OpTableArrayHeader, OpTableArrayLen, OpTableArrayData, OpTableArrayLoad, OpTableShapeID, OpTableArrayStore, OpTableArraySwap, OpTableArraySwapPairs,
@@ -429,7 +429,7 @@ func instrPreservesFieldSvalsCache(instr *Instr) bool {
 		return true
 	case OpAddFloat, OpSubFloat, OpMulFloat, OpDivFloat, OpNegFloat, OpSqrt, OpFMA, OpFMSUB:
 		return instr.Type == TypeFloat
-	case OpLtFloat, OpLeFloat, OpComplexEscapeInSet, OpComplexEscapeRowCount, OpGcdAccumLoop, OpCollatzTotalLoop, OpRecordArrayLoopKernel:
+	case OpLtFloat, OpLeFloat, OpComplexEscapeInSet, OpComplexEscapeRowCount, OpEuclideanReductionLoop, OpOddEvenAffineLengthTotalLoop, OpRecordArrayLoopKernel:
 		return true
 	case OpNumToFloat, OpGuardType, OpGuardIntRange, OpGuardGlobalConst, OpGuardConstString, OpGuardTableKind, OpGuardCalleeProto, OpGuardFieldCalleeProto, OpGuardShapeFieldType, OpGuardShapeFieldTypeMask:
 		// These paths use X0/X2/X3 and FPR temporaries on the fast path.
