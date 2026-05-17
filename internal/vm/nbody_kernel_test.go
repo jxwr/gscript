@@ -142,6 +142,81 @@ result := bodies[1].x + bodies[1].y + bodies[2].vx + bodies[3].vz
 	}
 }
 
+func TestNBodyAdvanceKernelDerivesRecordSpecFromBytecode(t *testing.T) {
+	const src = `
+SOLAR_MASS := 39.47841760435743
+m := math
+planets := {
+    {label: "a", px: 0, py: 0, pz: 0, sx: 0, sy: 0, sz: 0, weight: SOLAR_MASS},
+    {label: "b", px: 4.841, py: -1.160, pz: -0.103, sx: 0.606, sy: 2.811, sz: -0.025, weight: 0.0377},
+    {label: "c", px: 8.343, py: 4.124, pz: -0.403, sx: -1.010, sy: 1.825, sz: 0.084, weight: 0.0112},
+}
+func advance(dt) {
+    n := #planets
+    for i := 1; i <= n; i++ {
+        bi := planets[i]
+        for j := i + 1; j <= n; j++ {
+            bj := planets[j]
+            dx := bi.px - bj.px
+            dy := bi.py - bj.py
+            dz := bi.pz - bj.pz
+            dsq := dx * dx + dy * dy + dz * dz
+            dist := m.sqrt(dsq)
+            mag := dt / (dsq * dist)
+            bi.sx = bi.sx - dx * bj.weight * mag
+            bi.sy = bi.sy - dy * bj.weight * mag
+            bi.sz = bi.sz - dz * bj.weight * mag
+            bj.sx = bj.sx + dx * bi.weight * mag
+            bj.sy = bj.sy + dy * bi.weight * mag
+            bj.sz = bj.sz + dz * bi.weight * mag
+        }
+    }
+    for i := 1; i <= n; i++ {
+        b := planets[i]
+        b.px = b.px + dt * b.sx
+        b.py = b.py + dt * b.sy
+        b.pz = b.pz + dt * b.sz
+    }
+}
+`
+	proto, vm := compileSpectralKernelTestProgram(t, src)
+	defer vm.Close()
+	if _, err := vm.Execute(proto); err != nil {
+		t.Fatalf("execute definitions: %v", err)
+	}
+	advance := findTestProtoByName(proto, "advance")
+	if advance == nil || !isNBodyAdvanceProto(advance) {
+		t.Fatal("renamed advance proto not recognized")
+	}
+	spec, ok := recordPairwiseAdvanceKernelSpecForProto(advance)
+	if !ok {
+		t.Fatal("record pairwise spec not derived")
+	}
+	if spec.tableName != "planets" || spec.sqrtTableName != "m" || spec.sqrtFieldName != "sqrt" {
+		t.Fatalf("unexpected spec globals: %+v", spec)
+	}
+	wantFields := [nbodyFieldCount]string{"px", "py", "pz", "sx", "sy", "sz", "weight"}
+	if spec.fieldNames != wantFields {
+		t.Fatalf("field spec = %v, want %v", spec.fieldNames, wantFields)
+	}
+
+	kernelGlobals := compileAndRun(t, src+`
+for i := 1; i <= 5; i++ { advance(0.01) }
+result := planets[1].px + planets[1].py + planets[2].sx + planets[3].sz
+`)
+	fallbackGlobals := compileAndRun(t, src+`
+sqrt0 := m.sqrt
+m.sqrt = func(x) { return sqrt0(x) }
+for i := 1; i <= 5; i++ { advance(0.01) }
+result := planets[1].px + planets[1].py + planets[2].sx + planets[3].sz
+`)
+	got := kernelGlobals["result"].Number()
+	want := fallbackGlobals["result"].Number()
+	if math.Abs(got-want) > 1e-12 {
+		t.Fatalf("kernel result %.15f, fallback %.15f", got, want)
+	}
+}
+
 func TestNBodyAdvanceKernelFallsBackOnAliasedBodyRecords(t *testing.T) {
 	globals := compileAndRun(t, nbodyKernelTestProgram+`
 bodies[2] = bodies[1]

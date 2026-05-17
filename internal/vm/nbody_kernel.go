@@ -21,12 +21,20 @@ type nbodyAdvanceKernelCache struct {
 	eligible bool
 	shapeID  uint32
 	idxs     [nbodyFieldCount]int
+	spec     *recordPairwiseAdvanceKernelSpec
 }
 
 type nbodyRecord struct {
 	x, y, z    float64
 	vx, vy, vz float64
 	mass       float64
+}
+
+type recordPairwiseAdvanceKernelSpec struct {
+	tableName     string
+	sqrtTableName string
+	sqrtFieldName string
+	fieldNames    [nbodyFieldCount]string
 }
 
 type nbodyAdvanceDriverLoopShape struct {
@@ -75,10 +83,20 @@ func (vm *VM) runNBodyAdvanceKernelN(cl *Closure, args []runtime.Value, steps in
 		cache = &nbodyAdvanceKernelCache{eligible: true}
 		proto.NBodyAdvanceKernel = cache
 	}
-	if !cache.eligible || !args[0].IsNumber() || !vm.guardNBodyMathSqrt(proto) {
+	spec := cache.spec
+	if spec == nil {
+		var ok bool
+		spec, ok = recordPairwiseAdvanceKernelSpecForProto(proto)
+		if !ok {
+			cache.eligible = false
+			return false, nil
+		}
+		cache.spec = spec
+	}
+	if !cache.eligible || !args[0].IsNumber() || !vm.guardRecordPairwiseSqrt(spec) {
 		return false, nil
 	}
-	bodiesVal, ok := vm.nbodyBodiesValue(proto)
+	bodiesVal, ok := vm.recordPairwiseTableValue(spec)
 	if !ok || !bodiesVal.IsTable() {
 		return false, nil
 	}
@@ -106,7 +124,7 @@ func (vm *VM) runNBodyAdvanceKernelN(cl *Closure, args []runtime.Value, steps in
 		return false, nil
 	}
 	if cache.shapeID != shapeID {
-		idxs, ok := nbodyFieldIndexesForShape(proto, first.Table())
+		idxs, ok := recordPairwiseFieldIndexesForShape(proto, spec, first.Table())
 		if !ok {
 			return false, nil
 		}
@@ -178,7 +196,7 @@ func (vm *VM) runNBodyAdvanceKernelN(cl *Closure, args []runtime.Value, steps in
 }
 
 func (vm *VM) runNBodyDenseAdvanceKernelN(args []runtime.Value, steps int64) (bool, error) {
-	if len(args) != 1 || !args[0].IsNumber() || !vm.guardNBodyMathSqrt(nil) || !vm.guardNBodyDenseMatrixLib() {
+	if len(args) != 1 || !args[0].IsNumber() || !vm.guardNBodyDenseMathSqrt() || !vm.guardNBodyDenseMatrixLib() {
 		return false, nil
 	}
 	n, ok := vm.guardNBodyDenseGlobals()
@@ -321,11 +339,16 @@ func matchNBodyAdvanceDriverLoopShape(code []uint32, constants []runtime.Value, 
 	}, true
 }
 
-func nbodyFieldIndexesForShape(proto *FuncProto, t *runtime.Table) ([nbodyFieldCount]int, bool) {
+func recordPairwiseFieldIndexesForShape(proto *FuncProto, spec *recordPairwiseAdvanceKernelSpec, t *runtime.Table) ([nbodyFieldCount]int, bool) {
 	var idxs [nbodyFieldCount]int
-	fields := [...]string{"x", "y", "z", "vx", "vy", "vz", "mass"}
-	for i, field := range fields {
-		idx := t.FieldIndex(field)
+	if proto == nil || spec == nil || t == nil {
+		return idxs, false
+	}
+	for i, fieldName := range spec.fieldNames {
+		if fieldName == "" {
+			return idxs, false
+		}
+		idx := t.FieldIndex(fieldName)
 		if idx < 0 {
 			return idxs, false
 		}
@@ -334,8 +357,19 @@ func nbodyFieldIndexesForShape(proto *FuncProto, t *runtime.Table) ([nbodyFieldC
 	return idxs, true
 }
 
-func (vm *VM) guardNBodyMathSqrt(proto *FuncProto) bool {
-	mathVal, ok := vm.globalValue("math")
+func (vm *VM) guardRecordPairwiseSqrt(spec *recordPairwiseAdvanceKernelSpec) bool {
+	if spec == nil || spec.sqrtTableName == "" || spec.sqrtFieldName == "" {
+		return false
+	}
+	return vm.guardGoFunctionField(spec.sqrtTableName, spec.sqrtFieldName, "math.sqrt")
+}
+
+func (vm *VM) guardNBodyDenseMathSqrt() bool {
+	return vm.guardGoFunctionField("math", "sqrt", "math.sqrt")
+}
+
+func (vm *VM) guardGoFunctionField(tableName, fieldName, goName string) bool {
+	mathVal, ok := vm.globalValue(tableName)
 	if !ok || !mathVal.IsTable() {
 		return false
 	}
@@ -343,9 +377,9 @@ func (vm *VM) guardNBodyMathSqrt(proto *FuncProto) bool {
 	if mt.HasMetatable() {
 		return false
 	}
-	sqrtVal := mt.RawGetString("sqrt")
+	sqrtVal := mt.RawGetString(fieldName)
 	gf := sqrtVal.GoFunction()
-	return gf != nil && gf.Name == "math.sqrt"
+	return gf != nil && gf.Name == goName
 }
 
 func (vm *VM) guardNBodyDenseMatrixLib() bool {
@@ -383,28 +417,206 @@ func (vm *VM) guardNBodyDenseGlobals() (int, bool) {
 	return 5, true
 }
 
-func (vm *VM) nbodyBodiesValue(proto *FuncProto) (runtime.Value, bool) {
-	if proto == nil {
+func (vm *VM) recordPairwiseTableValue(spec *recordPairwiseAdvanceKernelSpec) (runtime.Value, bool) {
+	if spec == nil || spec.tableName == "" {
 		return runtime.NilValue(), false
 	}
-	for _, c := range proto.Constants {
-		if !c.IsString() {
+	v, ok := vm.globalValue(spec.tableName)
+	if !ok || !v.IsTable() {
+		return runtime.NilValue(), false
+	}
+	return v, true
+}
+
+func recordPairwiseAdvanceKernelSpecForProto(proto *FuncProto) (*recordPairwiseAdvanceKernelSpec, bool) {
+	if proto == nil || isNBodyDenseAdvanceProto(proto) {
+		return nil, false
+	}
+	if isNBodyAdvanceProto(proto) {
+		return analyzeRecordPairwiseAdvanceKernelSpec(proto)
+	}
+	return nil, false
+}
+
+func analyzeRecordPairwiseAdvanceKernelSpec(proto *FuncProto) (*recordPairwiseAdvanceKernelSpec, bool) {
+	tableConst, biReg, bjReg, ok := findRecordPairwiseTableAndRecordRegs(proto.Code)
+	if !ok {
+		return nil, false
+	}
+	sqrtTableConst, sqrtFieldConst, ok := findRecordPairwiseSqrtConsts(proto.Code)
+	if !ok {
+		return nil, false
+	}
+	positionConsts, ok := findRecordPairwisePositionConsts(proto.Code, biReg, bjReg)
+	if !ok {
+		return nil, false
+	}
+	velocityConsts, ok := findRecordPairwiseVelocityConsts(proto.Code, biReg)
+	if !ok {
+		return nil, false
+	}
+	massConst, ok := findRecordPairwiseMassConst(proto.Code, biReg, bjReg, positionConsts, velocityConsts)
+	if !ok {
+		return nil, false
+	}
+	fieldConsts := [nbodyFieldCount]int{
+		positionConsts[0], positionConsts[1], positionConsts[2],
+		velocityConsts[0], velocityConsts[1], velocityConsts[2],
+		massConst,
+	}
+	tableName, ok := protoStringConstant(proto, tableConst)
+	if !ok {
+		return nil, false
+	}
+	sqrtTableName, ok := protoStringConstant(proto, sqrtTableConst)
+	if !ok {
+		return nil, false
+	}
+	sqrtFieldName, ok := protoStringConstant(proto, sqrtFieldConst)
+	if !ok {
+		return nil, false
+	}
+	spec := &recordPairwiseAdvanceKernelSpec{
+		tableName:     tableName,
+		sqrtTableName: sqrtTableName,
+		sqrtFieldName: sqrtFieldName,
+	}
+	for i, constIdx := range fieldConsts {
+		name, ok := protoStringConstant(proto, constIdx)
+		if !ok {
+			return nil, false
+		}
+		spec.fieldNames[i] = name
+	}
+	return spec, true
+}
+
+func findRecordPairwiseTableAndRecordRegs(code []uint32) (int, int, int, bool) {
+	tableConst := -1
+	biReg := -1
+	bjReg := -1
+	for pc := 0; pc+2 < len(code); pc++ {
+		getGlobal := code[pc]
+		move := code[pc+1]
+		getTable := code[pc+2]
+		if DecodeOp(getGlobal) != OP_GETGLOBAL || DecodeOp(move) != OP_MOVE || DecodeOp(getTable) != OP_GETTABLE {
 			continue
 		}
-		v, ok := vm.globalValue(c.Str())
-		if !ok || !v.IsTable() {
+		if DecodeB(getTable) != DecodeA(getGlobal) || DecodeC(getTable) != DecodeA(move) {
 			continue
 		}
-		t := v.Table()
-		bodyArray, ok := t.PlainArrayValuesForRecordKernel(t.Length())
-		if !ok || len(bodyArray) < 2 || !bodyArray[1].IsTable() {
+		if tableConst < 0 {
+			tableConst = DecodeBx(getGlobal)
+			biReg = DecodeA(getTable)
 			continue
 		}
-		if _, ok := nbodyFieldIndexesForShape(proto, bodyArray[1].Table()); ok {
-			return v, true
+		if DecodeBx(getGlobal) == tableConst {
+			bjReg = DecodeA(getTable)
+			return tableConst, biReg, bjReg, true
 		}
 	}
-	return runtime.NilValue(), false
+	return 0, 0, 0, false
+}
+
+func findRecordPairwiseSqrtConsts(code []uint32) (int, int, bool) {
+	for pc := 3; pc < len(code); pc++ {
+		call := code[pc]
+		if DecodeOp(call) != OP_CALL || DecodeB(call) != 2 || DecodeC(call) != 2 {
+			continue
+		}
+		getField := code[pc-2]
+		getGlobal := code[pc-3]
+		if DecodeOp(getField) != OP_GETFIELD || DecodeOp(getGlobal) != OP_GETGLOBAL {
+			continue
+		}
+		if DecodeA(call) == DecodeA(getField) && DecodeB(getField) == DecodeA(getGlobal) {
+			return DecodeBx(getGlobal), DecodeC(getField), true
+		}
+	}
+	return 0, 0, false
+}
+
+func findRecordPairwisePositionConsts(code []uint32, biReg, bjReg int) ([3]int, bool) {
+	var fields [3]int
+	n := 0
+	for pc := 0; pc+2 < len(code) && n < len(fields); pc++ {
+		left := code[pc]
+		right := code[pc+1]
+		sub := code[pc+2]
+		if DecodeOp(left) != OP_GETFIELD || DecodeOp(right) != OP_GETFIELD || DecodeOp(sub) != OP_SUB {
+			continue
+		}
+		if DecodeB(left) != biReg || DecodeB(right) != bjReg || DecodeC(left) != DecodeC(right) {
+			continue
+		}
+		if DecodeB(sub) != DecodeA(left) || DecodeC(sub) != DecodeA(right) {
+			continue
+		}
+		fields[n] = DecodeC(left)
+		n++
+	}
+	return fields, n == len(fields)
+}
+
+func findRecordPairwiseVelocityConsts(code []uint32, biReg int) ([3]int, bool) {
+	var fields [3]int
+	n := 0
+	for _, inst := range code {
+		if DecodeOp(inst) != OP_SETFIELD || DecodeA(inst) != biReg {
+			continue
+		}
+		fieldConst := DecodeB(inst)
+		if containsInt(fields[:n], fieldConst) {
+			continue
+		}
+		fields[n] = fieldConst
+		n++
+		if n == len(fields) {
+			return fields, true
+		}
+	}
+	return fields, false
+}
+
+func findRecordPairwiseMassConst(code []uint32, biReg, bjReg int, positionConsts [3]int, velocityConsts [3]int) (int, bool) {
+	for _, inst := range code {
+		if DecodeOp(inst) != OP_GETFIELD || DecodeB(inst) != bjReg {
+			continue
+		}
+		fieldConst := DecodeC(inst)
+		if containsInt(positionConsts[:], fieldConst) || containsInt(velocityConsts[:], fieldConst) {
+			continue
+		}
+		if recordPairwiseHasFieldLoad(code, biReg, fieldConst) {
+			return fieldConst, true
+		}
+	}
+	return 0, false
+}
+
+func recordPairwiseHasFieldLoad(code []uint32, baseReg int, fieldConst int) bool {
+	for _, inst := range code {
+		if DecodeOp(inst) == OP_GETFIELD && DecodeB(inst) == baseReg && DecodeC(inst) == fieldConst {
+			return true
+		}
+	}
+	return false
+}
+
+func containsInt(vals []int, want int) bool {
+	for _, v := range vals {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+func protoStringConstant(proto *FuncProto, idx int) (string, bool) {
+	if proto == nil || idx < 0 || idx >= len(proto.Constants) || !proto.Constants[idx].IsString() {
+		return "", false
+	}
+	return proto.Constants[idx].Str(), true
 }
 
 func isNBodyAdvanceProto(p *FuncProto) bool {
