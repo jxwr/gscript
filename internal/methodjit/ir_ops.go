@@ -97,6 +97,10 @@ const (
 	// Runtime loop specialization for positive-integer Collatz step totals.
 	// Args = [limit].
 	OpCollatzTotalLoop
+	// Runtime loop specialization for fixed-shape table-array field updates.
+	// Args = [arrayData, arrayLen, limit, scale, damp].
+	// Aux = receiver shape id, Aux2 packs three position/velocity field pairs.
+	OpTableFieldUpdateLoop
 
 	// Comparison (type-generic)
 	OpEq // Args[0] == Args[1]
@@ -318,6 +322,7 @@ var opNames = [...]string{
 	OpComplexEscapeRowCount:      "ComplexEscapeRowCount",
 	OpGcdAccumLoop:               "GcdAccumLoop",
 	OpCollatzTotalLoop:           "CollatzTotalLoop",
+	OpTableFieldUpdateLoop:       "TableFieldUpdateLoop",
 	OpEq:                         "Eq",
 	OpLt:                         "Lt",
 	OpLe:                         "Le",

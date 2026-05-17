@@ -87,6 +87,7 @@ func tier2TableLoopKernelModules() []Tier2OptimizerModule {
 	return []Tier2OptimizerModule{
 		tier2PassModule("BoolTableFillLoop", Tier2PhaseLoopKernel, BoolTableFillLoopPass),
 		tier2PassModule("TableArrayStoreLoopVersion", Tier2PhaseLoopKernel, TableArrayStoreLoopVersionPass),
+		tier2PassModule("TableFieldUpdateLoop", Tier2PhaseLoopKernel, TableFieldUpdateLoopPass),
 		tier2PassModule("TableIntArrayKernel", Tier2PhaseLoopKernel, TableIntArrayKernelPass),
 		tier2PassModule("BoolTableCountLoop", Tier2PhaseLoopKernel, BoolTableCountLoopPass),
 	}

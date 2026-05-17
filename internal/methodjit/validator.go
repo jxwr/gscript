@@ -301,6 +301,12 @@ func (v *validator) checkOpContracts() {
 					v.errorf("B%d: FieldPolyLen (v%d) must carry a non-negative constant index in Aux, got %d",
 						blk.ID, instr.ID, instr.Aux)
 				}
+			case OpTableFieldUpdateLoop:
+				v.checkArgCount(blk, instr, 5, 5)
+				if instr.Aux <= 0 || instr.Aux2 == 0 {
+					v.errorf("B%d: TableFieldUpdateLoop (v%d) must carry shape Aux and packed field Aux2, got Aux=%d Aux2=%d",
+						blk.ID, instr.ID, instr.Aux, instr.Aux2)
+				}
 			}
 		}
 	}

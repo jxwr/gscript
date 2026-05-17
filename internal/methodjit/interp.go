@@ -584,6 +584,32 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		}
 		s.values[instr.ID] = runtime.IntValue(total)
 
+	case OpTableFieldUpdateLoop:
+		tbl := s.val(instr.Args[0])
+		limit := s.val(instr.Args[2]).Int()
+		scale := s.val(instr.Args[3]).Number()
+		damp := s.val(instr.Args[4]).Number()
+		shapeID := uint32(instr.Aux)
+		pairs := unpackTableFieldUpdatePairs(instr.Aux2)
+		if !tbl.IsTable() {
+			return nil, false, fmt.Errorf("OpTableFieldUpdateLoop: arg 0 not a table")
+		}
+		for i := int64(1); i <= limit; i++ {
+			row := tbl.Table().RawGetInt(i)
+			if !row.IsTable() || row.Table().ShapeID() != shapeID {
+				return nil, false, fmt.Errorf("OpTableFieldUpdateLoop: row shape mismatch")
+			}
+		}
+		for i := int64(1); i <= limit; i++ {
+			row := tbl.Table().RawGetInt(i).Table()
+			for _, pair := range pairs {
+				pos := row.SvalsGet(pair.pos).Number()
+				vel := row.SvalsGet(pair.vel).Number()
+				row.SvalsSet(pair.pos, runtime.FloatValue(pos+vel*scale))
+				row.SvalsSet(pair.vel, runtime.FloatValue(vel*damp))
+			}
+		}
+
 	case OpLtFloat:
 		a, b := s.val(instr.Args[0]), s.val(instr.Args[1])
 		s.values[instr.ID] = runtime.BoolValue(a.Number() < b.Number())
