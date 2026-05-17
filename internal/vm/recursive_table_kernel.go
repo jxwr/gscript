@@ -51,12 +51,12 @@ type recursiveTableFoldSlot struct {
 	expr     recursiveTableFoldExpr
 }
 
-func IsFixedRecursiveTableBuilderKernelProto(proto *FuncProto) bool {
+func IsLazyRecursiveTableBuilderKernelProto(proto *FuncProto) bool {
 	_, ok := analyzeRecursiveTableBuilderKernel(proto)
 	return ok
 }
 
-func IsFixedRecursiveTableFoldKernelProto(proto *FuncProto) bool {
+func IsLazyRecursiveTableFoldKernelProto(proto *FuncProto) bool {
 	_, ok := analyzeRecursiveTableFoldKernel(proto)
 	return ok
 }

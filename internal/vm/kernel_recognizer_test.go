@@ -281,10 +281,10 @@ func TestWholeCallKernelDiagnosticsIncludeRecursiveTableProtocols(t *testing.T) 
 	fold.Name = "also_not_the_recursive_binding"
 	fold.Source = "benchmarks/suite/binary_trees.gs"
 
-	requireKernelInfo(t, RecognizedWholeCallKernels(builder), "recursive_table_builder")
-	requireKernelInfo(t, RecognizedWholeCallKernels(fold), "recursive_table_fold")
-	rejectKernelInfo(t, RecognizedWholeCallKernels(builder), "recursive_table_fold")
-	rejectKernelInfo(t, RecognizedWholeCallKernels(fold), "recursive_table_builder")
+	requireKernelInfo(t, RecognizedWholeCallKernels(builder), "lazy_recursive_table_builder")
+	requireKernelInfo(t, RecognizedWholeCallKernels(fold), "lazy_recursive_table_fold")
+	rejectKernelInfo(t, RecognizedWholeCallKernels(builder), "lazy_recursive_table_fold")
+	rejectKernelInfo(t, RecognizedWholeCallKernels(fold), "lazy_recursive_table_builder")
 }
 
 func TestDriverLoopKernelDiagnosticsRecognizeStructuralLoops(t *testing.T) {

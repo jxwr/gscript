@@ -52,8 +52,8 @@ const (
 const (
 	wholeCallKernelFannkuchRedux = iota
 	wholeCallKernelBoolTableStrikeCount
-	wholeCallKernelRecursiveTableBuilder
-	wholeCallKernelRecursiveTableFold
+	wholeCallKernelLazyRecursiveTableBuilder
+	wholeCallKernelLazyRecursiveTableFold
 	wholeCallKernelMatrixMultiply
 	wholeCallKernelNumericArrayRegionSort
 	wholeCallKernelCoefficientMatrixVector
@@ -117,23 +117,23 @@ var wholeCallKernelRegistry = [wholeCallKernelCount]wholeCallKernelRecognizer{
 	},
 	{
 		info: KernelInfo{
-			Name:    "recursive_table_builder",
+			Name:    "lazy_recursive_table_builder",
 			Route:   KernelRouteWholeCallValue,
 			Arity:   1,
 			Results: kernelWholeCallSingleResultCount,
 		},
-		recognize:      IsFixedRecursiveTableBuilderKernelProto,
+		recognize:      IsLazyRecursiveTableBuilderKernelProto,
 		runValue:       (*VM).tryRunRecursiveTableValueKernel,
 		recursiveTable: true,
 	},
 	{
 		info: KernelInfo{
-			Name:    "recursive_table_fold",
+			Name:    "lazy_recursive_table_fold",
 			Route:   KernelRouteWholeCallValue,
 			Arity:   1,
 			Results: kernelWholeCallSingleResultCount,
 		},
-		recognize:      IsFixedRecursiveTableFoldKernelProto,
+		recognize:      IsLazyRecursiveTableFoldKernelProto,
 		runValue:       (*VM).tryRunRecursiveTableValueKernel,
 		recursiveTable: true,
 	},

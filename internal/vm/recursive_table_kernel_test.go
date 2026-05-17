@@ -14,7 +14,7 @@ func TestRecursiveTableKernelRecognizesStructuralBuilderAndFold(t *testing.T) {
 	if makePair == nil {
 		t.Fatal("makePair proto not found")
 	}
-	if !IsFixedRecursiveTableBuilderKernelProto(makePair) {
+	if !IsLazyRecursiveTableBuilderKernelProto(makePair) {
 		dumpVMTestProtoBytecode(t, makePair)
 		t.Fatal("makePair should qualify for VM recursive table builder kernel")
 	}
@@ -23,7 +23,7 @@ func TestRecursiveTableKernelRecognizesStructuralBuilderAndFold(t *testing.T) {
 	if countPair == nil {
 		t.Fatal("countPair proto not found")
 	}
-	if !IsFixedRecursiveTableFoldKernelProto(countPair) {
+	if !IsLazyRecursiveTableFoldKernelProto(countPair) {
 		dumpVMTestProtoBytecode(t, countPair)
 		t.Fatal("countPair should qualify for VM recursive table fold kernel")
 	}
@@ -50,10 +50,10 @@ func TestRecursiveTableKernelUsesBytecodeSelfGlobalInsteadOfProtoName(t *testing
 	makePair.Proto.Tier2Promoted = true
 	countPair.Proto.Tier2Promoted = true
 
-	if !IsFixedRecursiveTableBuilderKernelProto(makePair.Proto) {
+	if !IsLazyRecursiveTableBuilderKernelProto(makePair.Proto) {
 		t.Fatal("builder recognizer should use recursive GETGLOBAL, not proto.Name")
 	}
-	if !IsFixedRecursiveTableFoldKernelProto(countPair.Proto) {
+	if !IsLazyRecursiveTableFoldKernelProto(countPair.Proto) {
 		t.Fatal("fold recognizer should use recursive GETGLOBAL, not proto.Name")
 	}
 	handled, roots, err := vm.tryRunValueWholeCallKernel(makePair, []runtime.Value{runtime.IntValue(3)})
