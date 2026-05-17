@@ -28,9 +28,9 @@ type spectralKernelCache struct {
 
 func (vm *VM) tryRunSpectralWholeCallKernel(cl *Closure, args []runtime.Value) (bool, error) {
 	if cl == nil || cl.Proto == nil ||
-		!(hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelSpectralMultiplyAv) ||
-			hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelSpectralMultiplyAtv) ||
-			hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelSpectralAtAv)) {
+		!(hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelCoefficientMatrixVector) ||
+			hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelCoefficientMatrixTransposeVector) ||
+			hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelCoefficientMatrixAtAVector)) {
 		return false, nil
 	}
 	return vm.runSpectralWholeCallKernel(cl, args)
@@ -420,10 +420,10 @@ func (vm *VM) globalValue(name string) (runtime.Value, bool) {
 func classifyDenseSpectralMultiplyProto(p *FuncProto) spectralMultiplyKind {
 	if p == nil || p.NumParams != 3 || p.IsVarArg || len(p.Constants) != 5 ||
 		len(p.Code) != 36 || !numberConst(p.Constants[0], 0.0) ||
-		!valueStringConst(p.Constants[1], "A") ||
-		!valueStringConst(p.Constants[2], "matrix") ||
-		!valueStringConst(p.Constants[3], "getf") ||
-		!valueStringConst(p.Constants[4], "setf") {
+		!p.Constants[1].IsString() ||
+		!p.Constants[2].IsString() ||
+		!p.Constants[3].IsString() ||
+		!p.Constants[4].IsString() {
 		return spectralNotMultiply
 	}
 	prefix := []uint32{
@@ -500,11 +500,11 @@ func isSpectralAProto(p *FuncProto) bool {
 
 func isDenseSpectralAtAvProto(p *FuncProto) bool {
 	if p == nil || p.NumParams != 4 || p.IsVarArg || len(p.Constants) != 5 ||
-		!valueStringConst(p.Constants[0], "matrix") ||
-		!valueStringConst(p.Constants[1], "setf") ||
+		!p.Constants[0].IsString() ||
+		!p.Constants[1].IsString() ||
 		!numberConst(p.Constants[2], 0.0) ||
-		!valueStringConst(p.Constants[3], "multiplyAv") ||
-		!valueStringConst(p.Constants[4], "multiplyAtv") {
+		!p.Constants[3].IsString() ||
+		!p.Constants[4].IsString() {
 		return false
 	}
 	return codeEquals(p.Code, []uint32{

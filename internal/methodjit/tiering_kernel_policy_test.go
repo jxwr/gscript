@@ -32,8 +32,8 @@ func TestStructuralKernelTieringDecisionUsesPolicyObject(t *testing.T) {
 	if decision.reason != "whole_call_structural_kernel" {
 		t.Fatalf("reason = %q, want whole_call_structural_kernel", decision.reason)
 	}
-	if decision.kernel != "spectral_multiply_av" {
-		t.Fatalf("kernel = %q, want spectral_multiply_av", decision.kernel)
+	if decision.kernel != "coefficient_matrix_vector" {
+		t.Fatalf("kernel = %q, want coefficient_matrix_vector", decision.kernel)
 	}
 	if decision.route != "whole_call_no_result" {
 		t.Fatalf("route = %q, want whole_call_no_result", decision.route)

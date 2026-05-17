@@ -56,11 +56,11 @@ const (
 	wholeCallKernelRecursiveTableFold
 	wholeCallKernelMatrixMultiply
 	wholeCallKernelNumericArrayRegionSort
-	wholeCallKernelSpectralMultiplyAv
-	wholeCallKernelSpectralMultiplyAtv
-	wholeCallKernelSpectralAtAv
+	wholeCallKernelCoefficientMatrixVector
+	wholeCallKernelCoefficientMatrixTransposeVector
+	wholeCallKernelCoefficientMatrixAtAVector
 	wholeCallKernelDenseMatrixMultiplyTransposed
-	wholeCallKernelDenseSpectralAtAv
+	wholeCallKernelDenseCoefficientMatrixAtAVector
 	wholeCallKernelRecordPairwiseAdvance
 	wholeCallKernelRecordWalkFold
 	wholeCallKernelIntGridAggregate
@@ -159,7 +159,7 @@ var wholeCallKernelRegistry = [wholeCallKernelCount]wholeCallKernelRecognizer{
 	},
 	{
 		info: KernelInfo{
-			Name:    "spectral_multiply_av",
+			Name:    "coefficient_matrix_vector",
 			Route:   KernelRouteWholeCallNoResult,
 			Arity:   3,
 			Results: kernelWholeCallInPlaceResultCount,
@@ -169,7 +169,7 @@ var wholeCallKernelRegistry = [wholeCallKernelCount]wholeCallKernelRecognizer{
 	},
 	{
 		info: KernelInfo{
-			Name:    "spectral_multiply_atv",
+			Name:    "coefficient_matrix_transpose_vector",
 			Route:   KernelRouteWholeCallNoResult,
 			Arity:   3,
 			Results: kernelWholeCallInPlaceResultCount,
@@ -179,7 +179,7 @@ var wholeCallKernelRegistry = [wholeCallKernelCount]wholeCallKernelRecognizer{
 	},
 	{
 		info: KernelInfo{
-			Name:    "spectral_atav",
+			Name:    "coefficient_matrix_ata_vector",
 			Route:   KernelRouteWholeCallNoResult,
 			Arity:   3,
 			Results: kernelWholeCallInPlaceResultCount,
@@ -199,7 +199,7 @@ var wholeCallKernelRegistry = [wholeCallKernelCount]wholeCallKernelRecognizer{
 	},
 	{
 		info: KernelInfo{
-			Name:    "spectral_dense_atav",
+			Name:    "dense_coefficient_matrix_ata_vector",
 			Route:   KernelRouteWholeCallNoResult,
 			Arity:   4,
 			Results: kernelWholeCallInPlaceResultCount,
