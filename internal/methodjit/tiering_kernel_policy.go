@@ -27,8 +27,8 @@ func (tm *TieringManager) structuralKernelTieringDecision(proto *vm.FuncProto) (
 			callee: callee,
 		}, true
 	}
-	if vm.IsNestedMatmulKernelProto(proto) {
-		return tieringKernelDecision{reason: "whole_call_matmul_kernel"}, true
+	if vm.IsMatrixMultiplyKernelProto(proto) {
+		return tieringKernelDecision{reason: "whole_call_matrix multiply_kernel"}, true
 	}
 	if vm.IsBoolTableStrikeCountKernelProto(proto) {
 		return tieringKernelDecision{reason: "whole_call_bool_table_strike_count_kernel"}, true

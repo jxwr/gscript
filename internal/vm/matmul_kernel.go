@@ -2,14 +2,14 @@ package vm
 
 import "github.com/gscript/gscript/internal/runtime"
 
-func (vm *VM) tryRunMatmulWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
-	if cl == nil || cl.Proto == nil || !hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelNestedMatmul) {
+func (vm *VM) tryRunMatrixMultiplyWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
+	if cl == nil || cl.Proto == nil || !hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelMatrixMultiply) {
 		return false, nil, nil
 	}
-	return vm.runMatmulWholeCallKernel(cl, args)
+	return vm.runMatrixMultiplyWholeCallKernel(cl, args)
 }
 
-func (vm *VM) runMatmulWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
+func (vm *VM) runMatrixMultiplyWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
 	if cl == nil || cl.Proto == nil || len(args) != 3 || !vm.noGlobalLock {
 		return false, nil, nil
 	}
@@ -25,7 +25,7 @@ func (vm *VM) runMatmulWholeCallKernel(cl *Closure, args []runtime.Value) (bool,
 	if n == 0 {
 		return true, []runtime.Value{runtime.TableValue(runtime.NewTable())}, nil
 	}
-	if handled, results := vm.runDenseMatmulWholeCallKernel(args[0].Table(), args[1].Table(), n); handled {
+	if handled, results := vm.runDenseMatrixMultiplyWholeCallKernel(args[0].Table(), args[1].Table(), n); handled {
 		return true, results, nil
 	}
 	aRows, ok := args[0].Table().PlainFloatMatrixRowsForNumericKernel(n, n)
@@ -104,7 +104,7 @@ func (vm *VM) runMatmulWholeCallKernel(cl *Closure, args []runtime.Value) (bool,
 	return true, []runtime.Value{runtime.TableValue(c)}, nil
 }
 
-func (vm *VM) runDenseMatmulWholeCallKernel(aTable, bTable *runtime.Table, n int) (bool, []runtime.Value) {
+func (vm *VM) runDenseMatrixMultiplyWholeCallKernel(aTable, bTable *runtime.Table, n int) (bool, []runtime.Value) {
 	aFlat, aStride, ok := aTable.DenseFloatMatrixForNumericKernel(n, n)
 	if !ok {
 		return false, nil
@@ -178,7 +178,7 @@ func (vm *VM) runDenseMatmulWholeCallKernel(aTable, bTable *runtime.Table, n int
 	return true, []runtime.Value{runtime.TableValue(c)}
 }
 
-func (vm *VM) runDenseMatmulTransposedWholeCallKernel(cl *Closure, args []runtime.Value) (bool, error) {
+func (vm *VM) runDenseMatrixMultiplyTransposedWholeCallKernel(cl *Closure, args []runtime.Value) (bool, error) {
 	if cl == nil || cl.Proto == nil || len(args) != 4 || !vm.noGlobalLock {
 		return false, nil
 	}
@@ -247,12 +247,12 @@ func (vm *VM) runDenseMatmulTransposedWholeCallKernel(cl *Closure, args []runtim
 	return true, nil
 }
 
-func IsNestedMatmulKernelProto(p *FuncProto) bool {
-	return cachedWholeCallKernelRecognized(p, wholeCallKernelNestedMatmul)
+func IsMatrixMultiplyKernelProto(p *FuncProto) bool {
+	return cachedWholeCallKernelRecognized(p, wholeCallKernelMatrixMultiply)
 }
 
-func isNestedMatmulProto(p *FuncProto) bool {
-	if isDenseMatmulProto(p) || isDenseUnroll2MatmulProto(p) || isDenseSplit2MatmulProto(p) {
+func isMatrixMultiplyProto(p *FuncProto) bool {
+	if isDenseMatrixMultiplyProto(p) || isDenseUnroll2MatrixMultiplyProto(p) || isDenseSplit2MatrixMultiplyProto(p) {
 		return true
 	}
 	if p == nil || p.NumParams != 3 || p.IsVarArg || len(p.Constants) != 1 || !numberConst(p.Constants[0], 0.0) {
@@ -305,8 +305,8 @@ func isNestedMatmulProto(p *FuncProto) bool {
 	})
 }
 
-func isDenseMatmulProto(p *FuncProto) bool {
-	if !hasDenseMatmulConstants(p, 26, 51) {
+func isDenseMatrixMultiplyProto(p *FuncProto) bool {
+	if !hasDenseMatrixMultiplyConstants(p, 26, 51) {
 		return false
 	}
 	return codeEquals(p.Code, []uint32{
@@ -364,8 +364,8 @@ func isDenseMatmulProto(p *FuncProto) bool {
 	})
 }
 
-func isDenseUnroll2MatmulProto(p *FuncProto) bool {
-	if !hasDenseMatmulConstants(p, 23, 91) {
+func isDenseUnroll2MatrixMultiplyProto(p *FuncProto) bool {
+	if !hasDenseMatrixMultiplyConstants(p, 23, 91) {
 		return false
 	}
 	return codeEquals(p.Code, []uint32{
@@ -463,8 +463,8 @@ func isDenseUnroll2MatmulProto(p *FuncProto) bool {
 	})
 }
 
-func isDenseSplit2MatmulProto(p *FuncProto) bool {
-	if !hasDenseMatmulConstants(p, 25, 93) {
+func isDenseSplit2MatrixMultiplyProto(p *FuncProto) bool {
+	if !hasDenseMatrixMultiplyConstants(p, 25, 93) {
 		return false
 	}
 	return codeEquals(p.Code, []uint32{
@@ -564,23 +564,23 @@ func isDenseSplit2MatmulProto(p *FuncProto) bool {
 	})
 }
 
-func hasDenseMatmulConstants(p *FuncProto, maxStack, codeLen int) bool {
+func hasDenseMatrixMultiplyConstants(p *FuncProto, maxStack, codeLen int) bool {
 	return p != nil && p.NumParams == 3 && !p.IsVarArg && p.MaxStack == maxStack && len(p.Code) == codeLen &&
 		len(p.Constants) == 5 &&
-		p.Constants[0].IsString() && p.Constants[0].Str() == "matrix" &&
-		p.Constants[1].IsString() && p.Constants[1].Str() == "dense" &&
+		p.Constants[0].IsString() &&
+		p.Constants[1].IsString() &&
 		numberConst(p.Constants[2], 0.0) &&
-		p.Constants[3].IsString() && p.Constants[3].Str() == "getf" &&
-		p.Constants[4].IsString() && p.Constants[4].Str() == "setf"
+		p.Constants[3].IsString() &&
+		p.Constants[4].IsString()
 }
 
-func isDenseMatmulTransposedProto(p *FuncProto) bool {
+func isDenseMatrixMultiplyTransposedProto(p *FuncProto) bool {
 	if p == nil || p.NumParams != 4 || p.IsVarArg || p.MaxStack != 26 || len(p.Code) != 45 ||
 		len(p.Constants) != 4 ||
 		!numberConst(p.Constants[0], 0.0) ||
-		!p.Constants[1].IsString() || p.Constants[1].Str() != "matrix" ||
-		!p.Constants[2].IsString() || p.Constants[2].Str() != "getf" ||
-		!p.Constants[3].IsString() || p.Constants[3].Str() != "setf" {
+		!p.Constants[1].IsString() ||
+		!p.Constants[2].IsString() ||
+		!p.Constants[3].IsString() {
 		return false
 	}
 	return codeEquals(p.Code, []uint32{

@@ -2,7 +2,7 @@ package methodjit
 
 import "testing"
 
-func TestNestedMatmulUsesWholeCallKernelInsteadOfJIT(t *testing.T) {
+func TestMatrixMultiplyUsesWholeCallKernelInsteadOfJIT(t *testing.T) {
 	top := compileTop(t, `
 		func product(left, right, size) {
 			c := {}
@@ -30,6 +30,6 @@ func TestNestedMatmulUsesWholeCallKernelInsteadOfJIT(t *testing.T) {
 		t.Fatalf("TryCompile returned %T, want nil whole-call-kernel routing", got)
 	}
 	if !target.JITDisabled {
-		t.Fatal("nested matmul proto was not marked JITDisabled")
+		t.Fatal("nested matrix multiply proto was not marked JITDisabled")
 	}
 }

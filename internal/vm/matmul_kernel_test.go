@@ -2,7 +2,7 @@ package vm
 
 import "testing"
 
-func TestMatmulKernelRecognizesStructuralProto(t *testing.T) {
+func TestMatrixMultiplyKernelRecognizesStructuralProto(t *testing.T) {
 	proto, vm := compileSpectralKernelTestProgram(t, `
 		func product(left, right, size) {
 			c := {}
@@ -22,14 +22,14 @@ func TestMatmulKernelRecognizesStructuralProto(t *testing.T) {
 		}
 	`)
 	defer vm.Close()
-	if !isNestedMatmulProto(proto.Protos[0]) {
-		t.Fatal("nested matmul proto not recognized")
+	if !isMatrixMultiplyProto(proto.Protos[0]) {
+		t.Fatal("nested matrix multiply proto not recognized")
 	}
 }
 
-func TestMatmulKernelRecognizesDenseUnroll2Proto(t *testing.T) {
+func TestMatrixMultiplyKernelRecognizesDenseUnroll2Proto(t *testing.T) {
 	proto, vm := compileSpectralKernelTestProgram(t, `
-		func matmul(a, b, n) {
+		func dense_product(a, b, n) {
 			c := matrix.dense(n, n)
 			for i := 0; i < n; i++ {
 				for j := 0; j < n; j++ {
@@ -51,14 +51,14 @@ func TestMatmulKernelRecognizesDenseUnroll2Proto(t *testing.T) {
 		}
 	`)
 	defer vm.Close()
-	if !isNestedMatmulProto(proto.Protos[0]) {
-		t.Fatal("dense unroll2 matmul proto not recognized")
+	if !isMatrixMultiplyProto(proto.Protos[0]) {
+		t.Fatal("dense unroll2 matrix multiply proto not recognized")
 	}
 }
 
-func TestMatmulKernelRecognizesDenseTransposedProto(t *testing.T) {
+func TestMatrixMultiplyKernelRecognizesDenseTransposedProto(t *testing.T) {
 	proto, vm := compileSpectralKernelTestProgram(t, `
-		func matmul(a, bT, c, n) {
+		func dense_product(a, bT, c, n) {
 			for i := 0; i < n; i++ {
 				for j := 0; j < n; j++ {
 					sum := 0.0
@@ -71,12 +71,12 @@ func TestMatmulKernelRecognizesDenseTransposedProto(t *testing.T) {
 		}
 	`)
 	defer vm.Close()
-	if !isDenseMatmulTransposedProto(proto.Protos[0]) {
-		t.Fatal("dense transposed matmul proto not recognized")
+	if !isDenseMatrixMultiplyTransposedProto(proto.Protos[0]) {
+		t.Fatal("dense transposed matrix multiply proto not recognized")
 	}
 }
 
-func TestMatmulKernelCorrectness(t *testing.T) {
+func TestMatrixMultiplyKernelCorrectness(t *testing.T) {
 	globals := compileAndRun(t, `
 		func product(left, right, size) {
 			c := {}
@@ -120,7 +120,7 @@ func TestMatmulKernelCorrectness(t *testing.T) {
 
 func TestMatmulDenseWholeCallKernelCorrectness(t *testing.T) {
 	globals := compileAndRun(t, `
-		func matmul(a, b, n) {
+		func dense_product(a, b, n) {
 			c := matrix.dense(n, n)
 			for i := 0; i < n; i++ {
 				for j := 0; j < n; j++ {
@@ -150,7 +150,7 @@ func TestMatmulDenseWholeCallKernelCorrectness(t *testing.T) {
 		matrix.setf(b, 0, 1, 6.0)
 		matrix.setf(b, 1, 0, 7.0)
 		matrix.setf(b, 1, 1, 8.0)
-		c := matmul(a, b, 2)
+		c := dense_product(a, b, 2)
 		result := matrix.getf(c, 0, 0) + matrix.getf(c, 0, 1) + matrix.getf(c, 1, 0) + matrix.getf(c, 1, 1)
 	`)
 	expectGlobalFloat(t, globals, "result", 134.0)
@@ -158,7 +158,7 @@ func TestMatmulDenseWholeCallKernelCorrectness(t *testing.T) {
 
 func TestMatmulDenseTransposedWholeCallKernelCorrectness(t *testing.T) {
 	globals := compileAndRun(t, `
-		func matmul(a, bT, c, n) {
+		func dense_product(a, bT, c, n) {
 			for i := 0; i < n; i++ {
 				for j := 0; j < n; j++ {
 					sum := 0.0
@@ -180,13 +180,13 @@ func TestMatmulDenseTransposedWholeCallKernelCorrectness(t *testing.T) {
 		matrix.setf(bT, 0, 1, 7.0)
 		matrix.setf(bT, 1, 0, 6.0)
 		matrix.setf(bT, 1, 1, 8.0)
-		matmul(a, bT, c, 2)
+		dense_product(a, bT, c, 2)
 		result := matrix.getf(c, 0, 0) + matrix.getf(c, 0, 1) + matrix.getf(c, 1, 0) + matrix.getf(c, 1, 1)
 	`)
 	expectGlobalFloat(t, globals, "result", 134.0)
 }
 
-func TestMatmulKernelFallsBackForMetatableRows(t *testing.T) {
+func TestMatrixMultiplyKernelFallsBackForMetatableRows(t *testing.T) {
 	globals := compileAndRun(t, `
 		func product(left, right, size) {
 			c := {}
