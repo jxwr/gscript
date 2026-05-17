@@ -251,7 +251,7 @@ func (tm *TieringManager) compileFixedRecursiveNestedIntFoldTier2(proto *vm.Func
 	tm.traceEvent("tier2_attempt", "tier2", proto, map[string]any{
 		"attempt":    attempt,
 		"call_count": proto.CallCount,
-		"protocol":   "fixed_recursive_nested_int_fold",
+		"protocol":   "nested_recursive_int_fold",
 	})
 	tm.traceTier2Success(proto, cf, attempt)
 	return cf, true

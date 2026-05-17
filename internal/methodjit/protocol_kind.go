@@ -23,13 +23,13 @@ const (
 func (k compiledProtocolKind) String() string {
 	switch k {
 	case compiledProtocolFixedRecursiveIntFold:
-		return "fixed_recursive_int_fold"
+		return "recursive_int_fold"
 	case compiledProtocolFixedRecursiveNestedIntFold:
-		return "fixed_recursive_nested_int_fold"
+		return "nested_recursive_int_fold"
 	case compiledProtocolFixedRecursiveTableBuilder:
-		return "fixed_recursive_table_builder"
+		return "lazy_recursive_table_builder"
 	case compiledProtocolFixedRecursiveTableFold:
-		return "fixed_recursive_table_fold"
+		return "lazy_recursive_table_fold"
 	case compiledProtocolMutualRecursiveIntSCC:
 		return "mutual_recursive_int_scc"
 	default:

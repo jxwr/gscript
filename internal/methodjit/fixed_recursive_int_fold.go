@@ -256,7 +256,7 @@ func (tm *TieringManager) compileFixedRecursiveIntFoldTier2(proto *vm.FuncProto)
 	tm.traceEvent("tier2_attempt", "tier2", proto, map[string]any{
 		"attempt":    attempt,
 		"call_count": proto.CallCount,
-		"protocol":   "fixed_recursive_int_fold",
+		"protocol":   "recursive_int_fold",
 	})
 	tm.traceTier2Success(proto, cf, attempt)
 	return cf, true

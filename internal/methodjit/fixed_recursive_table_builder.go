@@ -116,7 +116,7 @@ func (tm *TieringManager) compileFixedRecursiveTableBuilderTier2(proto *vm.FuncP
 	tm.traceEvent("tier2_attempt", "tier2", proto, map[string]any{
 		"attempt":    attempt,
 		"call_count": proto.CallCount,
-		"protocol":   "fixed_recursive_table_builder",
+		"protocol":   "lazy_recursive_table_builder",
 	})
 	tm.traceTier2Success(proto, cf, attempt)
 	return cf, true

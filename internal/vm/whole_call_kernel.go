@@ -20,7 +20,7 @@ func (vm *VM) tryValueWholeCallKernel(cl *Closure, args []runtime.Value, c int, 
 func (vm *VM) tryRunValueWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
 	if handled, results, err := vm.tryRunRawIntNestedValueKernel(cl, args); handled || err != nil {
 		if handled {
-			runtime.RecordRuntimePathStructuralKernelHit(string(KernelRouteWholeCallValue), "raw_int_nested")
+			runtime.RecordRuntimePathStructuralKernelHit(string(KernelRouteWholeCallValue), "nested_int_recurrence")
 		}
 		return handled, results, err
 	}
