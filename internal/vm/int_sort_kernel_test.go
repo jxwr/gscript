@@ -8,7 +8,7 @@ import (
 	"github.com/gscript/gscript/internal/runtime"
 )
 
-func TestIntSortKernelRecognizesStructuralPartitionSort(t *testing.T) {
+func TestNumericArrayRegionSortKernelRecognizesStructuralNumericArrayRegionSort(t *testing.T) {
 	proto, vm := compileSpectralKernelTestProgram(t, `
 func partition_sort(arr, lo, hi) {
     if lo >= hi { return }
@@ -31,12 +31,12 @@ func partition_sort(arr, lo, hi) {
 }
 `)
 	defer vm.Close()
-	if !isIntArrayPartitionSortProto(proto.Protos[0]) {
-		t.Fatalf("structural partition-sort proto not recognized:\n%s", Disassemble(proto.Protos[0]))
+	if !isNumericArrayRegionSortProto(proto.Protos[0]) {
+		t.Fatalf("structural numeric array region sort proto not recognized:\n%s", Disassemble(proto.Protos[0]))
 	}
 }
 
-func TestIntSortKernelSortsPlainIntArray(t *testing.T) {
+func TestNumericArrayRegionSortKernelSortsPlainIntArray(t *testing.T) {
 	globals := compileAndRun(t, `
 func q(arr, lo, hi) {
     if lo >= hi { return }
@@ -68,7 +68,7 @@ result := arr[1] * 10000 + arr[2] * 1000 + arr[3] * 100 + arr[4] * 10 + arr[5]
 	expectGlobalInt(t, globals, "result", 13579)
 }
 
-func TestIntSortKernelFallsBackWhenRecursiveGlobalRebound(t *testing.T) {
+func TestNumericArrayRegionSortKernelFallsBackWhenRecursiveGlobalRebound(t *testing.T) {
 	globals := compileAndRun(t, `
 func q(arr, lo, hi) {
     if lo >= hi { return }
@@ -103,7 +103,7 @@ result := arr[1] * 10 + arr[2]
 	expectGlobalInt(t, globals, "result", 12)
 }
 
-func TestIntSortKernelSortsMixedNumericArrayPreservingBoxes(t *testing.T) {
+func TestNumericArrayRegionSortKernelSortsMixedNumericArrayPreservingBoxes(t *testing.T) {
 	globals := compileAndRun(t, `
 func q(arr, lo, hi) {
     if lo >= hi { return }
@@ -141,7 +141,7 @@ t3 := math.type(arr[3])
 	expectGlobalString(t, globals, "t3", "integer")
 }
 
-func TestIntSortKernelKeepsMixedDuplicateBoxPermutation(t *testing.T) {
+func TestNumericArrayRegionSortKernelKeepsMixedDuplicateBoxPermutation(t *testing.T) {
 	globals := compileAndRun(t, `
 func q(arr, lo, hi) {
     if lo >= hi { return }
@@ -175,7 +175,7 @@ t3 := math.type(arr[3])
 	expectGlobalString(t, globals, "t3", "integer")
 }
 
-func TestIntSortKernelKeepsBaseCaseSemantics(t *testing.T) {
+func TestNumericArrayRegionSortKernelKeepsBaseCaseSemantics(t *testing.T) {
 	globals := compileAndRun(t, `
 func q(arr, lo, hi) {
     if lo >= hi { return }
@@ -201,9 +201,9 @@ result := 1
 	expectGlobalInt(t, globals, "result", 1)
 }
 
-func TestRunPartitionSortPlainIntRegion(t *testing.T) {
+func TestRunNumericArrayRegionSortPlainIntRegion(t *testing.T) {
 	values := []int64{17, -3, 17, 0, 42, 5, -3}
-	runPartitionSort(values)
+	runPlainIntRegionSort(values)
 	want := []int64{-3, -3, 0, 5, 17, 17, 42}
 	for i := range want {
 		if values[i] != want[i] {
@@ -304,7 +304,7 @@ func TestRadixSortIntegralNumericValuesRejectsUnsafeFloatKeys(t *testing.T) {
 	}
 }
 
-func TestIntSortKernelReusesVMScratchWithoutAllocations(t *testing.T) {
+func TestNumericArrayRegionSortKernelReusesVMScratchWithoutAllocations(t *testing.T) {
 	const n = 4096
 	vm := New(map[string]runtime.Value{})
 	defer vm.Close()
@@ -313,17 +313,17 @@ func TestIntSortKernelReusesVMScratchWithoutAllocations(t *testing.T) {
 	scratch := func(n int) []int64 { return vm.wholeCallIntScratch(n) }
 
 	copy(dst, src)
-	runPartitionSortWithScratch(dst, scratch)
+	runPlainIntRegionSortWithScratch(dst, scratch)
 	allocs := testing.AllocsPerRun(50, func() {
 		copy(dst, src)
-		runPartitionSortWithScratch(dst, scratch)
+		runPlainIntRegionSortWithScratch(dst, scratch)
 	})
 	if allocs != 0 {
 		t.Fatalf("cached int radix scratch allocated %.2f times per run, want 0", allocs)
 	}
 }
 
-func TestIntSortWholeCallRegionReusesVMScratchWithoutAllocations(t *testing.T) {
+func TestNumericArrayRegionSortWholeCallReusesVMScratchWithoutAllocations(t *testing.T) {
 	const n = 4096
 	vm := New(map[string]runtime.Value{})
 	defer vm.Close()
@@ -338,12 +338,12 @@ func TestIntSortWholeCallRegionReusesVMScratchWithoutAllocations(t *testing.T) {
 	src := append([]int64(nil), region...)
 	args := []runtime.Value{runtime.TableValue(tbl), runtime.IntValue(1), runtime.IntValue(n)}
 
-	if !vm.runIntArrayPartitionSortRegion(args) {
+	if !vm.runNumericArrayRegionSort(args) {
 		t.Fatal("whole-call int sort region was not handled")
 	}
 	allocs := testing.AllocsPerRun(50, func() {
 		copy(region, src)
-		if !vm.runIntArrayPartitionSortRegion(args) {
+		if !vm.runNumericArrayRegionSort(args) {
 			t.Fatal("whole-call int sort region was not handled")
 		}
 	})
@@ -352,7 +352,7 @@ func TestIntSortWholeCallRegionReusesVMScratchWithoutAllocations(t *testing.T) {
 	}
 }
 
-func TestIntSortKernelValueScratchScansGCRoots(t *testing.T) {
+func TestNumericArrayRegionSortKernelValueScratchScansGCRoots(t *testing.T) {
 	vm := New(map[string]runtime.Value{})
 	defer vm.Close()
 	tbl := runtime.NewTable()
@@ -369,7 +369,7 @@ func TestIntSortKernelValueScratchScansGCRoots(t *testing.T) {
 	}
 }
 
-func TestIntSortKernelFallsBackForNonnumericMixedArray(t *testing.T) {
+func TestNumericArrayRegionSortKernelFallsBackForNonnumericMixedArray(t *testing.T) {
 	err := compileAndRunExpectError(t, `
 func q(arr, lo, hi) {
     if lo >= hi { return }
@@ -400,7 +400,7 @@ q(arr, 1, 3)
 	}
 }
 
-func BenchmarkRunPartitionSortPlainIntRegion(b *testing.B) {
+func BenchmarkRunNumericArrayRegionSortPlainIntRegion(b *testing.B) {
 	const n = 50000
 	vm := New(map[string]runtime.Value{})
 	defer vm.Close()
@@ -412,11 +412,11 @@ func BenchmarkRunPartitionSortPlainIntRegion(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		copy(dst, src)
-		runPartitionSortWithScratch(dst, scratch)
+		runPlainIntRegionSortWithScratch(dst, scratch)
 	}
 }
 
-func BenchmarkRunPartitionSortMixedNumericRegion(b *testing.B) {
+func BenchmarkRunNumericArrayRegionSortMixedNumericRegion(b *testing.B) {
 	const n = 50000
 	vm := New(map[string]runtime.Value{})
 	defer vm.Close()
@@ -436,7 +436,7 @@ func BenchmarkRunPartitionSortMixedNumericRegion(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		copy(dst, src)
-		runNumericValuePartitionSortWithScratch(dst, scratch)
+		runNumericValueRegionSortWithScratch(dst, scratch)
 	}
 }
 

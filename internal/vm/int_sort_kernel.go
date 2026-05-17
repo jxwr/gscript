@@ -7,14 +7,14 @@ import (
 	"github.com/gscript/gscript/internal/runtime"
 )
 
-func (vm *VM) tryRunIntSortWholeCallKernel(cl *Closure, args []runtime.Value) (bool, error) {
-	if cl == nil || cl.Proto == nil || !hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelIntArrayPartitionSort) {
+func (vm *VM) tryRunNumericArrayRegionSortWholeCallKernel(cl *Closure, args []runtime.Value) (bool, error) {
+	if cl == nil || cl.Proto == nil || !hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelNumericArrayRegionSort) {
 		return false, nil
 	}
-	return vm.runIntSortWholeCallKernel(cl, args)
+	return vm.runNumericArrayRegionSortWholeCallKernel(cl, args)
 }
 
-func (vm *VM) runIntSortWholeCallKernel(cl *Closure, args []runtime.Value) (bool, error) {
+func (vm *VM) runNumericArrayRegionSortWholeCallKernel(cl *Closure, args []runtime.Value) (bool, error) {
 	if cl == nil || cl.Proto == nil || len(args) != 3 {
 		return false, nil
 	}
@@ -24,7 +24,7 @@ func (vm *VM) runIntSortWholeCallKernel(cl *Closure, args []runtime.Value) (bool
 	if !vm.guardSelfRecursiveGlobal(cl) {
 		return false, nil
 	}
-	return vm.runIntArrayPartitionSortRegion(args), nil
+	return vm.runNumericArrayRegionSort(args), nil
 }
 
 func (vm *VM) guardSelfRecursiveGlobal(cl *Closure) bool {
@@ -39,19 +39,19 @@ func (vm *VM) guardSelfRecursiveGlobal(cl *Closure) bool {
 	return ok && current == cl
 }
 
-func runIntArrayPartitionSortRegion(args []runtime.Value) bool {
-	return runIntArrayPartitionSortRegionWithScratch(args, nil, nil)
+func runNumericArrayRegionSort(args []runtime.Value) bool {
+	return runNumericArrayRegionSortWithScratch(args, nil, nil)
 }
 
-func (vm *VM) runIntArrayPartitionSortRegion(args []runtime.Value) bool {
-	return runIntArrayPartitionSortRegionWithScratch(args, func(n int) []int64 {
+func (vm *VM) runNumericArrayRegionSort(args []runtime.Value) bool {
+	return runNumericArrayRegionSortWithScratch(args, func(n int) []int64 {
 		return vm.wholeCallIntScratch(n)
 	}, func(n int) []runtime.Value {
 		return vm.wholeCallValueScratch(n)
 	})
 }
 
-func runIntArrayPartitionSortRegionWithScratch(args []runtime.Value, intScratch func(int) []int64, valueScratch func(int) []runtime.Value) bool {
+func runNumericArrayRegionSortWithScratch(args []runtime.Value, intScratch func(int) []int64, valueScratch func(int) []runtime.Value) bool {
 	if len(args) != 3 || !args[1].IsNumber() || !args[2].IsNumber() {
 		return false
 	}
@@ -74,23 +74,23 @@ func runIntArrayPartitionSortRegionWithScratch(args []runtime.Value, intScratch 
 	}
 	tbl := args[0].Table()
 	if region, ok := tbl.PlainIntArrayRegionForNumericKernel(int(lo64), int(hi64)); ok {
-		runPartitionSortWithScratch(region, intScratch)
+		sortPlainIntRegionWithScratch(region, intScratch)
 		tbl.MarkArrayMutationForNumericKernel()
 		return true
 	}
 	if region, ok := tbl.PlainNumericValueArrayRegionForNumericKernel(int(lo64), int(hi64)); ok {
-		runNumericValuePartitionSortWithScratch(region, valueScratch)
+		runNumericValueRegionSortWithScratch(region, valueScratch)
 		tbl.MarkArrayMutationForNumericKernel()
 		return true
 	}
 	return false
 }
 
-func runPartitionSort(values []int64) {
-	runPartitionSortWithScratch(values, nil)
+func runPlainIntRegionSort(values []int64) {
+	runPlainIntRegionSortWithScratch(values, nil)
 }
 
-func runPartitionSortWithScratch(values []int64, scratch func(int) []int64) {
+func runPlainIntRegionSortWithScratch(values []int64, scratch func(int) []int64) {
 	sortPlainIntRegionWithScratch(values, scratch)
 }
 
@@ -210,11 +210,11 @@ func integralKernelArg(v runtime.Value) (int64, bool) {
 	return i, float64(i) == f
 }
 
-func runNumericValuePartitionSort(values []runtime.Value) {
-	runNumericValuePartitionSortWithScratch(values, nil)
+func runNumericValueRegionSort(values []runtime.Value) {
+	runNumericValueRegionSortWithScratch(values, nil)
 }
 
-func runNumericValuePartitionSortWithScratch(values []runtime.Value, scratch func(int) []runtime.Value) {
+func runNumericValueRegionSortWithScratch(values []runtime.Value, scratch func(int) []runtime.Value) {
 	if len(values) >= 2048 && radixSortIntegralNumericValuesWithScratch(values, scratch) {
 		return
 	}
@@ -348,7 +348,7 @@ func numericKernelLEFloatPivot(a runtime.Value, pivot float64) bool {
 	return a.Float() <= pivot
 }
 
-func isIntArrayPartitionSortProto(p *FuncProto) bool {
+func isNumericArrayRegionSortProto(p *FuncProto) bool {
 	if p == nil || p.NumParams != 3 || p.IsVarArg || len(p.Constants) < 1 || !p.Constants[0].IsString() || len(p.Code) != 51 {
 		return false
 	}

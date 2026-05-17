@@ -55,7 +55,7 @@ const (
 	wholeCallKernelRecursiveTableBuilder
 	wholeCallKernelRecursiveTableFold
 	wholeCallKernelNestedMatmul
-	wholeCallKernelIntArrayPartitionSort
+	wholeCallKernelNumericArrayRegionSort
 	wholeCallKernelSpectralMultiplyAv
 	wholeCallKernelSpectralMultiplyAtv
 	wholeCallKernelSpectralAtAv
@@ -149,13 +149,13 @@ var wholeCallKernelRegistry = [wholeCallKernelCount]wholeCallKernelRecognizer{
 	},
 	{
 		info: KernelInfo{
-			Name:    "int_array_partition_sort",
+			Name:    "numeric_array_region_sort",
 			Route:   KernelRouteWholeCallNoResult,
 			Arity:   3,
 			Results: kernelWholeCallInPlaceResultCount,
 		},
-		recognize:   isIntArrayPartitionSortProto,
-		runNoResult: (*VM).runIntSortWholeCallKernel,
+		recognize:   isNumericArrayRegionSortProto,
+		runNoResult: (*VM).runNumericArrayRegionSortWholeCallKernel,
 	},
 	{
 		info: KernelInfo{
