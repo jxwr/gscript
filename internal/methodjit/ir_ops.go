@@ -91,6 +91,12 @@ const (
 	// Row-count variant of the same runtime specialization.
 	// Args = [y, two, recip, ciBias, crBias], Aux = max iterations, Aux2 = row size.
 	OpComplexEscapeRowCount
+	// Runtime loop specialization for nested affine Euclidean-GCD reductions.
+	// Args = [outerLimit, innerLimit, aMul, aAdd, bMul, bAdd].
+	OpGcdAccumLoop
+	// Runtime loop specialization for positive-integer Collatz step totals.
+	// Args = [limit].
+	OpCollatzTotalLoop
 
 	// Comparison (type-generic)
 	OpEq // Args[0] == Args[1]
@@ -310,6 +316,8 @@ var opNames = [...]string{
 	OpFMSUB:                      "FMSUB",
 	OpComplexEscapeInSet:         "ComplexEscapeInSet",
 	OpComplexEscapeRowCount:      "ComplexEscapeRowCount",
+	OpGcdAccumLoop:               "GcdAccumLoop",
+	OpCollatzTotalLoop:           "CollatzTotalLoop",
 	OpEq:                         "Eq",
 	OpLt:                         "Lt",
 	OpLe:                         "Le",

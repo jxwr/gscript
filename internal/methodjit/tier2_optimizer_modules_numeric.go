@@ -107,6 +107,8 @@ func tier2LoopKernelModules() []Tier2OptimizerModule {
 	}
 	modules = append(modules, tier2TableLoopKernelModules()...)
 	modules = append(modules,
+		tier2PassModule("GcdAccumLoop", Tier2PhaseLoopKernel, GcdAccumLoopPass),
+		tier2PassModule("CollatzTotalLoop", Tier2PhaseLoopKernel, CollatzTotalLoopPass),
 		tier2PassModule("FieldNumToFloatFusion (post-LICM)", Tier2PhaseLoopKernel, FieldNumToFloatFusionPass),
 		tier2PassModule("ClosureUpvalueScalar", Tier2PhaseLoopKernel, ClosureUpvalueScalarPass),
 		tier2PassModule("LoadElimination (post-LICM)", Tier2PhaseLoopKernel, LoadEliminationPass),

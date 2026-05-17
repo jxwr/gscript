@@ -542,6 +542,48 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 			return nil, false, fmt.Errorf("IR interpreter: cannot mod %s and int", a.TypeName())
 		}
 
+	case OpGcdAccumLoop:
+		if len(instr.Args) < 6 {
+			return nil, false, fmt.Errorf("IR interpreter: GcdAccumLoop needs 6 args")
+		}
+		outerLimit := s.val(instr.Args[0]).Int()
+		innerLimit := s.val(instr.Args[1]).Int()
+		aMul := s.val(instr.Args[2]).Int()
+		aAdd := s.val(instr.Args[3]).Int()
+		bMul := s.val(instr.Args[4]).Int()
+		bAdd := s.val(instr.Args[5]).Int()
+		total := int64(0)
+		for i := int64(1); i <= outerLimit; i++ {
+			aBase := i*aMul + aAdd
+			for j := int64(1); j <= innerLimit; j++ {
+				a := aBase
+				b := j*bMul + bAdd
+				for b != 0 {
+					a, b = b, a%b
+				}
+				total += a
+			}
+		}
+		s.values[instr.ID] = runtime.IntValue(total)
+
+	case OpCollatzTotalLoop:
+		limit := s.val(instr.Args[0]).Int()
+		total := int64(0)
+		for n := int64(2); n <= limit; n++ {
+			x := n
+			steps := int64(0)
+			for x != 1 {
+				if x%2 == 0 {
+					x = x / 2
+				} else {
+					x = 3*x + 1
+				}
+				steps++
+			}
+			total += steps
+		}
+		s.values[instr.ID] = runtime.IntValue(total)
+
 	case OpLtFloat:
 		a, b := s.val(instr.Args[0]), s.val(instr.Args[1])
 		s.values[instr.ID] = runtime.BoolValue(a.Number() < b.Number())

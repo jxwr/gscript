@@ -216,6 +216,8 @@ func TestTier2LoopKernelModuleOrder(t *testing.T) {
 		"TableArrayStoreLoopVersion",
 		"TableIntArrayKernel",
 		"BoolTableCountLoop",
+		"GcdAccumLoop",
+		"CollatzTotalLoop",
 		"FieldNumToFloatFusion (post-LICM)",
 		"ClosureUpvalueScalar",
 		"LoadElimination (post-LICM)",
