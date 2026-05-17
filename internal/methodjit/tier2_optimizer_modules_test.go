@@ -184,7 +184,7 @@ func TestTier2TableNativeLoweringModuleOrder(t *testing.T) {
 			"DCE (post-TableArrayStoreLower)",
 		})
 	assertTier2ModuleOrder(t, tier2TableLoopKernelModules(), Tier2PhaseLoopKernel,
-		[]string{"BoolTableFillLoop", "TableArrayStoreLoopVersion", "TableFieldUpdateLoop", "TableIntArrayKernel", "BoolTableCountLoop"})
+		[]string{"BoolTableFillLoop", "TableArrayStoreLoopVersion", "RecordArrayLoopKernel", "TableIntArrayKernel", "BoolTableCountLoop"})
 	assertTier2ModuleOrder(t, tier2TableLoopPostLoadElimModules(), Tier2PhaseLoopKernel,
 		[]string{"TableArraySwapFusion", "TableIntArrayKernel (post-swap-fusion)"})
 }
@@ -214,7 +214,7 @@ func TestTier2LoopKernelModuleOrder(t *testing.T) {
 		"LoopGlobalStoreSink",
 		"BoolTableFillLoop",
 		"TableArrayStoreLoopVersion",
-		"TableFieldUpdateLoop",
+		"RecordArrayLoopKernel",
 		"TableIntArrayKernel",
 		"BoolTableCountLoop",
 		"GcdAccumLoop",

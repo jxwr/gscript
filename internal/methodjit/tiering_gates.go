@@ -102,8 +102,8 @@ func canPromoteToTier2NoCalls(proto *vm.FuncProto) bool {
 // important loops (object_creation's create_and_sum/transform_chain) contain
 // source-level calls and NewTable ops, but Inline + EscapeAnalysis fully
 // virtualize them into pure numeric loops. Those are restart-safe. By contrast,
-// table update loops such as table_field_access.step still contain residual
-// GetTable/SetField/table exits after optimization and must not use restart OSR.
+// table update loops that still contain residual GetTable/SetField/table exits
+// after optimization must not use restart OSR.
 func (tm *TieringManager) isOSRRestartSafe(proto *vm.FuncProto, profile FuncProfile) bool {
 	return tm.osrRestartSafetyGate(proto, profile).Allowed
 }

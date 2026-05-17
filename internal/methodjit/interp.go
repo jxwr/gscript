@@ -584,29 +584,55 @@ func (s *interpState) execInstr(instr *Instr, block *Block) ([]runtime.Value, bo
 		}
 		s.values[instr.ID] = runtime.IntValue(total)
 
-	case OpTableFieldUpdateLoop:
+	case OpRecordArrayLoopKernel:
 		tbl := s.val(instr.Args[0])
 		limit := s.val(instr.Args[2]).Int()
-		scale := s.val(instr.Args[3]).Number()
-		damp := s.val(instr.Args[4]).Number()
-		shapeID := uint32(instr.Aux)
-		pairs := unpackTableFieldUpdatePairs(instr.Aux2)
+		spec, ok := s.fn.RecordArrayLoopKernels[instr.ID]
+		if !ok || !validRecordArrayLoopKernelSpec(spec, len(instr.Args)-3) {
+			return nil, false, fmt.Errorf("OpRecordArrayLoopKernel: missing or invalid kernel spec")
+		}
 		if !tbl.IsTable() {
-			return nil, false, fmt.Errorf("OpTableFieldUpdateLoop: arg 0 not a table")
+			return nil, false, fmt.Errorf("OpRecordArrayLoopKernel: arg 0 not a table")
 		}
 		for i := int64(1); i <= limit; i++ {
 			row := tbl.Table().RawGetInt(i)
-			if !row.IsTable() || row.Table().ShapeID() != shapeID {
-				return nil, false, fmt.Errorf("OpTableFieldUpdateLoop: row shape mismatch")
+			if !row.IsTable() || row.Table().ShapeID() != spec.ShapeID {
+				return nil, false, fmt.Errorf("OpRecordArrayLoopKernel: row shape mismatch")
 			}
+		}
+		scalars := make([]float64, spec.ScalarCount)
+		for i := range scalars {
+			scalars[i] = s.val(instr.Args[3+i]).Number()
 		}
 		for i := int64(1); i <= limit; i++ {
 			row := tbl.Table().RawGetInt(i).Table()
-			for _, pair := range pairs {
-				pos := row.SvalsGet(pair.pos).Number()
-				vel := row.SvalsGet(pair.vel).Number()
-				row.SvalsSet(pair.pos, runtime.FloatValue(pos+vel*scale))
-				row.SvalsSet(pair.vel, runtime.FloatValue(vel*damp))
+			fields := make([]float64, len(spec.FieldLoads))
+			for j, field := range spec.FieldLoads {
+				fields[j] = row.SvalsGet(field).Number()
+			}
+			ops := make([]float64, len(spec.Ops))
+			eval := func(src RecordArrayKernelSource) float64 {
+				switch src.Kind {
+				case RecordArrayKernelSourceField:
+					return fields[src.Index]
+				case RecordArrayKernelSourceScalar:
+					return scalars[src.Index]
+				case RecordArrayKernelSourceOp:
+					return ops[src.Index]
+				default:
+					return 0
+				}
+			}
+			for j, op := range spec.Ops {
+				switch op.Kind {
+				case RecordArrayKernelFloatOpMul:
+					ops[j] = eval(op.A) * eval(op.B)
+				case RecordArrayKernelFloatOpFMA:
+					ops[j] = eval(op.A)*eval(op.B) + eval(op.C)
+				}
+			}
+			for _, store := range spec.Stores {
+				row.SvalsSet(store.Field, runtime.FloatValue(eval(store.Value)))
 			}
 		}
 

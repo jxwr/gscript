@@ -543,7 +543,7 @@ func (ts *typeSpecializer) inferType(instr *Instr) Type {
 		return TypeBool
 	case OpComplexEscapeRowCount, OpGcdAccumLoop, OpCollatzTotalLoop:
 		return TypeInt
-	case OpTableFieldUpdateLoop:
+	case OpRecordArrayLoopKernel:
 		return TypeUnknown
 	case OpEq, OpLt, OpLe, OpNot:
 		return TypeBool

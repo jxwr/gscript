@@ -69,6 +69,52 @@ type StringSplitSubSpec struct {
 	SecondHasEnd bool
 }
 
+type RecordArrayKernelSourceKind uint8
+
+const (
+	RecordArrayKernelSourceField RecordArrayKernelSourceKind = iota
+	RecordArrayKernelSourceScalar
+	RecordArrayKernelSourceOp
+)
+
+type RecordArrayKernelFloatOpKind uint8
+
+const (
+	RecordArrayKernelFloatOpMul RecordArrayKernelFloatOpKind = iota
+	RecordArrayKernelFloatOpFMA
+)
+
+type RecordArrayKernelSource struct {
+	Kind  RecordArrayKernelSourceKind
+	Index int
+}
+
+type RecordArrayKernelFloatOp struct {
+	Kind RecordArrayKernelFloatOpKind
+	A    RecordArrayKernelSource
+	B    RecordArrayKernelSource
+	C    RecordArrayKernelSource
+}
+
+type RecordArrayKernelStore struct {
+	Field int
+	Value RecordArrayKernelSource
+}
+
+// RecordArrayLoopKernelSpec is a compact dataflow graph for a generated native
+// loop over a table array whose elements are fixed-shape records. Args on the
+// IR op are [arrayData, arrayLen, limit, scalar...]. The spec supplies record
+// shape validation, per-record field loads, scalar float operands, float ops,
+// and field stores.
+type RecordArrayLoopKernelSpec struct {
+	ShapeID     uint32
+	FieldLoads  []int
+	ScalarCount int
+	Ops         []RecordArrayKernelFloatOp
+	Stores      []RecordArrayKernelStore
+	MaxField    int
+}
+
 // Function is the complete IR for one compiled function.
 type Function struct {
 	Entry   *Block        // entry basic block
@@ -143,6 +189,10 @@ type Function struct {
 	// key is an OpTableArrayData value ID; consumers can resolve it as a raw
 	// backing-array pointer only while the matching header guard remains valid.
 	TableArrayDataPtrs map[int]TableArrayDataPtrFact
+
+	// RecordArrayLoopKernels records generated loop-body dataflow graphs keyed
+	// by OpRecordArrayLoopKernel instruction ID.
+	RecordArrayLoopKernels map[int]RecordArrayLoopKernelSpec
 
 	// Globals, if non-nil, maps global function names to their protos.
 	// Used by the IR interpreter to resolve residual cross-function calls

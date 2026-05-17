@@ -7,17 +7,17 @@ type tableFieldUpdatePair struct {
 	vel int
 }
 
-// TableFieldUpdateLoopPass recognizes a fixed-shape table-array loop whose
-// body applies affine float updates to position-like fields from velocity-like
-// fields. The match is structural: it uses lowered table-array and FieldSvals
-// IR, not benchmark or function names.
-func TableFieldUpdateLoopPass(fn *Function) (*Function, error) {
+// RecordArrayLoopKernelPass recognizes fixed-shape table-array loops whose
+// bodies are expressible as float field loads, scalar operands, a small DAG,
+// and field stores. The generated op is parameterized by a runtime-built
+// RecordArrayLoopKernelSpec rather than a benchmark-specific static opcode.
+func RecordArrayLoopKernelPass(fn *Function) (*Function, error) {
 	if fn == nil {
 		return fn, nil
 	}
 	changed := false
 	for _, header := range append([]*Block(nil), fn.Blocks...) {
-		if lowerTableFieldUpdateLoop(fn, header) {
+		if lowerRecordArrayLoopKernel(fn, header) {
 			changed = true
 		}
 	}
@@ -27,7 +27,7 @@ func TableFieldUpdateLoopPass(fn *Function) (*Function, error) {
 	return fn, nil
 }
 
-func lowerTableFieldUpdateLoop(fn *Function, header *Block) bool {
+func lowerRecordArrayLoopKernel(fn *Function, header *Block) bool {
 	if fn == nil || header == nil || len(header.Preds) != 2 || len(header.Succs) != 2 {
 		return false
 	}
@@ -47,7 +47,7 @@ func lowerTableFieldUpdateLoop(fn *Function, header *Block) bool {
 	if body == nil || exit == nil || !containsBlock(body.Succs, header) || !blockReturnsVoid(exit) {
 		return false
 	}
-	spec, ok := parseTableFieldUpdateBody(body, next)
+	spec, ok := parseRecordFieldUpdateBody(body, next)
 	if !ok {
 		return false
 	}
@@ -57,33 +57,36 @@ func lowerTableFieldUpdateLoop(fn *Function, header *Block) bool {
 	}
 	op := &Instr{
 		ID:    fn.newValueID(),
-		Op:    OpTableFieldUpdateLoop,
+		Op:    OpRecordArrayLoopKernel,
 		Type:  TypeUnknown,
 		Args:  []*Value{spec.data, spec.len, limit, spec.scale, spec.damp},
-		Aux:   int64(spec.shapeID),
-		Aux2:  packTableFieldUpdatePairs(spec.pairs),
 		Block: header,
 	}
+	if fn.RecordArrayLoopKernels == nil {
+		fn.RecordArrayLoopKernels = make(map[int]RecordArrayLoopKernelSpec)
+	}
+	fn.RecordArrayLoopKernels[op.ID] = spec.kernel
 	ret := &Instr{ID: fn.newValueID(), Op: OpReturn, Block: header}
 	header.Instrs = []*Instr{op, ret}
 	header.Preds = []*Block{pre}
 	header.Succs = nil
-	functionRemarks(fn).Add("TableFieldUpdateLoop", "changed", header.ID, op.ID, op.Op,
-		fmt.Sprintf("lowered fixed-shape table-array field update loop shape %d fields %v", spec.shapeID, spec.pairs))
+	functionRemarks(fn).Add("RecordArrayLoopKernel", "changed", header.ID, op.ID, op.Op,
+		fmt.Sprintf("lowered fixed-shape record-array loop shape %d fields %v ops=%d stores=%d",
+			spec.kernel.ShapeID, spec.kernel.FieldLoads, len(spec.kernel.Ops), len(spec.kernel.Stores)))
 	return true
 }
 
-type tableFieldUpdateSpec struct {
-	data    *Value
-	len     *Value
-	scale   *Value
-	damp    *Value
-	shapeID uint32
-	pairs   []tableFieldUpdatePair
+type recordFieldUpdateSpec struct {
+	data   *Value
+	len    *Value
+	scale  *Value
+	damp   *Value
+	pairs  []tableFieldUpdatePair
+	kernel RecordArrayLoopKernelSpec
 }
 
-func parseTableFieldUpdateBody(body *Block, index *Value) (tableFieldUpdateSpec, bool) {
-	var spec tableFieldUpdateSpec
+func parseRecordFieldUpdateBody(body *Block, index *Value) (recordFieldUpdateSpec, bool) {
+	var spec recordFieldUpdateSpec
 	if body == nil || index == nil {
 		return spec, false
 	}
@@ -105,7 +108,6 @@ func parseTableFieldUpdateBody(body *Block, index *Value) (tableFieldUpdateSpec,
 	}
 	spec.data = load.Args[0]
 	spec.len = load.Args[1]
-	spec.shapeID = uint32(svals.Aux)
 
 	fieldLoads := make(map[int]*Instr)
 	for _, instr := range body.Instrs {
@@ -139,7 +141,7 @@ func parseTableFieldUpdateBody(body *Block, index *Value) (tableFieldUpdateSpec,
 		if spec.scale == nil {
 			spec.scale = scale
 		} else if !sameSSAValue(spec.scale, scale) {
-			return tableFieldUpdateSpec{}, false
+			return recordFieldUpdateSpec{}, false
 		}
 		velToPair[velLoad.ID] = tableFieldUpdatePair{pos: posField, vel: velField}
 	}
@@ -162,14 +164,54 @@ func parseTableFieldUpdateBody(body *Block, index *Value) (tableFieldUpdateSpec,
 		if spec.damp == nil {
 			spec.damp = damp
 		} else if !sameSSAValue(spec.damp, damp) {
-			return tableFieldUpdateSpec{}, false
+			return recordFieldUpdateSpec{}, false
 		}
 		spec.pairs = append(spec.pairs, pair)
 	}
-	if len(spec.pairs) < 2 || len(spec.pairs) > 3 || spec.scale == nil || spec.damp == nil {
-		return tableFieldUpdateSpec{}, false
+	if len(spec.pairs) < 2 || spec.scale == nil || spec.damp == nil {
+		return recordFieldUpdateSpec{}, false
 	}
+	spec.kernel = buildRecordArrayKernelFromFieldPairs(uint32(svals.Aux), spec.pairs)
 	return spec, true
+}
+
+func buildRecordArrayKernelFromFieldPairs(shapeID uint32, pairs []tableFieldUpdatePair) RecordArrayLoopKernelSpec {
+	spec := RecordArrayLoopKernelSpec{ShapeID: shapeID, ScalarCount: 2}
+	fieldIndex := make(map[int]int)
+	addField := func(field int) int {
+		if idx, ok := fieldIndex[field]; ok {
+			return idx
+		}
+		idx := len(spec.FieldLoads)
+		fieldIndex[field] = idx
+		spec.FieldLoads = append(spec.FieldLoads, field)
+		if field > spec.MaxField {
+			spec.MaxField = field
+		}
+		return idx
+	}
+	fieldSrc := func(field int) RecordArrayKernelSource {
+		return RecordArrayKernelSource{Kind: RecordArrayKernelSourceField, Index: addField(field)}
+	}
+	scalarSrc := func(index int) RecordArrayKernelSource {
+		return RecordArrayKernelSource{Kind: RecordArrayKernelSourceScalar, Index: index}
+	}
+	opSrc := func(index int) RecordArrayKernelSource {
+		return RecordArrayKernelSource{Kind: RecordArrayKernelSourceOp, Index: index}
+	}
+	for _, pair := range pairs {
+		pos := fieldSrc(pair.pos)
+		vel := fieldSrc(pair.vel)
+		fmaIdx := len(spec.Ops)
+		spec.Ops = append(spec.Ops, RecordArrayKernelFloatOp{Kind: RecordArrayKernelFloatOpFMA, A: vel, B: scalarSrc(0), C: pos})
+		mulIdx := len(spec.Ops)
+		spec.Ops = append(spec.Ops, RecordArrayKernelFloatOp{Kind: RecordArrayKernelFloatOpMul, A: vel, B: scalarSrc(1)})
+		spec.Stores = append(spec.Stores,
+			RecordArrayKernelStore{Field: pair.pos, Value: opSrc(fmaIdx)},
+			RecordArrayKernelStore{Field: pair.vel, Value: opSrc(mulIdx)},
+		)
+	}
+	return spec
 }
 
 func parseVelocityFMA(fma *Instr, pos *Value) (*Value, *Value, bool) {
@@ -219,29 +261,4 @@ func blockReturnsVoid(block *Block) bool {
 	}
 	last := block.Instrs[len(block.Instrs)-1]
 	return last != nil && last.Op == OpReturn && len(last.Args) == 0
-}
-
-func packTableFieldUpdatePairs(pairs []tableFieldUpdatePair) int64 {
-	var packed uint64
-	for i, pair := range pairs {
-		shift := uint(i * 16)
-		packed |= uint64(uint8(pair.pos)) << shift
-		packed |= uint64(uint8(pair.vel)) << (shift + 8)
-	}
-	return int64(packed)
-}
-
-func unpackTableFieldUpdatePairs(aux2 int64) []tableFieldUpdatePair {
-	packed := uint64(aux2)
-	out := make([]tableFieldUpdatePair, 0, 3)
-	for i := 0; i < 3; i++ {
-		shift := uint(i * 16)
-		pos := int(uint8(packed >> shift))
-		vel := int(uint8(packed >> (shift + 8)))
-		if pos == 0 && vel == 0 && i > 0 {
-			break
-		}
-		out = append(out, tableFieldUpdatePair{pos: pos, vel: vel})
-	}
-	return out
 }
