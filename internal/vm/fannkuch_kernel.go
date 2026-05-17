@@ -2,10 +2,8 @@ package vm
 
 import "github.com/gscript/gscript/internal/runtime"
 
-var fannkuchReduxResultCtor = runtime.NewSmallTableCtor2("maxFlips", "checksum")
-
-// Encoded bytecode for the structural fannkuch-redux implementation shape.
-var fannkuchReduxCode = [...]uint32{
+// Encoded bytecode for the structural permutation flip/checksum implementation shape.
+var permutationFlipChecksumCode = [...]uint32{
 	265, 521, 777, 2147484674, 1284, 2147485186, 2147812389, 460804,
 	461060, 134808076, 460804, 461060, 134808332, 2146960422, 2147419906, 2147420162,
 	2147420418, 2147486210, 2820, 2147486722, 2147682853, 855812, 251792907, 855812,
@@ -24,14 +22,14 @@ var fannkuchReduxCode = [...]uint32{
 	2140602400, 463876, 529668, 335549194, 135970,
 }
 
-func (vm *VM) tryRunFannkuchReduxWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
-	if cl == nil || cl.Proto == nil || !hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelFannkuchRedux) {
+func (vm *VM) tryRunPermutationFlipChecksumWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
+	if cl == nil || cl.Proto == nil || !hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelPermutationFlipChecksum) {
 		return false, nil, nil
 	}
-	return vm.runFannkuchReduxWholeCallKernel(cl, args)
+	return vm.runPermutationFlipChecksumWholeCallKernel(cl, args)
 }
 
-func (vm *VM) runFannkuchReduxWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
+func (vm *VM) runPermutationFlipChecksumWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
 	if cl == nil || cl.Proto == nil || len(args) != 1 || !vm.noGlobalLock {
 		return false, nil, nil
 	}
@@ -43,30 +41,45 @@ func (vm *VM) runFannkuchReduxWholeCallKernel(cl *Closure, args []runtime.Value)
 	if float64(n64) != nn || n64 < 1 || int64(int(n64)) != n64 {
 		return false, nil, nil
 	}
-	result, ok := runFannkuchReduxKernel(int(n64))
+	ctor, ok := permutationFlipChecksumResultCtor(cl.Proto)
 	if !ok {
 		return false, nil, nil
 	}
-	seedFannkuchReduxFeedback(cl.Proto)
+	result, ok := runPermutationFlipChecksumKernel(int(n64), ctor)
+	if !ok {
+		return false, nil, nil
+	}
+	seedPermutationFlipChecksumFeedback(cl.Proto)
 	return true, []runtime.Value{runtime.FreshTableValue(result)}, nil
 }
 
-func IsFannkuchReduxKernelProto(p *FuncProto) bool {
-	return cachedWholeCallKernelRecognized(p, wholeCallKernelFannkuchRedux)
+func IsPermutationFlipChecksumKernelProto(p *FuncProto) bool {
+	return cachedWholeCallKernelRecognized(p, wholeCallKernelPermutationFlipChecksum)
 }
 
-func isFannkuchReduxKernelProto(p *FuncProto) bool {
+func isPermutationFlipChecksumKernelProto(p *FuncProto) bool {
 	if p == nil || p.NumParams != 1 || p.IsVarArg || p.MaxStack != 30 || len(p.Protos) != 0 || len(p.Constants) != 2 {
 		return false
 	}
-	if !p.Constants[0].IsString() || p.Constants[0].Str() != "maxFlips" ||
-		!p.Constants[1].IsString() || p.Constants[1].Str() != "checksum" {
+	if _, ok := permutationFlipChecksumResultCtor(p); !ok {
 		return false
 	}
-	return codeEquals(p.Code, fannkuchReduxCode[:])
+	return codeEquals(p.Code, permutationFlipChecksumCode[:])
 }
 
-func seedFannkuchReduxFeedback(p *FuncProto) {
+func permutationFlipChecksumResultCtor(p *FuncProto) (*runtime.SmallTableCtor2, bool) {
+	if p == nil || len(p.Constants) != 2 || !p.Constants[0].IsString() || !p.Constants[1].IsString() {
+		return nil, false
+	}
+	left, right := p.Constants[0].Str(), p.Constants[1].Str()
+	if left == "" || right == "" || left == right {
+		return nil, false
+	}
+	ctor := runtime.NewSmallTableCtor2(left, right)
+	return &ctor, true
+}
+
+func seedPermutationFlipChecksumFeedback(p *FuncProto) {
 	// Preserve the feedback shape that the old executed path produced so
 	// diagnostics and later TypeSpec passes still see int-array accesses.
 	fb := p.EnsureFeedback()
@@ -81,8 +94,11 @@ func seedFannkuchReduxFeedback(p *FuncProto) {
 	}
 }
 
-func runFannkuchReduxKernel(n int) (*runtime.Table, bool) {
+func runPermutationFlipChecksumKernel(n int, ctor *runtime.SmallTableCtor2) (*runtime.Table, bool) {
 	if n < 1 || n > 12 {
+		return nil, false
+	}
+	if ctor == nil {
 		return nil, false
 	}
 	perm := make([]int, n+1)
@@ -137,7 +153,7 @@ func runFannkuchReduxKernel(n int) (*runtime.Table, bool) {
 	}
 
 	return runtime.NewTableFromCtor2NonNil(
-		&fannkuchReduxResultCtor,
+		ctor,
 		runtime.IntValue(int64(maxFlips)),
 		runtime.IntValue(int64(checksum)),
 	), true

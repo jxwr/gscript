@@ -44,7 +44,7 @@ func local_prime_counter(n) {
 
 	infos := RecognizedWholeCallKernels(child)
 	requireKernelInfo(t, infos, "bool_table_strike_count")
-	rejectKernelInfo(t, infos, "fannkuch_redux")
+	rejectKernelInfo(t, infos, "permutation_flip_checksum")
 
 	diag := requireKernelDiagnostic(t, DiagnoseWholeCallKernelProto(child), "bool_table_strike_count")
 	if !diag.Recognized || diag.Reason != kernelReasonRecognized {
@@ -162,10 +162,10 @@ func TestCachedWholeCallKernelRecognizedUsesHotCache(t *testing.T) {
 	proto := &FuncProto{
 		WholeCallKernel: &wholeCallKernelProtoCache{
 			fingerprint: wholeCallKernelFingerprint{codeLen: 123},
-			recognized:  uint64(1) << uint(wholeCallKernelFannkuchRedux),
+			recognized:  uint64(1) << uint(wholeCallKernelPermutationFlipChecksum),
 		},
 	}
-	if !cachedWholeCallKernelRecognized(proto, wholeCallKernelFannkuchRedux) {
+	if !cachedWholeCallKernelRecognized(proto, wholeCallKernelPermutationFlipChecksum) {
 		t.Fatal("cached hot dispatch guard recomputed structure instead of using cached bits")
 	}
 	if cachedWholeCallKernelRecognized(proto, wholeCallKernelBoolTableStrikeCount) {

@@ -1,6 +1,10 @@
 package vm
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/gscript/gscript/internal/runtime"
+)
 
 const fannkuchKernelTestSource = `
 func fannkuch(n) {
@@ -66,19 +70,20 @@ func fannkuch(n) {
 }
 `
 
-func TestFannkuchKernelRecognizesStructuralProto(t *testing.T) {
+func TestPermutationFlipChecksumKernelRecognizesStructuralProto(t *testing.T) {
 	proto, vm := compileSpectralKernelTestProgram(t, fannkuchKernelTestSource)
 	defer vm.Close()
 	if len(proto.Protos) != 1 {
 		t.Fatalf("child protos = %d, want 1", len(proto.Protos))
 	}
-	if !IsFannkuchReduxKernelProto(proto.Protos[0]) {
-		t.Fatal("fannkuch proto not recognized")
+	if !IsPermutationFlipChecksumKernelProto(proto.Protos[0]) {
+		t.Fatal("permutation flip/checksum proto not recognized")
 	}
 }
 
-func TestFannkuchKernelComputesBenchmarkResult(t *testing.T) {
-	result, ok := runFannkuchReduxKernel(9)
+func TestPermutationFlipChecksumKernelComputesBenchmarkResult(t *testing.T) {
+	ctor := runtime.NewSmallTableCtor2("maxFlips", "checksum")
+	result, ok := runPermutationFlipChecksumKernel(9, &ctor)
 	if !ok {
 		t.Fatal("kernel rejected n=9")
 	}

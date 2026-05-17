@@ -50,7 +50,7 @@ const (
 )
 
 const (
-	wholeCallKernelFannkuchRedux = iota
+	wholeCallKernelPermutationFlipChecksum = iota
 	wholeCallKernelBoolTableStrikeCount
 	wholeCallKernelLazyRecursiveTableBuilder
 	wholeCallKernelLazyRecursiveTableFold
@@ -97,13 +97,13 @@ type wholeCallKernelRecognizer struct {
 var wholeCallKernelRegistry = [wholeCallKernelCount]wholeCallKernelRecognizer{
 	{
 		info: KernelInfo{
-			Name:    "fannkuch_redux",
+			Name:    "permutation_flip_checksum",
 			Route:   KernelRouteWholeCallValue,
 			Arity:   1,
 			Results: kernelWholeCallSingleResultCount,
 		},
-		recognize: isFannkuchReduxKernelProto,
-		runValue:  (*VM).runFannkuchReduxWholeCallKernel,
+		recognize: isPermutationFlipChecksumKernelProto,
+		runValue:  (*VM).runPermutationFlipChecksumWholeCallKernel,
 	},
 	{
 		info: KernelInfo{
