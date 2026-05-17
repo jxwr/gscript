@@ -33,11 +33,11 @@ func (tm *TieringManager) structuralKernelTieringDecision(proto *vm.FuncProto) (
 	if vm.IsSieveKernelProto(proto) {
 		return tieringKernelDecision{reason: "whole_call_sieve_kernel"}, true
 	}
-	if tm.hasLargeNBodyAdvanceDriverLoop(proto) {
+	if tm.hasLargeRecordPairwiseAdvanceDriverLoop(proto) {
 		return tieringKernelDecision{reason: "large_whole_call_record_loop"}, true
 	}
-	if tm.hasPrimePredicateSumDriverLoop(proto) {
-		return tieringKernelDecision{reason: "whole_call_prime_predicate_sum_loop"}, true
+	if tm.hasIntPredicateReductionDriverLoop(proto) {
+		return tieringKernelDecision{reason: "whole_call_int_predicate_reduction_loop"}, true
 	}
 	return tieringKernelDecision{}, false
 }
@@ -125,7 +125,7 @@ func (tm *TieringManager) wholeCallKernelCalleeForTiering(proto *vm.FuncProto) (
 	return nil, vm.KernelInfo{}, false
 }
 
-func (tm *TieringManager) hasLargeNBodyAdvanceDriverLoop(proto *vm.FuncProto) bool {
+func (tm *TieringManager) hasLargeRecordPairwiseAdvanceDriverLoop(proto *vm.FuncProto) bool {
 	if tm == nil || proto == nil {
 		return false
 	}
@@ -143,14 +143,14 @@ func (tm *TieringManager) hasLargeNBodyAdvanceDriverLoop(proto *vm.FuncProto) bo
 		if !ok || steps < 1024 {
 			continue
 		}
-		if vm.IsNBodyAdvanceDriverLoopAt(proto, pc, globals) {
+		if vm.IsRecordPairwiseAdvanceDriverLoopAt(proto, pc, globals) {
 			return true
 		}
 	}
 	return false
 }
 
-func (tm *TieringManager) hasPrimePredicateSumDriverLoop(proto *vm.FuncProto) bool {
+func (tm *TieringManager) hasIntPredicateReductionDriverLoop(proto *vm.FuncProto) bool {
 	if tm == nil || proto == nil {
 		return false
 	}
@@ -168,7 +168,7 @@ func (tm *TieringManager) hasPrimePredicateSumDriverLoop(proto *vm.FuncProto) bo
 		if !ok || steps < 1024 {
 			continue
 		}
-		if vm.IsPrimePredicateSumLoopAt(proto, pc, globals) {
+		if vm.IsIntPredicateReductionLoopAt(proto, pc, globals) {
 			return true
 		}
 	}

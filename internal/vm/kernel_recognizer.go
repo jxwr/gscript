@@ -61,7 +61,7 @@ const (
 	wholeCallKernelSpectralAtAv
 	wholeCallKernelDenseMatmulTransposed
 	wholeCallKernelDenseSpectralAtAv
-	wholeCallKernelNBodyAdvance
+	wholeCallKernelRecordPairwiseAdvance
 	wholeCallKernelRecordWalkFold
 	wholeCallKernelIntGridAggregate
 	wholeCallKernelCount
@@ -209,13 +209,13 @@ var wholeCallKernelRegistry = [wholeCallKernelCount]wholeCallKernelRecognizer{
 	},
 	{
 		info: KernelInfo{
-			Name:    "nbody_advance",
+			Name:    "record_pairwise_advance",
 			Route:   KernelRouteWholeCallNoResult,
 			Arity:   1,
 			Results: kernelWholeCallInPlaceResultCount,
 		},
-		recognize:   isNBodyAdvanceProto,
-		runNoResult: (*VM).runNBodyAdvanceKernel,
+		recognize:   isRecordPairwiseAdvanceProto,
+		runNoResult: (*VM).runRecordPairwiseAdvanceKernel,
 	},
 	{
 		info: KernelInfo{
@@ -247,21 +247,21 @@ type driverLoopKernelRecognizer struct {
 var driverLoopKernelRegistry = [...]driverLoopKernelRecognizer{
 	{
 		info: KernelInfo{
-			Name:    "nbody_advance_loop",
+			Name:    "record_pairwise_advance_loop",
 			Route:   KernelRouteDriverLoop,
 			Arity:   kernelUnknownDriverLoopArity,
 			Results: kernelUnknownDriverLoopResultCount,
 		},
-		recognize: HasNBodyAdvanceDriverLoopKernel,
+		recognize: HasRecordPairwiseAdvanceDriverLoopKernel,
 	},
 	{
 		info: KernelInfo{
-			Name:    "prime_predicate_sum_loop",
+			Name:    "int_predicate_reduction_loop",
 			Route:   KernelRouteDriverLoop,
 			Arity:   kernelUnknownDriverLoopArity,
 			Results: kernelUnknownDriverLoopResultCount,
 		},
-		recognize: HasPrimePredicateSumLoopKernel,
+		recognize: HasIntPredicateReductionLoopKernel,
 	},
 }
 

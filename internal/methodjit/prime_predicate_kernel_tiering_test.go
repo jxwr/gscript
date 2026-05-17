@@ -2,7 +2,7 @@ package methodjit
 
 import "testing"
 
-func TestPrimePredicateSumLoopUsesWholeLoopKernelInsteadOfMainTier2(t *testing.T) {
+func TestIntPredicateReductionLoopUsesWholeLoopKernelInsteadOfMainTier2(t *testing.T) {
 	proto := compileProto(t, `
 func check(n) {
     if n < 2 { return false }
@@ -29,8 +29,8 @@ for candidate := 2; candidate <= limit; candidate++ {
 }
 `)
 	tm := NewTieringManager()
-	if !tm.hasPrimePredicateSumDriverLoop(proto) {
-		t.Fatal("prime predicate sum driver loop was not recognized")
+	if !tm.hasIntPredicateReductionDriverLoop(proto) {
+		t.Fatal("int predicate reduction driver loop was not recognized")
 	}
 	proto.CallCount = BaselineCompileThreshold
 	if got := tm.TryCompile(proto); got != nil {

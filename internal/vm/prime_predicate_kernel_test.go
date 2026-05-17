@@ -2,7 +2,7 @@ package vm
 
 import "testing"
 
-const trialDivisionPrimePredicateSource = `
+const trialDivisionIntPredicateSource = `
 func check(n) {
     if n < 2 { return false }
     if n < 4 { return true }
@@ -18,8 +18,8 @@ func check(n) {
 }
 `
 
-func TestPrimePredicateKernelRecognizesStructuralLoop(t *testing.T) {
-	proto, vm := compileSpectralKernelTestProgram(t, trialDivisionPrimePredicateSource+`
+func TestIntPredicateKernelRecognizesStructuralLoop(t *testing.T) {
+	proto, vm := compileSpectralKernelTestProgram(t, trialDivisionIntPredicateSource+`
 M := 30
 total := 10
 hits := 2
@@ -34,16 +34,16 @@ for candidate := 2; candidate <= M; candidate++ {
 	if len(proto.Protos) != 1 {
 		t.Fatalf("got %d nested protos, want 1", len(proto.Protos))
 	}
-	if !IsTrialDivisionPrimePredicateProto(proto.Protos[0]) {
-		t.Fatal("trial-division predicate proto was not recognized")
+	if _, ok := intBoolPredicateKernelForProto(proto.Protos[0]); !ok {
+		t.Fatal("int predicate proto was not recognized")
 	}
-	if !HasPrimePredicateSumLoopKernel(proto, map[string]*FuncProto{"check": proto.Protos[0]}) {
-		t.Fatal("prime predicate sum loop was not recognized")
+	if !HasIntPredicateReductionLoopKernel(proto, map[string]*FuncProto{"check": proto.Protos[0]}) {
+		t.Fatal("int predicate reduction loop was not recognized")
 	}
 }
 
-func TestPrimePredicateKernelCorrectnessWithNonBenchmarkNames(t *testing.T) {
-	globals := compileAndRun(t, trialDivisionPrimePredicateSource+`
+func TestIntPredicateKernelCorrectnessWithNonBenchmarkNames(t *testing.T) {
+	globals := compileAndRun(t, trialDivisionIntPredicateSource+`
 M := 30
 total := 10
 hits := 2
@@ -58,7 +58,7 @@ for candidate := 2; candidate <= M; candidate++ {
 	expectGlobalInt(t, globals, "hits", 12)
 }
 
-func TestPrimePredicateKernelFallsBackForNonStructuralPredicate(t *testing.T) {
+func TestIntPredicateKernelFallsBackForNonStructuralPredicate(t *testing.T) {
 	globals := compileAndRun(t, `
 calls := 0
 func check(n) {

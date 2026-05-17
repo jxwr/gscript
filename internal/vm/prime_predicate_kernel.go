@@ -2,21 +2,30 @@ package vm
 
 import "github.com/gscript/gscript/internal/runtime"
 
-const primePredicateSumLoopMaxLimit int64 = 10_000_000
+const intPredicateReductionLoopMaxLimit int64 = 10_000_000
 
-type primePredicateSumLoopShape struct {
+type intPredicateReductionLoopShape struct {
 	loopPC     int
 	fnConst    int
 	sumConst   int
 	countConst int
 }
 
-func (vm *VM) tryPrimePredicateSumForLoopKernel(frame *CallFrame, base int, code []uint32, constants []runtime.Value, a int, sbx int) (bool, error) {
+type intBoolPredicateKernelCache struct {
+	kernel *intBoolPredicateKernel
+}
+
+type intBoolPredicateKernel struct {
+	code     []uint32
+	maxStack int
+}
+
+func (vm *VM) tryIntPredicateReductionForLoopKernel(frame *CallFrame, base int, code []uint32, constants []runtime.Value, a int, sbx int) (bool, error) {
 	if frame == nil || !vm.noGlobalLock || vm.globalOverrides != nil {
 		return false, nil
 	}
 	forprepPC := frame.pc - 1
-	shape, ok := matchPrimePredicateSumForLoopShape(code, constants, forprepPC, a, sbx)
+	shape, ok := matchIntPredicateReductionForLoopShape(code, constants, forprepPC, a, sbx)
 	if !ok {
 		return false, nil
 	}
@@ -29,7 +38,7 @@ func (vm *VM) tryPrimePredicateSumForLoopKernel(frame *CallFrame, base int, code
 	}
 	start := initV.Int()
 	limit := limitV.Int()
-	if start > limit || start < 0 || limit > primePredicateSumLoopMaxLimit {
+	if start > limit || start < 0 || limit > intPredicateReductionLoopMaxLimit {
 		return false, nil
 	}
 
@@ -38,7 +47,11 @@ func (vm *VM) tryPrimePredicateSumForLoopKernel(frame *CallFrame, base int, code
 		return false, nil
 	}
 	cl, ok := closureFromValue(fnVal)
-	if !ok || !IsTrialDivisionPrimePredicateProto(cl.Proto) {
+	if !ok {
+		return false, nil
+	}
+	predicate, ok := intBoolPredicateKernelForProto(cl.Proto)
+	if !ok {
 		return false, nil
 	}
 
@@ -55,7 +68,11 @@ func (vm *VM) tryPrimePredicateSumForLoopKernel(frame *CallFrame, base int, code
 		sumInt := sum.Int()
 		countInt := count.Int()
 		for n := start; n <= limit; n++ {
-			if trialDivisionPrimeInt(n) {
+			matched, ok := predicate.eval(n)
+			if !ok {
+				return false, nil
+			}
+			if matched {
 				sumInt += n
 				countInt++
 			}
@@ -70,7 +87,11 @@ func (vm *VM) tryPrimePredicateSumForLoopKernel(frame *CallFrame, base int, code
 
 	one := runtime.IntValue(1)
 	for n := start; n <= limit; n++ {
-		if !trialDivisionPrimeInt(n) {
+		matched, ok := predicate.eval(n)
+		if !ok {
+			return false, nil
+		}
+		if !matched {
 			continue
 		}
 		nv := runtime.IntValue(n)
@@ -104,9 +125,10 @@ func (vm *VM) setGlobalByStringConst(constants []runtime.Value, constIdx int, gl
 	vm.globals[constants[constIdx].Str()] = val
 }
 
-// HasPrimePredicateSumLoopKernel reports whether a proto contains a structural
-// driver loop that can be batched by tryPrimePredicateSumForLoopKernel.
-func HasPrimePredicateSumLoopKernel(proto *FuncProto, globals map[string]*FuncProto) bool {
+// HasIntPredicateReductionLoopKernel reports whether a proto contains a
+// structural driver loop that can be batched by
+// tryIntPredicateReductionForLoopKernel.
+func HasIntPredicateReductionLoopKernel(proto *FuncProto, globals map[string]*FuncProto) bool {
 	if proto == nil {
 		return false
 	}
@@ -114,16 +136,16 @@ func HasPrimePredicateSumLoopKernel(proto *FuncProto, globals map[string]*FuncPr
 		if DecodeOp(inst) != OP_FORPREP {
 			continue
 		}
-		if IsPrimePredicateSumLoopAt(proto, pc, globals) {
+		if IsIntPredicateReductionLoopAt(proto, pc, globals) {
 			return true
 		}
 	}
 	return false
 }
 
-// IsPrimePredicateSumLoopAt checks one FORPREP site for the guarded
+// IsIntPredicateReductionLoopAt checks one FORPREP site for the guarded
 // predicate-call plus sum/count reduction shape.
-func IsPrimePredicateSumLoopAt(proto *FuncProto, forprepPC int, globals map[string]*FuncProto) bool {
+func IsIntPredicateReductionLoopAt(proto *FuncProto, forprepPC int, globals map[string]*FuncProto) bool {
 	if proto == nil || len(globals) == 0 || forprepPC < 0 || forprepPC >= len(proto.Code) {
 		return false
 	}
@@ -131,18 +153,19 @@ func IsPrimePredicateSumLoopAt(proto *FuncProto, forprepPC int, globals map[stri
 	if DecodeOp(inst) != OP_FORPREP {
 		return false
 	}
-	shape, ok := matchPrimePredicateSumForLoopShape(proto.Code, proto.Constants, forprepPC, DecodeA(inst), DecodesBx(inst))
+	shape, ok := matchIntPredicateReductionForLoopShape(proto.Code, proto.Constants, forprepPC, DecodeA(inst), DecodesBx(inst))
 	if !ok {
 		return false
 	}
 	if shape.fnConst < 0 || shape.fnConst >= len(proto.Constants) || !proto.Constants[shape.fnConst].IsString() {
 		return false
 	}
-	return IsTrialDivisionPrimePredicateProto(globals[proto.Constants[shape.fnConst].Str()])
+	_, ok = intBoolPredicateKernelForProto(globals[proto.Constants[shape.fnConst].Str()])
+	return ok
 }
 
-func matchPrimePredicateSumForLoopShape(code []uint32, constants []runtime.Value, forprepPC int, a int, sbx int) (primePredicateSumLoopShape, bool) {
-	var shape primePredicateSumLoopShape
+func matchIntPredicateReductionForLoopShape(code []uint32, constants []runtime.Value, forprepPC int, a int, sbx int) (intPredicateReductionLoopShape, bool) {
+	var shape intPredicateReductionLoopShape
 	bodyPC := forprepPC + 1
 	loopPC := bodyPC + sbx
 	if forprepPC < 0 || bodyPC < 0 || loopPC < 0 || loopPC >= len(code) || loopPC-bodyPC != 12 {
@@ -207,7 +230,7 @@ func matchPrimePredicateSumForLoopShape(code []uint32, constants []runtime.Value
 		return shape, false
 	}
 
-	return primePredicateSumLoopShape{
+	return intPredicateReductionLoopShape{
 		loopPC:     loopPC,
 		fnConst:    fnConst,
 		sumConst:   sumConst,
@@ -215,78 +238,127 @@ func matchPrimePredicateSumForLoopShape(code []uint32, constants []runtime.Value
 	}, true
 }
 
-// IsTrialDivisionPrimePredicateProto recognizes the bytecode shape for the
-// single-argument trial-division predicate that returns only booleans.
-func IsTrialDivisionPrimePredicateProto(p *FuncProto) bool {
-	if p == nil || p.NumParams != 1 || p.IsVarArg || len(p.Constants) != 0 || len(p.Protos) != 0 {
-		return false
+func intBoolPredicateKernelForProto(p *FuncProto) (*intBoolPredicateKernel, bool) {
+	if p == nil {
+		return nil, false
 	}
-	return codeEquals(p.Code, []uint32{
-		EncodeAsBx(OP_LOADINT, 1, 2),
-		EncodeABC(OP_LT, 0, 0, 1),
-		EncodeAsBx(OP_JMP, 0, 2),
-		EncodeABC(OP_LOADBOOL, 1, 0, 0),
-		EncodeABC(OP_RETURN, 1, 2, 0),
-		EncodeAsBx(OP_LOADINT, 1, 4),
-		EncodeABC(OP_LT, 0, 0, 1),
-		EncodeAsBx(OP_JMP, 0, 2),
-		EncodeABC(OP_LOADBOOL, 1, 1, 0),
-		EncodeABC(OP_RETURN, 1, 2, 0),
-		EncodeAsBx(OP_LOADINT, 2, 2),
-		EncodeABC(OP_MOD, 1, 0, 2),
-		EncodeAsBx(OP_LOADINT, 2, 0),
-		EncodeABC(OP_EQ, 0, 1, 2),
-		EncodeAsBx(OP_JMP, 0, 2),
-		EncodeABC(OP_LOADBOOL, 1, 0, 0),
-		EncodeABC(OP_RETURN, 1, 2, 0),
-		EncodeAsBx(OP_LOADINT, 2, 3),
-		EncodeABC(OP_MOD, 1, 0, 2),
-		EncodeAsBx(OP_LOADINT, 2, 0),
-		EncodeABC(OP_EQ, 0, 1, 2),
-		EncodeAsBx(OP_JMP, 0, 2),
-		EncodeABC(OP_LOADBOOL, 1, 0, 0),
-		EncodeABC(OP_RETURN, 1, 2, 0),
-		EncodeAsBx(OP_LOADINT, 1, 5),
-		EncodeABC(OP_MUL, 2, 1, 1),
-		EncodeABC(OP_LE, 0, 2, 0),
-		EncodeAsBx(OP_JMP, 0, 18),
-		EncodeABC(OP_MOD, 2, 0, 1),
-		EncodeAsBx(OP_LOADINT, 3, 0),
-		EncodeABC(OP_EQ, 0, 2, 3),
-		EncodeAsBx(OP_JMP, 0, 2),
-		EncodeABC(OP_LOADBOOL, 2, 0, 0),
-		EncodeABC(OP_RETURN, 2, 2, 0),
-		EncodeAsBx(OP_LOADINT, 4, 2),
-		EncodeABC(OP_ADD, 3, 1, 4),
-		EncodeABC(OP_MOD, 2, 0, 3),
-		EncodeAsBx(OP_LOADINT, 3, 0),
-		EncodeABC(OP_EQ, 0, 2, 3),
-		EncodeAsBx(OP_JMP, 0, 2),
-		EncodeABC(OP_LOADBOOL, 2, 0, 0),
-		EncodeABC(OP_RETURN, 2, 2, 0),
-		EncodeAsBx(OP_LOADINT, 3, 6),
-		EncodeABC(OP_ADD, 2, 1, 3),
-		EncodeABC(OP_MOVE, 1, 2, 0),
-		EncodeAsBx(OP_JMP, 0, -21),
-		EncodeABC(OP_LOADBOOL, 2, 1, 0),
-		EncodeABC(OP_RETURN, 2, 2, 0),
-	})
+	if cache := p.IntBoolPredicateKernel; cache != nil {
+		return cache.kernel, cache.kernel != nil
+	}
+	kernel, ok := analyzeIntBoolPredicateKernel(p)
+	p.IntBoolPredicateKernel = &intBoolPredicateKernelCache{kernel: kernel}
+	return kernel, ok
 }
 
-func trialDivisionPrimeInt(n int64) bool {
-	if n < 2 {
-		return false
+func analyzeIntBoolPredicateKernel(p *FuncProto) (*intBoolPredicateKernel, bool) {
+	if p == nil || p.NumParams != 1 || p.IsVarArg || len(p.Protos) != 0 || p.MaxStack <= 0 || p.MaxStack > 32 {
+		return nil, false
 	}
-	if n < 4 {
-		return true
-	}
-	if n%2 == 0 || n%3 == 0 {
-		return false
-	}
-	for i := int64(5); i*i <= n; i += 6 {
-		if n%i == 0 || n%(i+2) == 0 {
-			return false
+	for _, c := range p.Constants {
+		if !c.IsInt() {
+			return nil, false
 		}
 	}
-	return true
+	for pc, inst := range p.Code {
+		switch DecodeOp(inst) {
+		case OP_LOADINT, OP_MOVE, OP_ADD, OP_MUL, OP_MOD, OP_EQ, OP_LT, OP_LE, OP_JMP, OP_LOADBOOL, OP_RETURN:
+		default:
+			return nil, false
+		}
+		if DecodeOp(inst) == OP_JMP {
+			target := pc + 1 + DecodesBx(inst)
+			if target < 0 || target > len(p.Code) {
+				return nil, false
+			}
+		}
+	}
+	return &intBoolPredicateKernel{code: p.Code, maxStack: p.MaxStack}, true
+}
+
+func (k *intBoolPredicateKernel) eval(arg int64) (bool, bool) {
+	if k == nil || k.maxStack <= 0 || k.maxStack > 32 {
+		return false, false
+	}
+	var ints [32]int64
+	var bools [32]bool
+	var kinds [32]byte
+	ints[0] = arg
+	kinds[0] = 1
+	pc := 0
+	budget := 100000
+	for pc >= 0 && pc < len(k.code) && budget > 0 {
+		budget--
+		inst := k.code[pc]
+		pc++
+		switch DecodeOp(inst) {
+		case OP_LOADINT:
+			a := DecodeA(inst)
+			if a >= k.maxStack {
+				return false, false
+			}
+			ints[a] = int64(DecodesBx(inst))
+			kinds[a] = 1
+		case OP_LOADBOOL:
+			a := DecodeA(inst)
+			if a >= k.maxStack {
+				return false, false
+			}
+			bools[a] = DecodeB(inst) != 0
+			kinds[a] = 2
+			if DecodeC(inst) != 0 {
+				pc++
+			}
+		case OP_MOVE:
+			a, b := DecodeA(inst), DecodeB(inst)
+			if a >= k.maxStack || b >= k.maxStack {
+				return false, false
+			}
+			ints[a], bools[a], kinds[a] = ints[b], bools[b], kinds[b]
+		case OP_ADD, OP_MUL, OP_MOD:
+			a, b, c := DecodeA(inst), DecodeB(inst), DecodeC(inst)
+			if a >= k.maxStack || b >= k.maxStack || c >= k.maxStack || kinds[b] != 1 || kinds[c] != 1 {
+				return false, false
+			}
+			switch DecodeOp(inst) {
+			case OP_ADD:
+				ints[a] = ints[b] + ints[c]
+			case OP_MUL:
+				ints[a] = ints[b] * ints[c]
+			case OP_MOD:
+				if ints[c] == 0 {
+					return false, false
+				}
+				ints[a] = ints[b] % ints[c]
+			}
+			kinds[a] = 1
+		case OP_EQ, OP_LT, OP_LE:
+			a, b, c := DecodeA(inst), DecodeB(inst), DecodeC(inst)
+			if b >= k.maxStack || c >= k.maxStack || kinds[b] != 1 || kinds[c] != 1 {
+				return false, false
+			}
+			var cmp bool
+			switch DecodeOp(inst) {
+			case OP_EQ:
+				cmp = ints[b] == ints[c]
+			case OP_LT:
+				cmp = ints[b] < ints[c]
+			case OP_LE:
+				cmp = ints[b] <= ints[c]
+			}
+			if cmp != (a != 0) {
+				pc++
+			}
+		case OP_JMP:
+			pc += DecodesBx(inst)
+		case OP_RETURN:
+			a, b := DecodeA(inst), DecodeB(inst)
+			if b != 2 || a >= k.maxStack || kinds[a] != 2 {
+				return false, false
+			}
+			return bools[a], true
+		default:
+			return false, false
+		}
+	}
+	return false, false
 }

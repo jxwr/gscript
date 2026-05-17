@@ -17,7 +17,7 @@ const (
 	nbodyFieldCount
 )
 
-type nbodyAdvanceKernelCache struct {
+type recordPairwiseAdvanceKernelCache struct {
 	eligible bool
 	shapeID  uint32
 	idxs     [nbodyFieldCount]int
@@ -37,37 +37,37 @@ type recordPairwiseAdvanceKernelSpec struct {
 	fieldNames    [nbodyFieldCount]string
 }
 
-type nbodyAdvanceDriverLoopShape struct {
+type recordPairwiseAdvanceDriverLoopShape struct {
 	loopPC   int
 	fnConst  int
 	argConst int
 }
 
-func (vm *VM) tryRunNBodyAdvanceKernel(cl *Closure, args []runtime.Value) (bool, error) {
+func (vm *VM) tryRunRecordPairwiseAdvanceKernel(cl *Closure, args []runtime.Value) (bool, error) {
 	if vm.methodJIT != nil {
 		return false, nil
 	}
-	if cl == nil || cl.Proto == nil || !hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelNBodyAdvance) {
+	if cl == nil || cl.Proto == nil || !hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelRecordPairwiseAdvance) {
 		return false, nil
 	}
-	return vm.runNBodyAdvanceKernel(cl, args)
+	return vm.runRecordPairwiseAdvanceKernel(cl, args)
 }
 
-func (vm *VM) runNBodyAdvanceKernel(cl *Closure, args []runtime.Value) (bool, error) {
+func (vm *VM) runRecordPairwiseAdvanceKernel(cl *Closure, args []runtime.Value) (bool, error) {
 	if vm.methodJIT != nil {
 		return false, nil
 	}
-	return vm.runNBodyAdvanceKernelN(cl, args, 1)
+	return vm.runRecordPairwiseAdvanceKernelN(cl, args, 1)
 }
 
-func (vm *VM) tryRunNBodyAdvanceKernelN(cl *Closure, args []runtime.Value, steps int64) (bool, error) {
-	if cl == nil || cl.Proto == nil || !hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelNBodyAdvance) {
+func (vm *VM) tryRunRecordPairwiseAdvanceKernelN(cl *Closure, args []runtime.Value, steps int64) (bool, error) {
+	if cl == nil || cl.Proto == nil || !hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelRecordPairwiseAdvance) {
 		return false, nil
 	}
-	return vm.runNBodyAdvanceKernelN(cl, args, steps)
+	return vm.runRecordPairwiseAdvanceKernelN(cl, args, steps)
 }
 
-func (vm *VM) runNBodyAdvanceKernelN(cl *Closure, args []runtime.Value, steps int64) (bool, error) {
+func (vm *VM) runRecordPairwiseAdvanceKernelN(cl *Closure, args []runtime.Value, steps int64) (bool, error) {
 	if cl == nil || cl.Proto == nil || len(args) != 1 || !vm.noGlobalLock {
 		return false, nil
 	}
@@ -78,10 +78,10 @@ func (vm *VM) runNBodyAdvanceKernelN(cl *Closure, args []runtime.Value, steps in
 	if isNBodyDenseAdvanceProto(proto) {
 		return vm.runNBodyDenseAdvanceKernelN(args, steps)
 	}
-	cache := proto.NBodyAdvanceKernel
+	cache := proto.RecordPairwiseAdvanceKernel
 	if cache == nil {
-		cache = &nbodyAdvanceKernelCache{eligible: true}
-		proto.NBodyAdvanceKernel = cache
+		cache = &recordPairwiseAdvanceKernelCache{eligible: true}
+		proto.RecordPairwiseAdvanceKernel = cache
 	}
 	spec := cache.spec
 	if spec == nil {
@@ -259,12 +259,12 @@ func (vm *VM) runNBodyDenseAdvanceKernelN(args []runtime.Value, steps int64) (bo
 	return true, nil
 }
 
-func (vm *VM) tryNBodyAdvanceForLoopKernel(frame *CallFrame, base int, code []uint32, constants []runtime.Value, a int, sbx int) (bool, error) {
+func (vm *VM) tryRecordPairwiseAdvanceForLoopKernel(frame *CallFrame, base int, code []uint32, constants []runtime.Value, a int, sbx int) (bool, error) {
 	if frame == nil || !vm.noGlobalLock {
 		return false, nil
 	}
 	forprepPC := frame.pc - 1
-	shape, ok := matchNBodyAdvanceDriverLoopShape(code, constants, forprepPC, a, sbx)
+	shape, ok := matchRecordPairwiseAdvanceDriverLoopShape(code, constants, forprepPC, a, sbx)
 	if !ok {
 		return false, nil
 	}
@@ -288,14 +288,14 @@ func (vm *VM) tryNBodyAdvanceForLoopKernel(frame *CallFrame, base int, code []ui
 		return false, nil
 	}
 	cl, ok := closureFromValue(fnVal)
-	if !ok || !HasNBodyAdvanceWholeCallKernel(cl.Proto) {
+	if !ok || !HasRecordPairwiseAdvanceWholeCallKernel(cl.Proto) {
 		return false, nil
 	}
 	argVal, ok := vm.globalValue(constants[shape.argConst].Str())
 	if !ok || !argVal.IsNumber() {
 		return false, nil
 	}
-	handled, err := vm.tryRunNBodyAdvanceKernelN(cl, []runtime.Value{argVal}, steps)
+	handled, err := vm.tryRunRecordPairwiseAdvanceKernelN(cl, []runtime.Value{argVal}, steps)
 	if !handled || err != nil {
 		return handled, err
 	}
@@ -305,8 +305,8 @@ func (vm *VM) tryNBodyAdvanceForLoopKernel(frame *CallFrame, base int, code []ui
 	return true, nil
 }
 
-func matchNBodyAdvanceDriverLoopShape(code []uint32, constants []runtime.Value, forprepPC int, a int, sbx int) (nbodyAdvanceDriverLoopShape, bool) {
-	var shape nbodyAdvanceDriverLoopShape
+func matchRecordPairwiseAdvanceDriverLoopShape(code []uint32, constants []runtime.Value, forprepPC int, a int, sbx int) (recordPairwiseAdvanceDriverLoopShape, bool) {
+	var shape recordPairwiseAdvanceDriverLoopShape
 	bodyPC := forprepPC + 1
 	loopPC := bodyPC + sbx
 	if forprepPC < 0 || bodyPC < 0 || loopPC < 0 || loopPC >= len(code) || loopPC-bodyPC != 3 {
@@ -332,7 +332,7 @@ func matchNBodyAdvanceDriverLoopShape(code []uint32, constants []runtime.Value, 
 	if !stringConst(constants, fnConst) || !stringConst(constants, argConst) {
 		return shape, false
 	}
-	return nbodyAdvanceDriverLoopShape{
+	return recordPairwiseAdvanceDriverLoopShape{
 		loopPC:   loopPC,
 		fnConst:  fnConst,
 		argConst: argConst,
@@ -432,7 +432,7 @@ func recordPairwiseAdvanceKernelSpecForProto(proto *FuncProto) (*recordPairwiseA
 	if proto == nil || isNBodyDenseAdvanceProto(proto) {
 		return nil, false
 	}
-	if isNBodyAdvanceProto(proto) {
+	if isRecordPairwiseAdvanceProto(proto) {
 		return analyzeRecordPairwiseAdvanceKernelSpec(proto)
 	}
 	return nil, false
@@ -619,11 +619,11 @@ func protoStringConstant(proto *FuncProto, idx int) (string, bool) {
 	return proto.Constants[idx].Str(), true
 }
 
-func isNBodyAdvanceProto(p *FuncProto) bool {
+func isRecordPairwiseAdvanceProto(p *FuncProto) bool {
 	if isNBodyDenseAdvanceProto(p) {
 		return true
 	}
-	if isNBodyAdvanceProtoWithGlobalCount(p) {
+	if isRecordPairwiseAdvanceProtoWithGlobalCount(p) {
 		return true
 	}
 	if p == nil || p.NumParams != 1 || p.IsVarArg || len(p.Constants) < 10 || len(p.Code) != 99 {
@@ -773,7 +773,7 @@ func isNBodyDenseAdvanceProto(p *FuncProto) bool {
 	return true
 }
 
-func isNBodyAdvanceProtoWithGlobalCount(p *FuncProto) bool {
+func isRecordPairwiseAdvanceProtoWithGlobalCount(p *FuncProto) bool {
 	if p == nil || p.NumParams != 1 || p.IsVarArg || len(p.Constants) < 11 || len(p.Code) != 98 {
 		return false
 	}
@@ -884,17 +884,17 @@ func isNBodyAdvanceProtoWithGlobalCount(p *FuncProto) bool {
 	})
 }
 
-// HasNBodyAdvanceWholeCallKernel reports whether p matches the guarded
+// HasRecordPairwiseAdvanceWholeCallKernel reports whether p matches the guarded
 // record-field nbody-style advance(dt) kernel shape. MethodJIT uses this to
 // keep driver loops on the VM route where the whole-call kernel can fire.
-func HasNBodyAdvanceWholeCallKernel(p *FuncProto) bool {
-	return cachedWholeCallKernelRecognized(p, wholeCallKernelNBodyAdvance)
+func HasRecordPairwiseAdvanceWholeCallKernel(p *FuncProto) bool {
+	return cachedWholeCallKernelRecognized(p, wholeCallKernelRecordPairwiseAdvance)
 }
 
-// HasNBodyAdvanceDriverLoopKernel reports whether p contains a structural
+// HasRecordPairwiseAdvanceDriverLoopKernel reports whether p contains a structural
 // driver loop that repeatedly calls an nbody advance(dt)-style whole-call
 // kernel candidate.
-func HasNBodyAdvanceDriverLoopKernel(p *FuncProto, globals map[string]*FuncProto) bool {
+func HasRecordPairwiseAdvanceDriverLoopKernel(p *FuncProto, globals map[string]*FuncProto) bool {
 	if p == nil {
 		return false
 	}
@@ -902,17 +902,17 @@ func HasNBodyAdvanceDriverLoopKernel(p *FuncProto, globals map[string]*FuncProto
 		if DecodeOp(inst) != OP_FORPREP {
 			continue
 		}
-		if IsNBodyAdvanceDriverLoopAt(p, pc, globals) {
+		if IsRecordPairwiseAdvanceDriverLoopAt(p, pc, globals) {
 			return true
 		}
 	}
 	return false
 }
 
-// IsNBodyAdvanceDriverLoopAt checks one FORPREP site for the guarded
+// IsRecordPairwiseAdvanceDriverLoopAt checks one FORPREP site for the guarded
 // advance(dt) call-loop shape. Runtime admission still checks trip count,
 // current globals, and argument/table guards before executing the kernel.
-func IsNBodyAdvanceDriverLoopAt(p *FuncProto, forprepPC int, globals map[string]*FuncProto) bool {
+func IsRecordPairwiseAdvanceDriverLoopAt(p *FuncProto, forprepPC int, globals map[string]*FuncProto) bool {
 	if p == nil || len(globals) == 0 || forprepPC < 0 || forprepPC >= len(p.Code) {
 		return false
 	}
@@ -920,12 +920,12 @@ func IsNBodyAdvanceDriverLoopAt(p *FuncProto, forprepPC int, globals map[string]
 	if DecodeOp(inst) != OP_FORPREP {
 		return false
 	}
-	shape, ok := matchNBodyAdvanceDriverLoopShape(p.Code, p.Constants, forprepPC, DecodeA(inst), DecodesBx(inst))
+	shape, ok := matchRecordPairwiseAdvanceDriverLoopShape(p.Code, p.Constants, forprepPC, DecodeA(inst), DecodesBx(inst))
 	if !ok {
 		return false
 	}
 	if shape.fnConst < 0 || shape.fnConst >= len(p.Constants) || !p.Constants[shape.fnConst].IsString() {
 		return false
 	}
-	return HasNBodyAdvanceWholeCallKernel(globals[p.Constants[shape.fnConst].Str()])
+	return HasRecordPairwiseAdvanceWholeCallKernel(globals[p.Constants[shape.fnConst].Str()])
 }

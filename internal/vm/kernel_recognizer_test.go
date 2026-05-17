@@ -288,7 +288,7 @@ func TestWholeCallKernelDiagnosticsIncludeRecursiveTableProtocols(t *testing.T) 
 }
 
 func TestDriverLoopKernelDiagnosticsRecognizeStructuralLoops(t *testing.T) {
-	primeTop, primeVM := compileSpectralKernelTestProgram(t, trialDivisionPrimePredicateSource+`
+	primeTop, primeVM := compileSpectralKernelTestProgram(t, trialDivisionIntPredicateSource+`
 limit := 2000
 total := 0
 hits := 0
@@ -307,7 +307,7 @@ for candidate := 2; candidate <= limit; candidate++ {
 	primeTop.Source = "benchmarks/suite/sum_primes.gs"
 	requireKernelInfo(t, RecognizedDriverLoopKernels(primeTop, map[string]*FuncProto{
 		"check": primeTop.Protos[0],
-	}), "prime_predicate_sum_loop")
+	}), "int_predicate_reduction_loop")
 
 	nbodyTop, nbodyVM := compileSpectralKernelTestProgram(t, nbodyKernelTestProgram+`
 N := 2000
@@ -322,11 +322,11 @@ for i := 1; i <= N; i++ { advance(dt) }
 	nbodyTop.Source = "benchmarks/suite/nbody.gs"
 	requireKernelInfo(t, RecognizedDriverLoopKernels(nbodyTop, map[string]*FuncProto{
 		"advance": nbodyTop.Protos[0],
-	}), "nbody_advance_loop")
+	}), "record_pairwise_advance_loop")
 }
 
 func TestDriverLoopKernelDiagnosticsReportFallbackReasons(t *testing.T) {
-	proto, vm := compileSpectralKernelTestProgram(t, trialDivisionPrimePredicateSource+`
+	proto, vm := compileSpectralKernelTestProgram(t, trialDivisionIntPredicateSource+`
 limit := 30
 total := 0
 hits := 0
@@ -339,14 +339,14 @@ for candidate := 2; candidate <= limit; candidate++ {
 `)
 	defer vm.Close()
 
-	missingMap := requireKernelDiagnostic(t, DiagnoseDriverLoopKernels(proto, nil), "prime_predicate_sum_loop")
+	missingMap := requireKernelDiagnostic(t, DiagnoseDriverLoopKernels(proto, nil), "int_predicate_reduction_loop")
 	if missingMap.Recognized || missingMap.Reason != kernelReasonMissingGlobalProtoMap {
 		t.Fatalf("missing map diagnostic = %+v, want missing global proto map", missingMap)
 	}
 
 	recognized := requireKernelDiagnostic(t, DiagnoseDriverLoopKernels(proto, map[string]*FuncProto{
 		"check": proto.Protos[0],
-	}), "prime_predicate_sum_loop")
+	}), "int_predicate_reduction_loop")
 	if !recognized.Recognized || recognized.Reason != kernelReasonDriverRecognized {
 		t.Fatalf("recognized diagnostic = %+v, want structural driver loop", recognized)
 	}

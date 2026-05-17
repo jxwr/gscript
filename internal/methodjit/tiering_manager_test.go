@@ -412,22 +412,22 @@ for i := 1; i <= 20; i++ {
 	}
 }
 
-func TestTieringManager_NBodyDenseDriverStaysOutOfTier2(t *testing.T) {
+func TestTieringManager_RecordPairwiseDenseDriverStaysOutOfTier2(t *testing.T) {
 	srcBytes, err := os.ReadFile("../../benchmarks/suite/nbody_dense.gs")
 	if err != nil {
 		t.Fatalf("read nbody_dense benchmark: %v", err)
 	}
 	proto := compileProto(t, string(srcBytes))
 	tm := NewTieringManager()
-	if !tm.hasLargeNBodyAdvanceDriverLoop(proto) {
-		t.Fatal("nbody_dense driver loop was not recognized")
+	if !tm.hasLargeRecordPairwiseAdvanceDriverLoop(proto) {
+		t.Fatal("record-pairwise dense driver loop was not recognized")
 	}
 	proto.CallCount = BaselineCompileThreshold
 	if got := tm.TryCompile(proto); got != nil {
 		t.Fatalf("TryCompile returned %T, want nil whole-loop kernel routing", got)
 	}
 	if !proto.JITDisabled {
-		t.Fatal("<main> was not marked JITDisabled for nbody_dense driver routing")
+		t.Fatal("<main> was not marked JITDisabled for record-pairwise dense driver routing")
 	}
 }
 

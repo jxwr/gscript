@@ -32,7 +32,8 @@ type FuncProto struct {
 	FieldPolyCache               []runtime.FieldPolyCacheEntry      // lazily-initialized 4-way static field cache, indexed by PC
 	ResumePayloadCache           []int8                             // per-PC cache for ResumePayloadIsFieldOnly: 0 unknown, 1 false, 2 true
 	WholeCallKernel              *wholeCallKernelProtoCache         // structural whole-call kernel recognizer cache, nil until first probe
-	NBodyAdvanceKernel           *nbodyAdvanceKernelCache           // guarded whole-call record kernel cache, nil until first probe
+	RecordPairwiseAdvanceKernel  *recordPairwiseAdvanceKernelCache  // guarded whole-call record kernel cache, nil until first probe
+	IntBoolPredicateKernel       *intBoolPredicateKernelCache       // guarded int->bool predicate bytecode kernel cache, nil until first probe
 	RecursiveTableKernel         *recursiveTableKernelCache         // guarded whole-call lazy recursive table builder/fold cache, nil until first probe
 	RawIntNestedKernel           *rawIntNestedKernelCache           // guarded whole-call nested raw-int recurrence cache, nil until first probe
 	HasSelfCalls                 bool                               // true if function has recursive calls to itself (set during JIT compilation)

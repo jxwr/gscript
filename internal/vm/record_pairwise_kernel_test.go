@@ -43,13 +43,13 @@ func advance(dt) {
 }
 `
 
-func TestNBodyAdvanceKernelRecognizesStructuralProto(t *testing.T) {
+func TestRecordPairwiseAdvanceKernelRecognizesStructuralProto(t *testing.T) {
 	proto, vm := compileSpectralKernelTestProgram(t, nbodyKernelTestProgram)
 	defer vm.Close()
 	if _, err := vm.Execute(proto); err != nil {
 		t.Fatalf("execute definitions: %v", err)
 	}
-	if len(proto.Protos) != 1 || !isNBodyAdvanceProto(proto.Protos[0]) {
+	if len(proto.Protos) != 1 || !isRecordPairwiseAdvanceProto(proto.Protos[0]) {
 		t.Fatal("advance proto not recognized")
 	}
 }
@@ -62,7 +62,7 @@ func TestNBodyDenseAdvanceKernelRecognizesBenchmarkProto(t *testing.T) {
 	proto, vm := compileSpectralKernelTestProgram(t, string(src))
 	defer vm.Close()
 	advance := findTestProtoByName(proto, "advance")
-	if advance == nil || !isNBodyDenseAdvanceProto(advance) || !HasNBodyAdvanceWholeCallKernel(advance) {
+	if advance == nil || !isNBodyDenseAdvanceProto(advance) || !HasRecordPairwiseAdvanceWholeCallKernel(advance) {
 		t.Fatal("dense advance proto not recognized")
 	}
 }
@@ -87,7 +87,7 @@ dt := 0.01`, 1))
 	}
 }
 
-func TestNBodyAdvanceKernelMatchesFallback(t *testing.T) {
+func TestRecordPairwiseAdvanceKernelMatchesFallback(t *testing.T) {
 	kernelGlobals := compileAndRun(t, nbodyKernelTestProgram+`
 for i := 1; i <= 5; i++ { advance(0.01) }
 result := bodies[1].x + bodies[1].y + bodies[2].vx + bodies[3].vz
@@ -142,7 +142,7 @@ result := bodies[1].x + bodies[1].y + bodies[2].vx + bodies[3].vz
 	}
 }
 
-func TestNBodyAdvanceKernelDerivesRecordSpecFromBytecode(t *testing.T) {
+func TestRecordPairwiseAdvanceKernelDerivesRecordSpecFromBytecode(t *testing.T) {
 	const src = `
 SOLAR_MASS := 39.47841760435743
 m := math
@@ -185,7 +185,7 @@ func advance(dt) {
 		t.Fatalf("execute definitions: %v", err)
 	}
 	advance := findTestProtoByName(proto, "advance")
-	if advance == nil || !isNBodyAdvanceProto(advance) {
+	if advance == nil || !isRecordPairwiseAdvanceProto(advance) {
 		t.Fatal("renamed advance proto not recognized")
 	}
 	spec, ok := recordPairwiseAdvanceKernelSpecForProto(advance)
@@ -217,7 +217,7 @@ result := planets[1].px + planets[1].py + planets[2].sx + planets[3].sz
 	}
 }
 
-func TestNBodyAdvanceKernelFallsBackOnAliasedBodyRecords(t *testing.T) {
+func TestRecordPairwiseAdvanceKernelFallsBackOnAliasedBodyRecords(t *testing.T) {
 	globals := compileAndRun(t, nbodyKernelTestProgram+`
 bodies[2] = bodies[1]
 sqrt0 := math.sqrt
