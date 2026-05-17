@@ -51,7 +51,7 @@ const (
 
 const (
 	wholeCallKernelFannkuchRedux = iota
-	wholeCallKernelSieveCount
+	wholeCallKernelBoolTableStrikeCount
 	wholeCallKernelRecursiveTableBuilder
 	wholeCallKernelRecursiveTableFold
 	wholeCallKernelNestedMatmul
@@ -107,13 +107,13 @@ var wholeCallKernelRegistry = [wholeCallKernelCount]wholeCallKernelRecognizer{
 	},
 	{
 		info: KernelInfo{
-			Name:    "sieve_count",
+			Name:    "bool_table_strike_count",
 			Route:   KernelRouteWholeCallValue,
 			Arity:   1,
 			Results: kernelWholeCallSingleResultCount,
 		},
-		recognize: isSieveProto,
-		runValue:  (*VM).runSieveWholeCallKernel,
+		recognize: isBoolTableStrikeCountProto,
+		runValue:  (*VM).runBoolTableStrikeCountWholeCallKernel,
 	},
 	{
 		info: KernelInfo{

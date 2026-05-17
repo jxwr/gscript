@@ -2,14 +2,14 @@ package vm
 
 import "github.com/gscript/gscript/internal/runtime"
 
-func (vm *VM) tryRunSieveWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
-	if cl == nil || cl.Proto == nil || !hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelSieveCount) {
+func (vm *VM) tryRunBoolTableStrikeCountWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
+	if cl == nil || cl.Proto == nil || !hotWholeCallKernelRecognized(cl.Proto, wholeCallKernelBoolTableStrikeCount) {
 		return false, nil, nil
 	}
-	return vm.runSieveWholeCallKernel(cl, args)
+	return vm.runBoolTableStrikeCountWholeCallKernel(cl, args)
 }
 
-func (vm *VM) runSieveWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
+func (vm *VM) runBoolTableStrikeCountWholeCallKernel(cl *Closure, args []runtime.Value) (bool, []runtime.Value, error) {
 	if cl == nil || cl.Proto == nil || len(args) != 1 || !vm.noGlobalLock {
 		return false, nil, nil
 	}
@@ -21,10 +21,10 @@ func (vm *VM) runSieveWholeCallKernel(cl *Closure, args []runtime.Value) (bool, 
 	if float64(n64) != nn || n64 < 0 || int64(int(n64)) != n64 {
 		return false, nil, nil
 	}
-	return true, []runtime.Value{runtime.IntValue(runSieveCountKernel(int(n64)))}, nil
+	return true, []runtime.Value{runtime.IntValue(runBoolTableStrikeCountKernel(int(n64)))}, nil
 }
 
-func runSieveCountKernel(n int) int64 {
+func runBoolTableStrikeCountKernel(n int) int64 {
 	if n < 2 {
 		return 0
 	}
@@ -58,29 +58,29 @@ func runSieveCountKernel(n int) int64 {
 	return count
 }
 
-func IsSieveKernelProto(p *FuncProto) bool {
-	return cachedWholeCallKernelRecognized(p, wholeCallKernelSieveCount)
+func IsBoolTableStrikeCountKernelProto(p *FuncProto) bool {
+	return cachedWholeCallKernelRecognized(p, wholeCallKernelBoolTableStrikeCount)
 }
 
-func isSieveProto(p *FuncProto) bool {
+func isBoolTableStrikeCountProto(p *FuncProto) bool {
 	if p == nil || p.NumParams != 1 || p.IsVarArg || p.MaxStack < 13 ||
 		len(p.Constants) != 0 || len(p.Protos) != 0 {
 		return false
 	}
-	return matchSieveCountBytecode(p.Code)
+	return matchBoolTableStrikeCountBytecode(p.Code)
 }
 
-func matchSieveCountBytecode(code []uint32) bool {
+func matchBoolTableStrikeCountBytecode(code []uint32) bool {
 	if len(code) != 45 {
 		return false
 	}
 	p := newBytecodePattern(code)
-	return matchSieveInitFill(p) &&
-		matchSieveMarkComposites(p) &&
-		matchSieveCountPrimes(p)
+	return matchBoolTableInitFill(p) &&
+		matchBoolTableStrikeMultiples(p) &&
+		matchBoolTableCountTruthy(p)
 }
 
-func matchSieveInitFill(p bytecodePattern) bool {
+func matchBoolTableInitFill(p bytecodePattern) bool {
 	const (
 		nReg        = 0
 		flagsReg    = 1
@@ -105,7 +105,7 @@ func matchSieveInitFill(p bytecodePattern) bool {
 		p.abc(7, OP_SETTABLE, flagsReg, fillKeyReg, trueReg)
 }
 
-func matchSieveMarkComposites(p bytecodePattern) bool {
+func matchBoolTableStrikeMultiples(p bytecodePattern) bool {
 	const (
 		nReg     = 0
 		flagsReg = 1
@@ -142,7 +142,7 @@ func matchSieveMarkComposites(p bytecodePattern) bool {
 		p.jumpTo(29, markStartPC)
 }
 
-func matchSieveCountPrimes(p bytecodePattern) bool {
+func matchBoolTableCountTruthy(p bytecodePattern) bool {
 	const (
 		nReg      = 0
 		flagsReg  = 1

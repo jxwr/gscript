@@ -43,12 +43,12 @@ func local_prime_counter(n) {
 	child.Source = "benchmarks/suite/fannkuch.gs"
 
 	infos := RecognizedWholeCallKernels(child)
-	requireKernelInfo(t, infos, "sieve_count")
+	requireKernelInfo(t, infos, "bool_table_strike_count")
 	rejectKernelInfo(t, infos, "fannkuch_redux")
 
-	diag := requireKernelDiagnostic(t, DiagnoseWholeCallKernelProto(child), "sieve_count")
+	diag := requireKernelDiagnostic(t, DiagnoseWholeCallKernelProto(child), "bool_table_strike_count")
 	if !diag.Recognized || diag.Reason != kernelReasonRecognized {
-		t.Fatalf("sieve diagnostic = %+v, want recognized structural bytecode", diag)
+		t.Fatalf("bool-table strike/count diagnostic = %+v, want recognized structural bytecode", diag)
 	}
 }
 
@@ -79,7 +79,7 @@ func local_prime_counter(n) {
 `)
 	defer vm.Close()
 	child := proto.Protos[0]
-	requireKernelInfo(t, RecognizedWholeCallKernels(child), "sieve_count")
+	requireKernelInfo(t, RecognizedWholeCallKernels(child), "bool_table_strike_count")
 
 	child.Name = "fannkuch"
 	child.Source = "benchmarks/suite/fannkuch.gs"
@@ -89,7 +89,7 @@ func local_prime_counter(n) {
 		child.LineInfo[i] += 100
 	}
 
-	requireKernelInfo(t, RecognizedWholeCallKernels(child), "sieve_count")
+	requireKernelInfo(t, RecognizedWholeCallKernels(child), "bool_table_strike_count")
 	stats := runtime.EnableRuntimePathStats()
 	defer runtime.DisableRuntimePathStats()
 	handled, results, err := vm.tryRunValueWholeCallKernel(NewClosure(child), []runtime.Value{runtime.IntValue(100)})
@@ -101,10 +101,10 @@ func local_prime_counter(n) {
 		t.Fatalf("structural kernel total = %d, want 1", snap.StructuralKernel.Total)
 	}
 	if len(snap.StructuralKernel.PerKernel) != 1 ||
-		snap.StructuralKernel.PerKernel[0].Name != "sieve_count" ||
+		snap.StructuralKernel.PerKernel[0].Name != "bool_table_strike_count" ||
 		snap.StructuralKernel.PerKernel[0].Route != string(KernelRouteWholeCallValue) ||
 		snap.StructuralKernel.PerKernel[0].Count != 1 {
-		t.Fatalf("structural kernel attribution = %+v, want one sieve_count whole-call value hit", snap.StructuralKernel.PerKernel)
+		t.Fatalf("structural kernel attribution = %+v, want one bool_table_strike_count whole-call value hit", snap.StructuralKernel.PerKernel)
 	}
 }
 
@@ -135,7 +135,7 @@ func local_prime_counter(n) {
 `)
 	defer vm.Close()
 	child := proto.Protos[0]
-	requireKernelInfo(t, RecognizedWholeCallKernels(child), "sieve_count")
+	requireKernelInfo(t, RecognizedWholeCallKernels(child), "bool_table_strike_count")
 
 	originalCode := append([]uint32(nil), child.Code...)
 	child.Code = append([]uint32(nil), originalCode...)
@@ -155,7 +155,7 @@ func local_prime_counter(n) {
 	}
 
 	child.Code = originalCode
-	requireKernelInfo(t, RecognizedWholeCallKernels(child), "sieve_count")
+	requireKernelInfo(t, RecognizedWholeCallKernels(child), "bool_table_strike_count")
 }
 
 func TestCachedWholeCallKernelRecognizedUsesHotCache(t *testing.T) {
@@ -168,7 +168,7 @@ func TestCachedWholeCallKernelRecognizedUsesHotCache(t *testing.T) {
 	if !cachedWholeCallKernelRecognized(proto, wholeCallKernelFannkuchRedux) {
 		t.Fatal("cached hot dispatch guard recomputed structure instead of using cached bits")
 	}
-	if cachedWholeCallKernelRecognized(proto, wholeCallKernelSieveCount) {
+	if cachedWholeCallKernelRecognized(proto, wholeCallKernelBoolTableStrikeCount) {
 		t.Fatal("cached hot dispatch guard reported an uncached kernel bit")
 	}
 }

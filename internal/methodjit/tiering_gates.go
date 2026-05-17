@@ -563,7 +563,7 @@ func (tm *TieringManager) isTier0OnlyCallee(callee *vm.FuncProto) bool {
 	if tm.shouldSuppressRecursivePartitionTableMutationTier2(callee, tm.getProfile(callee)) {
 		return true
 	}
-	if vm.IsSieveKernelProto(callee) {
+	if vm.IsBoolTableStrikeCountKernelProto(callee) {
 		return true
 	}
 	profile := tm.getProfile(callee)

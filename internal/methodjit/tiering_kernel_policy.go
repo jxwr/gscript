@@ -30,8 +30,8 @@ func (tm *TieringManager) structuralKernelTieringDecision(proto *vm.FuncProto) (
 	if vm.IsNestedMatmulKernelProto(proto) {
 		return tieringKernelDecision{reason: "whole_call_matmul_kernel"}, true
 	}
-	if vm.IsSieveKernelProto(proto) {
-		return tieringKernelDecision{reason: "whole_call_sieve_kernel"}, true
+	if vm.IsBoolTableStrikeCountKernelProto(proto) {
+		return tieringKernelDecision{reason: "whole_call_bool_table_strike_count_kernel"}, true
 	}
 	if tm.hasLargeRecordPairwiseAdvanceDriverLoop(proto) {
 		return tieringKernelDecision{reason: "large_whole_call_record_loop"}, true

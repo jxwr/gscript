@@ -6,7 +6,7 @@ import (
 	"github.com/gscript/gscript/internal/runtime"
 )
 
-func TestSieveKernelRecognizesStructuralProto(t *testing.T) {
+func TestBoolTableStrikeCountKernelRecognizesStructuralProto(t *testing.T) {
 	proto, _ := compileSpectralKernelTestProgram(t, `
 func local_name(n) {
     is_prime := {}
@@ -35,12 +35,12 @@ result := local_name(100)
 	if len(proto.Protos) != 1 {
 		t.Fatalf("nested protos = %d, want 1", len(proto.Protos))
 	}
-	if !IsSieveKernelProto(proto.Protos[0]) {
-		t.Fatal("sieve structural proto not recognized")
+	if !IsBoolTableStrikeCountKernelProto(proto.Protos[0]) {
+		t.Fatal("bool-table strike/count structural proto not recognized")
 	}
 }
 
-func TestSieveKernelRecognizerAllowsStackMetadataSlack(t *testing.T) {
+func TestBoolTableStrikeCountKernelRecognizerAllowsStackMetadataSlack(t *testing.T) {
 	proto, _ := compileSpectralKernelTestProgram(t, `
 func local_name(n) {
     is_prime := {}
@@ -67,12 +67,12 @@ func local_name(n) {
 `)
 	child := *proto.Protos[0]
 	child.MaxStack += 4
-	if !IsSieveKernelProto(&child) {
+	if !IsBoolTableStrikeCountKernelProto(&child) {
 		t.Fatal("sieve recognizer should ignore non-semantic MaxStack slack")
 	}
 }
 
-func TestSieveKernelWholeCallCorrectness(t *testing.T) {
+func TestBoolTableStrikeCountKernelWholeCallCorrectness(t *testing.T) {
 	proto, v := compileSpectralKernelTestProgram(t, `
 func sieve_like(n) {
     is_prime := {}
@@ -100,17 +100,17 @@ result := sieve_like(100)
 `)
 	handled, results, err := v.tryRunValueWholeCallKernel(NewClosure(proto.Protos[0]), []runtime.Value{runtime.IntValue(100)})
 	if err != nil {
-		t.Fatalf("sieve kernel error: %v", err)
+		t.Fatalf("bool-table strike/count kernel error: %v", err)
 	}
 	if !handled {
-		t.Fatal("sieve kernel did not handle structural proto")
+		t.Fatal("bool-table strike/count kernel did not handle structural proto")
 	}
 	if len(results) != 1 || !results[0].IsInt() || results[0].Int() != 25 {
-		t.Fatalf("sieve kernel result = %v, want 25", results)
+		t.Fatalf("bool-table strike/count kernel result = %v, want 25", results)
 	}
 }
 
-func TestSieveKernelFallsBackForNonStructuralProto(t *testing.T) {
+func TestBoolTableStrikeCountKernelFallsBackForNonStructuralProto(t *testing.T) {
 	proto, v := compileSpectralKernelTestProgram(t, `
 func almost_sieve(n) {
     is_prime := {}
